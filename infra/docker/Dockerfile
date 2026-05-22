@@ -1,8 +1,6 @@
-FROM rust:1.83-slim-bookworm AS builder
+FROM rust:1.82-slim AS builder
 
 WORKDIR /app
-
-RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 
 COPY Cargo.toml Cargo.lock ./
 COPY core/maple-engine/Cargo.toml core/maple-engine/Cargo.toml
@@ -29,15 +27,11 @@ RUN cargo build --release -p mapleos-server 2>/dev/null || true
 
 COPY . .
 
-RUN touch core/maple-engine/src/lib.rs core/maple-llm/src/lib.rs core/maple-agent/src/lib.rs \
-    core/maple-kb/src/lib.rs core/maple-sync/src/lib.rs core/maple-gateway/src/lib.rs \
-    core/maple-collab/src/lib.rs core/maple-rpc/src/lib.rs server/src/main.rs
-
 RUN cargo build --release -p mapleos-server
 
 FROM debian:bookworm-slim
 
-RUN apt-get update && apt-get install -y ca-certificates libssl3 && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/target/release/mapleos-server /usr/local/bin/mapleos-server
 COPY migrations/ /app/migrations/
