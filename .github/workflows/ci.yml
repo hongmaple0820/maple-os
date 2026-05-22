@@ -18,6 +18,17 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          corepack-enable: true
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -37,6 +48,9 @@ jobs:
 
       - name: Cargo clippy
         run: cargo clippy --all-targets -- -D warnings
+
+      - name: Frontend build check
+        run: pnpm build
 
   docker-build:
     name: Docker Build Test
