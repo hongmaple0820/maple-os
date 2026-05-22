@@ -1,0 +1,58 @@
+[workspace]
+resolver = "2"
+members = [
+    "core/maple-engine",
+    "core/maple-llm",
+    "core/maple-agent",
+    "core/maple-kb",
+    "core/maple-sync",
+    "core/maple-gateway",
+    "core/maple-collab",
+    "core/maple-rpc",
+    "server",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/hongmaple0820/maple-os"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.7", features = ["ws"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono", "uuid"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+async-trait = "0.1"
+thiserror = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dashmap = "6"
+petgraph = "0.6"
+automerge = "0.5"
+rand = "0.8"
+bytes = "1"
+futures = "0.3"
+tokio-stream = "0.1"
+tower = "0.5"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+jsonwebtoken = "9"
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+async-stream = "0.3"
+
+maple-engine = { path = "core/maple-engine" }
+maple-llm = { path = "core/maple-llm" }
+maple-agent = { path = "core/maple-agent" }
+maple-kb = { path = "core/maple-kb" }
+maple-sync = { path = "core/maple-sync" }
+maple-gateway = { path = "core/maple-gateway" }
+maple-collab = { path = "core/maple-collab" }
+maple-rpc = { path = "core/maple-rpc" }

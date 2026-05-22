@@ -1,0 +1,19 @@
+[package]
+name = "maple-agent"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+dashmap = { workspace = true }
+sqlx = { workspace = true }
+maple-llm = { workspace = true }
+maple-engine = { workspace = true }
