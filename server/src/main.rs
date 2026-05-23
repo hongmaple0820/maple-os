@@ -25,7 +25,7 @@ use maple_rpc::dispatch::RpcDispatcher;
 use maple_sync::sync_engine::SyncEngine;
 use maple_kb::indexer::{Indexer, Document};
 use maple_kb::bm25::BM25Searcher;
-use maple_kb::vector_store::VectorStore;
+use maple_kb::vector_store::{VectorSearch, InMemoryVectorStore, QdrantVectorStore};
 use maple_kb::retriever::HybridRetriever;
 use maple_kb::memory::{MemoryStore, MemoryEntry, MemoryType};
 use maple_kb::prompt_version::PromptVersionManager;
@@ -49,7 +49,7 @@ pub struct AppState {
     pub skill_registry: Arc<SkillRegistry>,
     pub session_store: Arc<SessionStore>,
     pub bm25_searcher: Arc<BM25Searcher>,
-    pub vector_store: Arc<VectorStore>,
+    pub vector_store: Arc<dyn VectorSearch>,
     pub hybrid_retriever: Arc<HybridRetriever>,
     pub indexer: Arc<Indexer>,
     pub embedder: Arc<dyn Embedder>,
@@ -644,7 +644,7 @@ async fn kb_index_handler(
             Ok(emb) => emb,
             Err(_) => maple_llm::embedding::simple_embedding(&chunk.content, 128),
         };
-        state.vector_store.upsert_chunk(chunk, embedding).await;
+        state.vector_store.upsert(&chunk.id, chunk, embedding).await;
     }
 
     let now = chrono::Utc::now().timestamp();
@@ -945,7 +945,29 @@ async fn main() -> anyhow::Result<()> {
     let session_store = Arc::new(SessionStore::new(pool.clone()));
 
     let bm25_searcher = Arc::new(BM25Searcher::new());
-    let vector_store = Arc::new(VectorStore::new(pool.clone()));
+    let vector_store: Arc<dyn VectorSearch> = if let Ok(qdrant_url) = std::env::var("QDRANT_URL") {
+        let collection = std::env::var("QDRANT_COLLECTION").unwrap_or_else(|_| "mapleos_chunks".to_string());
+        let dim: usize = std::env::var("EMBEDDING_DIM").unwrap_or_else(|_| "768".to_string()).parse().unwrap_or(768);
+        match QdrantVectorStore::new(&qdrant_url, &collection, dim).await {
+            Ok(vs) => {
+                tracing::info!("Using Qdrant vector store: {} (dim={})", qdrant_url, dim);
+                Arc::new(vs)
+            }
+            Err(e) => {
+                tracing::warn!("Qdrant connection failed: {}, falling back to in-memory store", e);
+                let pool_clone = pool.clone();
+                let vs = InMemoryVectorStore::new(pool_clone);
+                vs.init_schema().await.ok();
+                Arc::new(vs)
+            }
+        }
+    } else {
+        tracing::info!("Using in-memory vector store (no QDRANT_URL configured)");
+        let pool_clone = pool.clone();
+        let vs = InMemoryVectorStore::new(pool_clone);
+        vs.init_schema().await.ok();
+        Arc::new(vs)
+    };
     let hybrid_retriever = Arc::new(HybridRetriever::new());
     let indexer = Arc::new(Indexer::new(512, 64));
 

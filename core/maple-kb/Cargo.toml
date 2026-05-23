@@ -16,3 +16,9 @@ dashmap = { workspace = true }
 sqlx = { workspace = true }
 maple-llm = { workspace = true }
 maple-engine = { workspace = true }
+async-trait = { workspace = true }
+qdrant-client = "1.13"
+
+[features]
+default = []
+qdrant = []

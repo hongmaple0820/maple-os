@@ -10,6 +10,6 @@ pub use retriever::HybridRetriever;
 pub use evolver::Evolver;
 pub use memory::MemoryStore;
 pub use bm25::BM25Searcher;
-pub use vector_store::VectorStore;
+pub use vector_store::{VectorSearch, InMemoryVectorStore, QdrantVectorStore, ChunkEmbedding};
 pub use indexer::Indexer;
 pub use prompt_version::PromptVersionManager;
