@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { Button, Card, CardHeader, CardTitle, CardContent, Badge } from "@mapleos/ui";
+import { ChatPanel } from "@/components/chat-panel";
+import { Button, Badge, Card, CardHeader, CardTitle, CardContent } from "@mapleos/ui";
 
 const NAV_ITEMS = [
   { id: "chat", label: "Chat", icon: "message-square" },
@@ -55,50 +56,8 @@ export default function Home() {
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 flex flex-col">
-        {activeNav === "chat" && (
-          <div className="flex-1 flex flex-col">
-            <div className="flex-1 flex items-center justify-center p-8">
-              <div className="max-w-md text-center space-y-6">
-                <div className="flex justify-center">
-                  <svg className="w-16 h-16 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                    <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
-                  </svg>
-                </div>
-                <h1 className="text-2xl font-bold tracking-tight">Welcome to MapleOS</h1>
-                <p className="text-muted-foreground">
-                  AI Native workstation operating system. Chat with LLM agents, run workflows, manage knowledge bases.
-                </p>
-                <div className="flex gap-2 justify-center">
-                  <Button>Start Chat</Button>
-                  <Button variant="outline">View Workflows</Button>
-                </div>
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="text-sm">Quick Start</CardTitle>
-                  </CardHeader>
-                  <CardContent className="text-xs text-muted-foreground space-y-1">
-                    <p>1. Type a message to chat with an AI agent</p>
-                    <p>2. Select tools for the agent to use</p>
-                    <p>3. Create workflows to automate tasks</p>
-                  </CardContent>
-                </Card>
-              </div>
-            </div>
-
-            {/* Chat Input Bar */}
-            <div className="border-t p-4">
-              <div className="flex gap-2 max-w-3xl mx-auto">
-                <input
-                  type="text"
-                  placeholder="Send a message to MapleOS..."
-                  className="flex-1 h-10 rounded-md border border-input bg-transparent px-3 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                />
-                <Button>Send</Button>
-              </div>
-            </div>
-          </div>
-        )}
+      <main className="flex-1 flex flex-col overflow-hidden">
+        {activeNav === "chat" && <ChatPanel />}
 
         {activeNav !== "chat" && (
           <div className="flex-1 flex items-center justify-center">
