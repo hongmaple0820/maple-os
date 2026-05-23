@@ -1239,4 +1239,42 @@ async fn register_business_handlers(dispatcher: &Arc<RpcDispatcher>, state: Arc<
             }))
         }
     }).await;
+
+    dispatcher.register("scale.tools", move |_: Option<serde_json::Value>| {
+        async move {
+            let client = reqwest::Client::new();
+            let resp = client.get("http://127.0.0.1:7790/tools").send().await;
+            match resp {
+                Ok(r) => {
+                    let text = r.text().await.unwrap_or_default();
+                    Ok(serde_json::json!({"source": "scale-engine", "raw": text}))
+                }
+                Err(e) => Ok(serde_json::json!({"error": e.to_string(), "note": "scale-engine HTTP bridge not running on port 7790"})),
+            }
+        }
+    }).await;
+
+    dispatcher.register("scale.call", move |params: Option<serde_json::Value>| {
+        async move {
+            let p = match params {
+                Some(v) => v,
+                None => return Ok(serde_json::json!({"error": "missing params: tool_name + arguments"})),
+            };
+            let tool_name = p["tool_name"].as_str().unwrap_or("").to_string();
+            let args = p.get("arguments").cloned().unwrap_or(serde_json::json!({}));
+
+            let client = reqwest::Client::new();
+            let resp = client.post("http://127.0.0.1:7790/call")
+                .json(&serde_json::json!({"name": tool_name, "arguments": args}))
+                .send().await;
+
+            match resp {
+                Ok(r) => {
+                    let text = r.text().await.unwrap_or_default();
+                    Ok(serde_json::json!({"source": "scale-engine", "raw": text}))
+                }
+                Err(e) => Ok(serde_json::json!({"error": e.to_string(), "note": "scale-engine HTTP bridge not running on port 7790"})),
+            }
+        }
+    }).await;
 }

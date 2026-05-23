@@ -5,7 +5,8 @@ import { ChatPanel } from "@/components/chat-panel";
 import { WorkflowManager } from "@/components/workflow-manager";
 import { KnowledgeManager } from "@/components/knowledge-manager";
 import { AgentManager } from "@/components/agent-manager";
-import { Badge, Spinner } from "@mapleos/ui";
+import { ScaleEngineManager } from "@/components/scale-engine-manager";
+import { Badge } from "@mapleos/ui";
 import { rpcCall } from "@/lib/api";
 
 const NAV_ITEMS = [
@@ -13,6 +14,7 @@ const NAV_ITEMS = [
   { id: "workflows", label: "工作流" },
   { id: "knowledge", label: "知识库" },
   { id: "agents", label: "Agent" },
+  { id: "scale", label: "SCALE 引擎" },
 ] as const;
 
 type NavId = (typeof NAV_ITEMS)[number]["id"];
@@ -97,6 +99,7 @@ export default function Home() {
         {activeNav === "workflows" && <WorkflowManager />}
         {activeNav === "knowledge" && <KnowledgeManager />}
         {activeNav === "agents" && <AgentManager />}
+        {activeNav === "scale" && <ScaleEngineManager />}
       </main>
     </div>
   );

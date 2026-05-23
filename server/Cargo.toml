@@ -25,3 +25,4 @@ maple-kb = { workspace = true }
 maple-sync = { workspace = true }
 maple-gateway = { workspace = true }
 maple-collab = { workspace = true }
+reqwest = { workspace = true }

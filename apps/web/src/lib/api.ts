@@ -1,4 +1,6 @@
-export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:7788";
+export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
+export const MAPLE_API_PREFIX = "/api/maple";
+export const SCALE_API_PREFIX = "/api/scale";
 
 export async function fetchApi<T>(
   path: string,
@@ -8,7 +10,8 @@ export async function fetchApi<T>(
     headers?: Record<string, string>;
   }
 ): Promise<T> {
-  const res = await fetch(`${API_BASE_URL}${path}`, {
+  const url = `${API_BASE_URL}${path}`;
+  const res = await fetch(url, {
     method: options?.method ?? "GET",
     headers: {
       "Content-Type": "application/json",
@@ -22,6 +25,26 @@ export async function fetchApi<T>(
   }
 
   return res.json() as Promise<T>;
+}
+
+export async function mapleApi<T>(
+  path: string,
+  options?: {
+    method?: string;
+    body?: unknown;
+  }
+): Promise<T> {
+  return fetchApi<T>(`${MAPLE_API_PREFIX}${path}`, options);
+}
+
+export async function scaleApi<T>(
+  path: string,
+  options?: {
+    method?: string;
+    body?: unknown;
+  }
+): Promise<T> {
+  return fetchApi<T>(`${SCALE_API_PREFIX}${path}`, options);
 }
 
 let rpcRequestId = 0;
