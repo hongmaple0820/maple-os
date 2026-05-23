@@ -1,46 +1,93 @@
+import type { JsonRpcError } from './types';
+
+export interface AgentCapabilities {
+  tools: string[];
+  maxContextLength: number;
+  supportsStreaming: boolean;
+  supportsImage: boolean;
+}
+
+export interface AgentRegistration {
+  capabilities: AgentCapabilities;
+  systemPrompt: string;
+  maxConcurrentTasks: number;
+}
+
+export interface TaskPayload {
+  task_id: string;
+  type: string;
+  input: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+}
+
+export interface TaskResult {
+  task_id: string;
+  result: unknown;
+  status: 'completed' | 'failed';
+}
+
+export interface TaskProgress {
+  task_id: string;
+  progress: number;
+  output: string;
+}
+
+export interface TaskContext {
+  progress: (percent: number, message: string) => Promise<void>;
+  complete: (result: unknown) => Promise<void>;
+  fail: (error: string) => Promise<void>;
+}
+
+export interface MapleAgentClientConfig {
+  serverUrl: string;
+  token: string;
+  agentId: string;
+  reconnectIntervalMs?: number;
+}
+
+type WsMessage =
+  | { type: 'ping' }
+  | { type: 'register'; agent_id: string; capabilities: AgentCapabilities; system_prompt: string; max_concurrent_tasks: number }
+  | { type: 'progress'; task_id: string; progress: number; output: string }
+  | { type: 'task_result'; task_id: string; result: unknown; status: 'completed' | 'failed' };
+
 export class MapleAgentClient {
   private ws: WebSocket | null = null;
-  private serverUrl: string;
-  private token: string;
-  private agentId: string;
-  private onTaskHandler?: (task: any, ctx: TaskContext) => Promise<void>;
+  private config: MapleAgentClientConfig;
+  private onTaskHandler?: (task: TaskPayload, ctx: TaskContext) => Promise<void>;
 
-  constructor(config: { serverUrl: string; token: string; agentId: string }) {
-    this.serverUrl = config.serverUrl;
-    this.token = config.token;
-    this.agentId = config.agentId;
+  constructor(config: MapleAgentClientConfig) {
+    this.config = config;
   }
 
-  register(config: {
-    capabilities: {
-      tools: string[];
-      maxContextLength: number;
-      supportsStreaming: boolean;
-      supportsImage: boolean;
-    };
-    systemPrompt: string;
-    maxConcurrentTasks: number;
-  }): void {
+  register(registration: AgentRegistration): void {
     this.send({
       type: 'register',
-      agent_id: this.agentId,
-      capabilities: config.capabilities,
-      system_prompt: config.systemPrompt,
-      max_concurrent_tasks: config.maxConcurrentTasks,
+      agent_id: this.config.agentId,
+      capabilities: registration.capabilities,
+      system_prompt: registration.systemPrompt,
+      max_concurrent_tasks: registration.maxConcurrentTasks,
     });
   }
 
-  onTask(handler: (task: any, ctx: TaskContext) => Promise<void>): void {
+  onTask(handler: (task: TaskPayload, ctx: TaskContext) => Promise<void>): void {
     this.onTaskHandler = handler;
   }
 
   connect(): void {
-    this.ws = new WebSocket(this.serverUrl);
+    const url = new URL(this.config.serverUrl);
+    url.searchParams.set('token', this.config.token);
+    url.searchParams.set('agent_id', this.config.agentId);
+
+    this.ws = new WebSocket(url.toString());
+
     this.ws.addEventListener('open', () => {
       this.send({ type: 'ping' });
     });
+
     this.ws.addEventListener('message', (event) => {
-      const data = JSON.parse(event.data);
+      const data = JSON.parse(event.data as string) as TaskPayload & { type: string };
+
       if (data.type === 'task' && this.onTaskHandler) {
         const ctx: TaskContext = {
           progress: async (percent: number, message: string) => {
@@ -51,7 +98,7 @@ export class MapleAgentClient {
               output: message,
             });
           },
-          complete: async (result: any) => {
+          complete: async (result: unknown) => {
             this.send({
               type: 'task_result',
               task_id: data.task_id,
@@ -71,8 +118,12 @@ export class MapleAgentClient {
         this.onTaskHandler(data, ctx);
       }
     });
+
     this.ws.addEventListener('close', () => {
-      setTimeout(() => this.connect(), 5000);
+      setTimeout(
+        () => this.connect(),
+        this.config.reconnectIntervalMs ?? 5000
+      );
     });
   }
 
@@ -83,15 +134,9 @@ export class MapleAgentClient {
     }
   }
 
-  private send(data: any): void {
+  private send(data: WsMessage): void {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(data));
     }
   }
-}
-
-export interface TaskContext {
-  progress: (percent: number, message: string) => Promise<void>;
-  complete: (result: any) => Promise<void>;
-  fail: (error: string) => Promise<void>;
 }
