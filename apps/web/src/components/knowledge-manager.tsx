@@ -1,14 +1,26 @@
 "use client";
 
 import { useState } from "react";
-import { Card, CardHeader, CardTitle, CardContent, Badge, Button, Input } from "@mapleos/ui";
-import type { KnowledgeBase } from "@/lib/admin-types";
+import { Card, CardHeader, CardTitle, CardContent, Badge, Button, Input, Spinner } from "@mapleos/ui";
+import { fetchApi } from "@/lib/api";
 
-const MOCK_KBS: KnowledgeBase[] = [
-  { id: "kb-1", name: "Product Documentation", description: "All product docs and API references", doc_count: 42, status: "ready", created_at: Date.now() - 86400000 * 5 },
-  { id: "kb-2", name: "Internal Policies", description: "Company policies and compliance docs", doc_count: 18, status: "indexing", created_at: Date.now() - 3600000 },
-  { id: "kb-3", name: "Engineering Wiki", description: "Tech decisions and architecture notes", doc_count: 0, status: "empty", created_at: Date.now() },
-];
+interface KbItem {
+  id: string;
+  name: string;
+  doc_count: number;
+  status: string;
+}
+
+interface KbSearchResult {
+  results: Array<{ id: string; content: string; score: number; metadata: Record<string, unknown> }>;
+}
+
+const kbStatusLabel: Record<string, string> = {
+  ready: "就绪",
+  indexing: "索引中",
+  empty: "空",
+  error: "出错",
+};
 
 const kbStatusVariant: Record<string, "default" | "secondary" | "outline" | "destructive"> = {
   ready: "default",
@@ -18,51 +30,102 @@ const kbStatusVariant: Record<string, "default" | "secondary" | "outline" | "des
 };
 
 export function KnowledgeManager() {
-  const [kbs] = useState<KnowledgeBase[]>(MOCK_KBS);
-  const [search, setSearch] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<KbSearchResult | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadText, setUploadText] = useState("");
+  const [showUpload, setShowUpload] = useState(false);
 
-  const filtered = kbs.filter((kb) =>
-    kb.name.toLowerCase().includes(search.toLowerCase())
-  );
+  const handleSearch = async () => {
+    if (!searchQuery.trim()) return;
+    setSearching(true);
+    try {
+      const result = await fetchApi<KbSearchResult>("/api/kb/search", {
+        method: "POST",
+        body: { query: searchQuery.trim(), top_k: 5 },
+      });
+      setSearchResults(result);
+    } catch (err) {
+      alert(`搜索失败: ${(err as Error).message}`);
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const handleIndex = async () => {
+    if (!uploadText.trim()) return;
+    setUploading(true);
+    try {
+      await fetchApi("/api/kb/index", {
+        method: "POST",
+        body: { content: uploadText.trim(), metadata: { source: "web-ui" } },
+      });
+      setShowUpload(false);
+      setUploadText("");
+      alert("文档已提交索引!");
+    } catch (err) {
+      alert(`索引失败: ${(err as Error).message}`);
+    } finally {
+      setUploading(false);
+    }
+  };
 
   return (
     <div className="flex flex-col h-full">
       <div className="border-b p-4 flex items-center justify-between">
-        <h2 className="text-lg font-semibold">Knowledge Bases</h2>
+        <h2 className="text-lg font-semibold">知识库</h2>
         <div className="flex gap-2">
           <Input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search knowledge bases..."
-            className="w-48"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") handleSearch(); }}
+            placeholder="搜索知识库内容..."
+            className="w-64"
           />
-          <Button>Create KB</Button>
+          <Button onClick={handleSearch} disabled={searching || !searchQuery.trim()}>
+            {searching ? <Spinner className="w-4 h-4" /> : "搜索"}
+          </Button>
+          <Button onClick={() => setShowUpload(true)}>上传文档</Button>
         </div>
       </div>
 
+      {showUpload && (
+        <div className="border-b p-4 bg-muted/50 space-y-2">
+          <textarea
+            value={uploadText}
+            onChange={(e) => setUploadText(e.target.value)}
+            placeholder="输入要索引的文本内容..."
+            className="w-full h-24 rounded-md border border-input bg-transparent px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          />
+          <div className="flex gap-2">
+            <Button onClick={handleIndex} disabled={uploading || !uploadText.trim()}>
+              {uploading ? "索引中..." : "提交索引"}
+            </Button>
+            <Button variant="outline" onClick={() => { setShowUpload(false); setUploadText(""); }}>取消</Button>
+          </div>
+        </div>
+      )}
+
       <div className="flex-1 overflow-y-auto p-4 space-y-3">
-        {filtered.length === 0 && (
-          <div className="text-center text-muted-foreground py-8">No knowledge bases found</div>
+        {searchResults === null && (
+          <div className="text-center text-muted-foreground py-8">
+            在上方输入关键词搜索知识库，或上传文档进行索引
+          </div>
         )}
-        {filtered.map((kb) => (
-          <Card key={kb.id} className="hover:shadow-md transition-shadow">
+        {searchResults && searchResults.results.length === 0 && (
+          <div className="text-center text-muted-foreground py-8">未找到相关内容</div>
+        )}
+        {searchResults && searchResults.results.map((r) => (
+          <Card key={r.id} className="hover:shadow-md transition-shadow">
             <CardHeader className="pb-2">
               <div className="flex items-center justify-between">
-                <CardTitle className="text-base">{kb.name}</CardTitle>
-                <Badge variant={kbStatusVariant[kb.status] ?? "outline"}>{kb.status}</Badge>
+                <CardTitle className="text-sm">{r.id}</CardTitle>
+                <Badge variant="outline" className="text-xs">相似度 {(r.score * 100).toFixed(1)}%</Badge>
               </div>
             </CardHeader>
             <CardContent>
-              <p className="text-sm text-muted-foreground">{kb.description}</p>
-              <div className="flex items-center justify-between text-sm text-muted-foreground mt-2">
-                <span>{kb.doc_count} documents</span>
-                <span>{new Date(kb.created_at).toLocaleDateString()}</span>
-              </div>
-              <div className="flex gap-2 mt-3">
-                <Button size="sm" variant="outline">Browse</Button>
-                <Button size="sm">Upload Docs</Button>
-                <Button size="sm" variant="destructive">Delete</Button>
-              </div>
+              <p className="text-sm text-muted-foreground whitespace-pre-wrap line-clamp-4">{r.content}</p>
             </CardContent>
           </Card>
         ))}

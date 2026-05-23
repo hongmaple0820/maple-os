@@ -3,11 +3,19 @@
 import { useState, useRef, useEffect } from "react";
 import type { ChatMessage, ToolCall } from "@/lib/types";
 import { Button, Input, Badge, Card, CardContent } from "@mapleos/ui";
+import { API_BASE_URL } from "@/lib/api";
 
 function MessageBubble({ message }: { message: ChatMessage }) {
   const isUser = message.role === "user";
   const isSystem = message.role === "system";
   const isTool = message.role === "tool";
+
+  const roleLabel: Record<string, string> = {
+    user: "你",
+    assistant: "助手",
+    system: "系统",
+    tool: "工具",
+  };
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"} mb-4`}>
@@ -24,11 +32,9 @@ function MessageBubble({ message }: { message: ChatMessage }) {
       >
         {!isUser && (
           <div className="flex items-center gap-2 mb-1">
-            <Badge variant="outline" className="text-xs">
-              {message.role}
-            </Badge>
+            <Badge variant="outline" className="text-xs">{roleLabel[message.role] ?? message.role}</Badge>
             <span className="text-xs opacity-60">
-              {new Date(message.timestamp).toLocaleTimeString()}
+              {new Date(message.timestamp).toLocaleTimeString("zh-CN")}
             </span>
           </div>
         )}
@@ -46,19 +52,26 @@ function MessageBubble({ message }: { message: ChatMessage }) {
 }
 
 function ToolCallCard({ toolCall }: { toolCall: ToolCall }) {
-  const statusVariant = {
+  const statusLabel: Record<string, string> = {
+    pending: "等待中",
+    running: "执行中",
+    completed: "已完成",
+    failed: "失败",
+  };
+
+  const statusVariant: Record<string, "outline" | "secondary" | "default" | "destructive"> = {
     pending: "outline",
     running: "secondary",
     completed: "default",
     failed: "destructive",
-  } as const;
+  };
 
   return (
     <Card className="border-dashed">
       <CardContent className="p-2">
         <div className="flex items-center gap-2">
           <Badge variant={statusVariant[toolCall.status]} className="text-xs">
-            {toolCall.status}
+            {statusLabel[toolCall.status] ?? toolCall.status}
           </Badge>
           <span className="text-xs font-medium">{toolCall.name}</span>
         </div>
@@ -107,13 +120,13 @@ export function ChatPanel() {
     setMessages((prev) => [...prev, assistantMessage]);
 
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:7788"}/api/chat`, {
+      const res = await fetch(`${API_BASE_URL}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: userMessage.content, history: messages }),
       });
 
-      if (!res.ok) throw new Error(`Chat error: ${res.status}`);
+      if (!res.ok) throw new Error(`请求失败: ${res.status}`);
 
       const reader = res.body?.getReader();
       const decoder = new TextDecoder();
@@ -183,7 +196,7 @@ export function ChatPanel() {
         const updated = [...prev];
         const last = updated[updated.length - 1];
         if (last.role === "assistant") {
-          last.content = `Error: ${(err as Error).message}`;
+          last.content = `错误: ${(err as Error).message}`;
         }
         return updated;
       });
@@ -194,11 +207,10 @@ export function ChatPanel() {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4">
         {messages.length === 0 && (
           <div className="text-center text-muted-foreground text-sm mt-8">
-            Start a conversation with MapleOS
+            开始与 MapleOS 助手对话
           </div>
         )}
         {messages.map((msg) => (
@@ -207,7 +219,6 @@ export function ChatPanel() {
         <div ref={scrollRef} />
       </div>
 
-      {/* Input */}
       <div className="border-t p-4">
         <div className="flex gap-2 max-w-3xl mx-auto">
           <Input
@@ -219,11 +230,11 @@ export function ChatPanel() {
                 sendMessage();
               }
             }}
-            placeholder="Send a message..."
+            placeholder="输入消息..."
             disabled={isStreaming}
           />
           <Button onClick={sendMessage} disabled={isStreaming || !input.trim()}>
-            {isStreaming ? "..." : "Send"}
+            {isStreaming ? "发送中..." : "发送"}
           </Button>
         </div>
       </div>

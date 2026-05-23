@@ -1,68 +1,135 @@
 "use client";
 
-import { useState } from "react";
-import { Card, CardHeader, CardTitle, CardContent, Badge, Button } from "@mapleos/ui";
-import type { AgentInfo } from "@/lib/admin-types";
+import { useState, useEffect } from "react";
+import { Card, CardHeader, CardTitle, CardContent, Badge, Button, Spinner } from "@mapleos/ui";
+import { rpcCall, fetchApi } from "@/lib/api";
 
-const MOCK_AGENTS: AgentInfo[] = [
-  { id: "agent-1", name: "GPT-4 Assistant", type: "llm", status: "idle", capabilities: ["chat", "code", "analysis"], last_active: Date.now() },
-  { id: "agent-2", name: "Code Reviewer", type: "tool", status: "busy", capabilities: ["review", "lint"], current_task: "Reviewing PR #42", last_active: Date.now() - 60000 },
-  { id: "agent-3", name: "Report Writer", type: "llm", status: "offline", capabilities: ["write", "summarize"], last_active: Date.now() - 86400000 },
-];
+interface AgentListItem {
+  id: string;
+  name: string;
+  status: string;
+}
+
+interface ModelInfo {
+  id: string;
+  name: string;
+  provider: string;
+}
+
+interface SkillInfo {
+  id: string;
+  description: string;
+}
+
+const agentStatusLabel: Record<string, string> = {
+  Idle: "空闲",
+  Busy: "忙碌",
+  Offline: "离线",
+  idle: "空闲",
+  busy: "忙碌",
+  offline: "离线",
+};
 
 const agentStatusVariant: Record<string, "default" | "secondary" | "outline"> = {
+  Idle: "default",
+  Busy: "secondary",
+  Offline: "outline",
   idle: "default",
   busy: "secondary",
   offline: "outline",
 };
 
 export function AgentManager() {
-  const [agents] = useState<AgentInfo[]>(MOCK_AGENTS);
+  const [agents, setAgents] = useState<AgentListItem[]>([]);
+  const [models, setModels] = useState<ModelInfo[]>([]);
+  const [skills, setSkills] = useState<SkillInfo[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const loadAll = async () => {
+    try {
+      const agentResult = await rpcCall<{ agents: AgentListItem[] }>("agent.list");
+      setAgents(agentResult.agents ?? []);
+    } catch { setAgents([]); }
+
+    try {
+      const modelResult = await rpcCall<{ models: ModelInfo[] }>("llm.models");
+      setModels(modelResult.models ?? []);
+    } catch { setModels([]); }
+
+    try {
+      const skillResult = await rpcCall<{ skills: SkillInfo[] }>("skill.list");
+      setSkills(skillResult.skills ?? []);
+    } catch { setSkills([]); }
+
+    setLoading(false);
+  };
+
+  useEffect(() => { loadAll(); }, []);
+
+  if (loading) return <div className="flex items-center justify-center h-full"><Spinner className="w-8 h-8" /></div>;
 
   return (
     <div className="flex flex-col h-full">
       <div className="border-b p-4 flex items-center justify-between">
-        <h2 className="text-lg font-semibold">Agents</h2>
-        <Button>Register Agent</Button>
+        <h2 className="text-lg font-semibold">Agent 管理</h2>
+        <Button onClick={loadAll}>刷新</Button>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4 space-y-3">
-        {agents.map((agent) => (
-          <Card key={agent.id} className="hover:shadow-md transition-shadow">
-            <CardHeader className="pb-2">
-              <div className="flex items-center justify-between">
-                <CardTitle className="text-base">{agent.name}</CardTitle>
-                <Badge variant={agentStatusVariant[agent.status]}>{agent.status}</Badge>
-              </div>
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Badge variant="outline" className="text-xs">{agent.type}</Badge>
-                <span>&middot; {agent.id}</span>
-              </div>
-              <div className="flex gap-1 mt-2">
-                {agent.capabilities.map((cap) => (
-                  <Badge key={cap} variant="secondary" className="text-xs">{cap}</Badge>
-                ))}
-              </div>
-              {agent.current_task && (
-                <p className="text-xs text-muted-foreground mt-2">
-                  Task: {agent.current_task}
-                </p>
-              )}
-              <div className="flex items-center justify-between mt-2 text-xs text-muted-foreground">
-                <span>Last active: {new Date(agent.last_active).toLocaleTimeString()}</span>
-              </div>
-              <div className="flex gap-2 mt-3">
-                <Button size="sm" variant="outline">Configure</Button>
-                {agent.status === "idle" && <Button size="sm">Assign Task</Button>}
-                {agent.status === "busy" && (
-                  <Button size="sm" variant="destructive">Cancel Task</Button>
-                )}
-              </div>
-            </CardContent>
-          </Card>
-        ))}
+      <div className="flex-1 overflow-y-auto p-4 space-y-6">
+        {/* Agent 列表 */}
+        <section>
+          <h3 className="text-sm font-medium mb-3 text-muted-foreground">已注册 Agent</h3>
+          {agents.length === 0 && (
+            <p className="text-muted-foreground text-sm">暂无已注册的 Agent</p>
+          )}
+          <div className="space-y-2">
+            {agents.map((agent) => (
+              <Card key={agent.id} className="hover:shadow-md transition-shadow">
+                <CardContent className="p-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Badge variant="outline" className="text-xs">{agent.id}</Badge>
+                      <span className="font-medium text-sm">{agent.name}</span>
+                    </div>
+                    <Badge variant={agentStatusVariant[agent.status] ?? "outline"}>
+                      {agentStatusLabel[agent.status] ?? agent.status}
+                    </Badge>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </section>
+
+        {/* LLM 模型 */}
+        <section>
+          <h3 className="text-sm font-medium mb-3 text-muted-foreground">可用 LLM 模型</h3>
+          {models.length === 0 && (
+            <p className="text-muted-foreground text-sm">暂无可用模型</p>
+          )}
+          <div className="flex flex-wrap gap-2">
+            {models.map((m) => (
+              <Badge key={m.id} variant="secondary" className="text-xs">
+                {m.name ?? m.id} ({m.provider})
+              </Badge>
+            ))}
+          </div>
+        </section>
+
+        {/* 技能 */}
+        <section>
+          <h3 className="text-sm font-medium mb-3 text-muted-foreground">可用技能</h3>
+          {skills.length === 0 && (
+            <p className="text-muted-foreground text-sm">暂无可用技能</p>
+          )}
+          <div className="flex flex-wrap gap-2">
+            {skills.map((s) => (
+              <Badge key={s.id} variant="outline" className="text-xs">
+                {s.id}: {s.description}
+              </Badge>
+            ))}
+          </div>
+        </section>
       </div>
     </div>
   );

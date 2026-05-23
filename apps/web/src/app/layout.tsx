@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "MapleOS - Agent Collaboration Workstation",
-  description: "AI Native workstation operating system for human-agent collaboration",
+  title: "枫信工作站 - MapleOS",
+  description: "AI 原生协作工作站操作系统，人机协同新时代",
 };
 
 export default function RootLayout({
