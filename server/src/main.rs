@@ -29,6 +29,7 @@ use maple_kb::vector_store::VectorStore;
 use maple_kb::retriever::HybridRetriever;
 use maple_kb::memory::{MemoryStore, MemoryEntry, MemoryType};
 use maple_kb::prompt_version::PromptVersionManager;
+use maple_engine::task_queue::TaskQueueService;
 use maple_llm::embedding::{Embedder, OllamaEmbedder, FallbackEmbedder};
 use maple_collab::workspace::WorkspaceManager;
 use serde::{Deserialize, Serialize};
@@ -54,6 +55,7 @@ pub struct AppState {
     pub embedder: Arc<dyn Embedder>,
     pub memory_store: Arc<tokio::sync::Mutex<MemoryStore>>,
     pub prompt_version_mgr: Arc<PromptVersionManager>,
+    pub task_queue: Arc<TaskQueueService>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -378,6 +380,33 @@ async fn run_migrations(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
         .execute(pool).await?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(memory_type)")
         .execute(pool).await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS task_queue (
+            id TEXT PRIMARY KEY,
+            task_type TEXT NOT NULL,
+            priority INTEGER NOT NULL DEFAULT 0,
+            payload TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            max_retries INTEGER NOT NULL DEFAULT 3,
+            next_run_at INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            error_message TEXT,
+            agent_id TEXT
+        )"
+    ).execute(pool).await?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_task_queue_status_priority
+         ON task_queue(status, priority DESC, next_run_at)"
+    ).execute(pool).await?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_task_queue_type
+         ON task_queue(task_type, status)"
+    ).execute(pool).await?;
 
     tracing::info!("Database migrations completed");
     Ok(())
@@ -773,6 +802,89 @@ async fn prompt_create_handler(
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct TaskEnqueueRequest {
+    task_type: String,
+    #[serde(default)]
+    priority: i32,
+    payload: serde_json::Value,
+    #[serde(default = "default_max_retries")]
+    max_retries: i32,
+    #[serde(default)]
+    delay_secs: i64,
+    #[serde(default)]
+    agent_id: Option<String>,
+}
+
+fn default_max_retries() -> i32 { 3 }
+
+async fn task_enqueue_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    Json(req): Json<TaskEnqueueRequest>,
+) -> impl IntoResponse {
+    match state.task_queue.enqueue(
+        &req.task_type,
+        req.priority,
+        req.payload,
+        req.max_retries,
+        req.delay_secs,
+        req.agent_id.as_deref(),
+    ).await {
+        Ok(id) => axum::Json(serde_json::json!({
+            "id": id,
+            "status": "pending",
+            "task_type": req.task_type,
+        })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn task_stats_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> impl IntoResponse {
+    match state.task_queue.stats().await {
+        Ok(stats) => axum::Json(serde_json::json!({
+            "pending": stats.pending,
+            "running": stats.running,
+            "completed": stats.completed,
+            "failed": stats.failed,
+            "dead_letter": stats.dead_letter,
+        })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn task_dead_letter_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> impl IntoResponse {
+    match state.task_queue.list_dead_letter(50).await {
+        Ok(tasks) => axum::Json(serde_json::json!({
+            "tasks": tasks.into_iter().map(|t| serde_json::json!({
+                "id": t.id,
+                "task_type": t.task_type,
+                "retry_count": t.retry_count,
+                "max_retries": t.max_retries,
+                "error_message": t.error_message,
+                "created_at": t.created_at,
+            })).collect::<Vec<_>>(),
+        })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn task_requeue_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(task_id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    match state.task_queue.requeue_dead_letter(&task_id).await {
+        Ok(_) => axum::Json(serde_json::json!({
+            "id": task_id,
+            "status": "requeued",
+        })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
 async fn sse_events_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> impl IntoResponse {
@@ -845,6 +957,8 @@ async fn main() -> anyhow::Result<()> {
 
     let memory_store = Arc::new(tokio::sync::Mutex::new(MemoryStore::new(pool.clone())));
     let prompt_version_mgr = Arc::new(PromptVersionManager::new(pool.clone()));
+    let task_queue = Arc::new(TaskQueueService::new(pool.clone()));
+    task_queue.init_schema().await?;
 
     let state = Arc::new(AppState {
         db: pool.clone(),
@@ -864,6 +978,7 @@ async fn main() -> anyhow::Result<()> {
         embedder,
         memory_store: memory_store.clone(),
         prompt_version_mgr: prompt_version_mgr.clone(),
+        task_queue: task_queue.clone(),
     });
 
     let dispatcher = Arc::new(RpcDispatcher::new());
@@ -884,6 +999,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/memories", post(memory_store_handler))
         .route("/api/memories/search", post(memory_search_handler))
         .route("/api/prompts", post(prompt_create_handler))
+        .route("/api/tasks/enqueue", post(task_enqueue_handler))
+        .route("/api/tasks/stats", get(task_stats_handler))
+        .route("/api/tasks/dead-letter", get(task_dead_letter_handler))
+        .route("/api/tasks/:id/requeue", post(task_requeue_handler))
         .route("/api/events", get(sse_events_handler))
         .with_state(state);
 

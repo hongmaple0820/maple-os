@@ -177,3 +177,22 @@ CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id
 CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_next ON scheduled_jobs(next_run_at) WHERE enabled = 1;
 CREATE INDEX IF NOT EXISTS idx_workspace_members_workspace ON workspace_members(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(memory_type);
+
+-- Task queue
+CREATE TABLE IF NOT EXISTS task_queue (
+    id TEXT PRIMARY KEY,
+    task_type TEXT NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 0,
+    payload TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    max_retries INTEGER NOT NULL DEFAULT 3,
+    next_run_at INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    error_message TEXT,
+    agent_id TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_queue_status_priority ON task_queue(status, priority DESC, next_run_at);
+CREATE INDEX IF NOT EXISTS idx_task_queue_type ON task_queue(task_type, status);

@@ -11,15 +11,7 @@ services:
       - RUST_LOG=mapleos_server=debug,maple_engine=info
       - DATABASE_URL=sqlite:/data/mapleos.db
     depends_on:
-      - redis
       - qdrant
-
-  redis:
-    image: redis:7-alpine
-    volumes:
-      - redis-data:/data
-    ports:
-      - "6379:6379"
 
   qdrant:
     image: qdrant/qdrant:latest
@@ -30,5 +22,4 @@ services:
 
 volumes:
   mapleos-data:
-  redis-data:
   qdrant-data:
