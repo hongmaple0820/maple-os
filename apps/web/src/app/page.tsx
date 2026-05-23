@@ -2,21 +2,25 @@
 
 import { useState } from "react";
 import { ChatPanel } from "@/components/chat-panel";
-import { Button, Badge, Card, CardHeader, CardTitle, CardContent } from "@mapleos/ui";
+import { WorkflowManager } from "@/components/workflow-manager";
+import { KnowledgeManager } from "@/components/knowledge-manager";
+import { AgentManager } from "@/components/agent-manager";
+import { Badge } from "@mapleos/ui";
 
 const NAV_ITEMS = [
-  { id: "chat", label: "Chat", icon: "message-square" },
-  { id: "workflows", label: "Workflows", icon: "git-branch" },
-  { id: "knowledge", label: "Knowledge", icon: "book-open" },
-  { id: "agents", label: "Agents", icon: "bot" },
-];
+  { id: "chat", label: "Chat" },
+  { id: "workflows", label: "Workflows" },
+  { id: "knowledge", label: "Knowledge" },
+  { id: "agents", label: "Agents" },
+] as const;
+
+type NavId = (typeof NAV_ITEMS)[number]["id"];
 
 export default function Home() {
-  const [activeNav, setActiveNav] = useState("chat");
+  const [activeNav, setActiveNav] = useState<NavId>("chat");
 
   return (
     <div className="flex h-screen">
-      {/* Sidebar */}
       <aside className="w-56 border-r bg-card flex flex-col">
         <div className="p-4 border-b">
           <div className="flex items-center gap-2">
@@ -45,9 +49,7 @@ export default function Home() {
         </nav>
 
         <div className="p-4 border-t space-y-2">
-          <Badge variant="secondary" className="w-full justify-center">
-            Server: 7788
-          </Badge>
+          <Badge variant="secondary" className="w-full justify-center">Server: 7788</Badge>
           <div className="flex gap-2">
             <Badge variant="outline" className="flex-1 justify-center">Online</Badge>
             <Badge variant="outline" className="flex-1 justify-center">v0.1.0</Badge>
@@ -55,22 +57,11 @@ export default function Home() {
         </div>
       </aside>
 
-      {/* Main Content */}
       <main className="flex-1 flex flex-col overflow-hidden">
         {activeNav === "chat" && <ChatPanel />}
-
-        {activeNav !== "chat" && (
-          <div className="flex-1 flex items-center justify-center">
-            <Card className="max-w-sm">
-              <CardHeader>
-                <CardTitle>{NAV_ITEMS.find((i) => i.id === activeNav)?.label}</CardTitle>
-              </CardHeader>
-              <CardContent className="text-muted-foreground text-sm">
-                This section is under development. Coming soon in the next release.
-              </CardContent>
-            </Card>
-          </div>
-        )}
+        {activeNav === "workflows" && <WorkflowManager />}
+        {activeNav === "knowledge" && <KnowledgeManager />}
+        {activeNav === "agents" && <AgentManager />}
       </main>
     </div>
   );
