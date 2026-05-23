@@ -76,3 +76,13 @@ Agent 在任务执行过程中发现的条目应遵循以下格式：
   - tokio::spawn 要求 Future 实现 Send，如果 LlmRouter 内部持有非 Send 的 trait object，spawn 内不能使用
   - 解决方案：递归方法用 `Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>` 返回类型
   - 对需要并发的场景，如果 spawn 不可行，可以用顺序执行 + 上下文快照替代
+
+[项目进度管理方式]
+- Date: 2026-05-23
+- Context: 用户明确要求项目进度通过 GitHub Issues 管理，方便社区共建
+- Category: 工作流协作
+- Instructions:
+  - 项目进度和未实现功能统一用 GitHub Issues 管理，仓库地址: hongmaple0820/maple-os
+  - 新功能规划、缺陷修复、技术改进都应先创建 Issue 再开发
+  - Issue 按模块分组打标签: [基础设施]、[能力层]、[智能层]、[协作与运维]、[产品化]、[多端]
+  - 目标是让外部贡献者也能通过 Issue 参与共建 agent os
