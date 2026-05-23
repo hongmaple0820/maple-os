@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "枫信工作站 - MapleOS",
+  title: "MapleOS - Agent 协作工作站",
   description: "AI 原生协作工作站操作系统，人机协同新时代",
 };
 
