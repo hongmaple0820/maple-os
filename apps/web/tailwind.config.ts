@@ -8,6 +8,10 @@ const config: Config = {
   ],
   theme: {
     extend: {
+      fontFamily: {
+        sans: ["Inter", "system-ui", "sans-serif"],
+        mono: ["JetBrains Mono", "monospace"],
+      },
       colors: {
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",
@@ -38,11 +42,24 @@ const config: Config = {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
+        success: "hsl(var(--success))",
+        warning: "hsl(var(--warning))",
       },
       borderRadius: {
-        lg: "var(--radius)",
-        md: "calc(var(--radius) - 2px)",
-        sm: "calc(var(--radius) - 4px)",
+        sm: "var(--radius-sm)",
+        md: "var(--radius-md)",
+        lg: "var(--radius-lg)",
+      },
+      boxShadow: {
+        card: "var(--shadow-card)",
+      },
+      fontSize: {
+        "metric": ["40px", { lineHeight: "1", fontWeight: "700" }],
+        "h1": ["32px", { lineHeight: "1.2", fontWeight: "700" }],
+        "h2": ["24px", { lineHeight: "1.3", fontWeight: "600" }],
+        "h3": ["18px", { lineHeight: "1.4", fontWeight: "500" }],
+        "body": ["14px", { lineHeight: "1.5", fontWeight: "400" }],
+        "code": ["13px", { lineHeight: "1.5", fontWeight: "400" }],
       },
     },
   },
