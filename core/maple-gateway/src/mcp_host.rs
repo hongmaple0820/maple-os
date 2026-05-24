@@ -38,6 +38,8 @@ struct ToolRoute {
     raw_name: String,
 }
 
+type WsSink = futures::stream::SplitSink<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, Message>;
+
 struct McpServerInstance {
     name: String,
     transport: McpTransportConfig,
@@ -46,6 +48,8 @@ struct McpServerInstance {
     child: Option<Child>,
     stdin: Option<tokio::process::ChildStdin>,
     stdout_reader: Option<Mutex<BufReader<tokio::process::ChildStdout>>>,
+    ws_writer: Option<Mutex<WsSink>>,
+    stderr_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Drop for McpServerInstance {
@@ -108,9 +112,32 @@ impl McpHostManager {
                     .ok_or_else(|| anyhow::anyhow!("Failed to get stdin"))?;
                 let stdout = child.stdout.take()
                     .ok_or_else(|| anyhow::anyhow!("Failed to get stdout"))?;
+                let stderr = child.stderr.take();
 
                 let mut stdin_writer = stdin;
                 let mut reader = BufReader::new(stdout);
+
+                let stderr_handle = stderr.map(|stderr| {
+                    let server_name = config.name.clone();
+                    tokio::spawn(async move {
+                        let mut stderr_reader = BufReader::new(stderr);
+                        let mut line = String::new();
+                        loop {
+                            match stderr_reader.read_line(&mut line).await {
+                                Ok(0) => break,
+                                Ok(_) => {
+                                    tracing::debug!(
+                                        server = %server_name,
+                                        stderr = %line.trim(),
+                                        "MCP server stderr"
+                                    );
+                                    line.clear();
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                    })
+                });
 
                 let init_request = self.jsonrpc_request("initialize", serde_json::json!({
                     "protocolVersion": "2024-11-05",
@@ -142,6 +169,8 @@ impl McpHostManager {
                     child: Some(child),
                     stdin: Some(stdin_writer),
                     stdout_reader: Some(Mutex::new(reader)),
+                    ws_writer: None,
+                    stderr_handle,
                 }));
             }
             McpTransportConfig::Http { url } => {
@@ -158,6 +187,8 @@ impl McpHostManager {
                     child: None,
                     stdin: None,
                     stdout_reader: None,
+                    ws_writer: None,
+                    stderr_handle: None,
                 }));
             }
             McpTransportConfig::WebSocket { url } => {
@@ -202,6 +233,8 @@ impl McpHostManager {
                     child: None,
                     stdin: None,
                     stdout_reader: None,
+                    ws_writer: Some(Mutex::new(write)),
+                    stderr_handle: None,
                 }));
             }
         }
@@ -276,25 +309,17 @@ impl McpHostManager {
                 let json: Value = resp.json().await.unwrap_or_default();
                 Ok(json["result"].clone())
             }
-            McpTransportConfig::WebSocket { url } => {
-                let (mut ws_stream, _) = tokio_tungstenite::connect_async(url).await
-                    .map_err(|e| anyhow::anyhow!("WS connect for tool call failed: {}", e))?;
-
-                ws_stream.send(Message::Text(serde_json::to_string(&request)?)).await
+            McpTransportConfig::WebSocket { .. } => {
+                let writer_mutex = instance_ref.lock().await.ws_writer.as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("MCP server {} has no WebSocket connection", server_name))?
+                    .clone();
+                
+                let mut writer = writer_mutex.lock().await;
+                writer.send(Message::Text(serde_json::to_string(&request)?)).await
                     .map_err(|e| anyhow::anyhow!("WS send tool call failed: {}", e))?;
+                drop(writer);
 
-                let (write, mut read) = ws_stream.split();
-                let _ = write;
-
-                match Self::read_ws_json_response(&mut read).await {
-                    Some(json) => {
-                        if let Some(error) = json.get("error") {
-                            anyhow::bail!("MCP WS tool error: {}", error["message"].as_str().unwrap_or("unknown"));
-                        }
-                        Ok(json["result"].clone())
-                    }
-                    None => Ok(serde_json::json!({"tool": tool_name, "status": "sent_via_ws_no_response"})),
-                }
+                Ok(serde_json::json!({"tool": tool_name, "status": "sent_via_ws"}))
             }
         }
     }
