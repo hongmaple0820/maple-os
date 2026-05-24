@@ -264,6 +264,13 @@ git push origin feat/your-feature
 | SCALE Engine | [scale-engine](https://github.com/hongmaple0820/scale-engine) | AI Agent governance engine (core dependency) |
 
 > Follow the WeChat official account for latest release announcements and in-depth technical articles. Core authors provide real-time support in the developer group.
+<p align="center">
+  <img src="./docs/images/community-qr.png" alt="MapleOS Community WeChat Group" width="300">
+  <br>
+  <strong>Scan to join "maple-os开源共建" WeChat Group</strong>
+  <br>
+  <sub>QR code valid until May 31</sub>
+</p>
 
 ---
 
