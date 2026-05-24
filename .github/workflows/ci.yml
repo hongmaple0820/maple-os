@@ -54,7 +54,15 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Frontend build check
-        run: pnpm build
+        run: pnpm --filter=mapleos-web build
+
+      - name: Install Playwright browsers
+        run: pnpm exec playwright install chromium --with-deps
+
+      - name: Run E2E tests
+        run: pnpm test:e2e
+        env:
+          CI: true
 
   docker-build:
     name: Docker Build Test
