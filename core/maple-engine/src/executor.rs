@@ -212,30 +212,16 @@ impl NodeExecutor {
                 }
             }
             crate::workflow::WaitStrategy::WaitAny => {
-                let (first_result, remaining) = futures::future::select_all(handles);
-                
-                match first_result {
-                    Ok((node_id, Ok(result), _)) => {
-                        results.insert(node_id.clone(), result.clone());
-                        ctx.context.insert(node_id.clone(), result.clone());
-                        completed_count += 1;
-                        first_completed_id = node_id;
-                        first_completed_result = result;
-                    }
-                    Ok((node_id, Err(e), _)) => {
-                        tracing::warn!(node_id, error = %e, "First parallel node failed");
-                        results.insert(node_id, Value::Null);
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "First parallel task join error");
-                    }
-                }
-
-                for handle in remaining {
-                    match handle.await {
-                        Ok((node_id, Ok(result), _)) => {
-                            results.insert(node_id.clone(), result.clone());
-                            ctx.context.insert(node_id, result);
+                let all_results = futures::future::join_all(handles).await;
+                for result in all_results {
+                    match result {
+                        Ok((node_id, Ok(val), _)) => {
+                            if first_completed_id.is_empty() {
+                                first_completed_id = node_id.clone();
+                                first_completed_result = val.clone();
+                            }
+                            results.insert(node_id.clone(), val.clone());
+                            ctx.context.insert(node_id, val);
                             completed_count += 1;
                         }
                         Ok((node_id, Err(e), _)) => {

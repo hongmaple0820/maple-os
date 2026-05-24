@@ -2,7 +2,9 @@ use axum::Json;
 use axum::Router;
 use axum::extract::ws::WebSocketUpgrade;
 use axum::response::IntoResponse;
+use axum::response::sse::{Event, Sse};
 use axum::routing::{get, post};
+use std::convert::Infallible;
 use axum::middleware::{self, Next};
 
 use maple_engine::workflow::Workflow;
@@ -521,7 +523,8 @@ async fn register_builtin_skills(skill_registry: &SkillRegistry) {
                         });
                         
                         if let Ok(json) = serde_json::from_str::<Value>(&body) {
-                            let items = json["items"].as_array().unwrap_or(&vec![]);
+                            let empty: Vec<Value> = vec![];
+                            let items = json["items"].as_array().unwrap_or(&empty);
                             let results: Vec<Value> = items.iter().map(|item| {
                                 serde_json::json!({
                                     "title": item["title"].as_str().unwrap_or(""),
@@ -587,7 +590,6 @@ async fn register_builtin_skills(skill_registry: &SkillRegistry) {
 
             let result = std::process::Command::new(interpreter)
                 .arg(&file_path)
-                .timeout(std::time::Duration::from_secs(timeout_secs))
                 .output();
 
             let _ = std::fs::remove_file(&file_path);
@@ -858,6 +860,51 @@ async fn skills_handler(
             "description": desc,
         })).collect::<Vec<_>>(),
     }))
+}
+
+async fn chat_stream_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    Json(req): Json<ChatRequest>,
+) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
+    let session_id = req.session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let llm_router = state.llm_router.clone();
+    let session_store = state.session_store.clone();
+    let _ = session_store.save_message(&session_id, "user", &req.message, None, None).await;
+
+    let llm_request = maple_llm::request::LlmRequest::new(req.message.clone(), "default");
+    let complete_result = match llm_router.route(&llm_request).await {
+        Ok(adapter) => {
+            let model_name = adapter.name().to_string();
+            match adapter.complete(llm_request).await {
+                Ok(response) => Some((model_name, response.content)),
+                Err(e) => None,
+            }
+        }
+        Err(_) => None,
+    };
+    let sid = session_id.clone();
+
+    let stream = async_stream::stream! {
+        match complete_result {
+            Some((model_name, content)) => {
+                yield Ok(Event::default().event("meta").data(serde_json::json!({"session_id": sid, "model": model_name}).to_string()));
+                let chunk_size = 8;
+                let chars: Vec<char> = content.chars().collect();
+                for chunk in chars.chunks(chunk_size) {
+                    let token = chunk.iter().collect::<String>();
+                    yield Ok(Event::default().event("token").data(serde_json::json!({"token": token}).to_string()));
+                }
+                let _ = session_store.save_message(&sid, "assistant", &content, None, None).await;
+                yield Ok(Event::default().event("done").data(serde_json::json!({"done": true}).to_string()));
+            }
+            None => {
+                yield Ok(Event::default().event("error").data("LLM unavailable"));
+                yield Ok(Event::default().event("done").data("{\"done\":true}"));
+            }
+        }
+    };
+
+    Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::new().interval(std::time::Duration::from_secs(15)).text("ping"))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1343,13 +1390,12 @@ async fn delete_memory_handler(
 ) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
     let mut store = state.memory_store.lock().await;
     match store.delete(&memory_id).await {
-        Ok(true) => {
+        Ok(_) => {
             Ok(axum::Json(serde_json::json!({
                 "id": memory_id,
                 "status": "deleted",
             })))
         }
-        Ok(false) => Err(axum::http::StatusCode::NOT_FOUND),
         Err(_) => Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR),
     }
 }
@@ -1566,6 +1612,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(health_handler))
         .route("/ws/agents", get(ws_agent_handler))
         .route("/api/chat", post(chat_handler))
+        .route("/api/chat/stream", post(chat_stream_handler))
         .route("/api/models", get(models_handler))
         .route("/api/skills", get(skills_handler))
         .route("/api/kb/index", post(kb_index_handler))
@@ -1584,12 +1631,12 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/workflows/:id/executions", get(get_workflow_executions_handler))
         .route("/api/auth/login", post(login_handler))
         .route("/api/auth/token", post(token_handler))
-        .with_state(state);
+        .with_state(state.clone());
 
     let app = Router::new()
         .merge(rpc_router)
         .merge(state_routes)
-        .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
+        .layer(middleware::from_fn_with_state(state, auth_middleware))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http());
 

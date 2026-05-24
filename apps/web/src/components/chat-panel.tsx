@@ -105,28 +105,65 @@ export function ChatPanel() {
     setMessages((prev) => [...prev, assistantMsg]);
 
     try {
-      const res = await fetch(`/api/maple/api/chat`, {
+      const res = await fetch(`/api/maple/api/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: userMsg.content, agent_id: selectedAgent }),
       });
       if (!res.ok) throw new Error(`请求失败: ${res.status}`);
 
-      const data = await res.json() as { reply: string; session_id: string; tool_calls?: unknown[] };
-      setMessages((prev) => {
-        const updated = [...prev];
-        const last = updated[updated.length - 1];
-        if (last.role === "assistant") {
-          last.content = data.reply ?? "";
-          if (data.tool_calls && Array.isArray(data.tool_calls)) {
-            last.toolCalls = (data.tool_calls as ToolCall[]).map((tc) => ({
-              ...tc,
-              status: tc.status ?? (tc.result ? "completed" : "running"),
-            }));
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error("无响应体");
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let accumulated = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (line.startsWith("event:")) continue;
+          if (line.startsWith("data:")) {
+            const dataStr = line.slice(5).trim();
+            if (!dataStr) continue;
+            try {
+              const parsed = JSON.parse(dataStr);
+              if (parsed.done) {
+                setMessages((prev) => {
+                  const updated = [...prev];
+                  const last = updated[updated.length - 1];
+                  if (last.role === "assistant") last.content = accumulated;
+                  return updated;
+                });
+                break;
+              }
+              if (parsed.token) {
+                accumulated += parsed.token;
+                setMessages((prev) => {
+                  const updated = [...prev];
+                  const last = updated[updated.length - 1];
+                  if (last.role === "assistant") last.content = accumulated;
+                  return updated;
+                });
+              }
+              if (parsed.session_id) {
+                setMessages((prev) => {
+                  const updated = [...prev];
+                  const last = updated[updated.length - 1];
+                  if (last.role === "assistant") last.content = accumulated || "思考中...";
+                  return updated;
+                });
+              }
+            } catch { /* ignore non-JSON data lines */ }
           }
         }
-        return updated;
-      });
+      }
     } catch (err) {
       setMessages((prev) => {
         const updated = [...prev];

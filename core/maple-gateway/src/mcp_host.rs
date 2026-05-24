@@ -310,14 +310,13 @@ impl McpHostManager {
                 Ok(json["result"].clone())
             }
             McpTransportConfig::WebSocket { .. } => {
-                let writer_mutex = instance_ref.lock().await.ws_writer.as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("MCP server {} has no WebSocket connection", server_name))?
-                    .clone();
-                
-                let mut writer = writer_mutex.lock().await;
+                let instance = instance_ref.lock().await;
+                if instance.ws_writer.is_none() {
+                    return Err(anyhow::anyhow!("MCP server {} has no WebSocket connection", server_name));
+                }
+                let mut writer = instance.ws_writer.as_ref().unwrap().lock().await;
                 writer.send(Message::Text(serde_json::to_string(&request)?)).await
                     .map_err(|e| anyhow::anyhow!("WS send tool call failed: {}", e))?;
-                drop(writer);
 
                 Ok(serde_json::json!({"tool": tool_name, "status": "sent_via_ws"}))
             }
