@@ -10,6 +10,7 @@ members = [
     "core/maple-collab",
     "core/maple-rpc",
     "server",
+    "apps/desktop/src-tauri",
 ]
 
 [workspace.package]

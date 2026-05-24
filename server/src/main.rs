@@ -667,51 +667,86 @@ async fn register_builtin_skills(skill_registry: &SkillRegistry) {
         fn execute(&self, config: &Value) -> anyhow::Result<Value> {
             let language = config["language"].as_str().unwrap_or("unknown");
             let code = config["code"].as_str().unwrap_or("");
-            let timeout_secs = config["timeout"].as_u64().unwrap_or(30);
+            let timeout_secs = config["timeout"].as_u64().unwrap_or(10).min(30);
+            let max_output_bytes = 8192;
 
             if code.is_empty() {
                 return Ok(serde_json::json!({"error": "code is required"}));
             }
 
-            let (interpreter, extension) = match language.to_lowercase().as_str() {
-                "python" | "py" => ("python3", ".py"),
-                "javascript" | "js" => ("node", ".js"),
-                "bash" | "sh" => ("bash", ".sh"),
-                "ruby" | "rb" => ("ruby", ".rb"),
-                "perl" | "pl" => ("perl", ".pl"),
-                _ => return Ok(serde_json::json!({
+            match language.to_lowercase().as_str() {
+                "javascript" | "js" => {
+                    let rt = tokio::runtime::Handle::current();
+                    let _guard = rt.enter();
+                    let result = tokio::task::block_in_place(|| {
+                        rt.block_on(async {
+                            let mut child = tokio::process::Command::new("node")
+                                .arg("-e")
+                                .arg(code)
+                                .stdout(std::process::Stdio::piped())
+                                .stderr(std::process::Stdio::piped())
+                                .spawn()?;
+                            let output = tokio::time::timeout(
+                                std::time::Duration::from_secs(timeout_secs),
+                                child.wait_with_output()
+                            ).await;
+                            match output {
+                                Ok(Ok(out)) => Ok(serde_json::json!({
+                                    "language": "javascript",
+                                    "stdout": truncate_str(&String::from_utf8_lossy(&out.stdout), max_output_bytes),
+                                    "stderr": truncate_str(&String::from_utf8_lossy(&out.stderr), max_output_bytes),
+                                    "exit_code": out.status.code().unwrap_or(-1),
+                                })),
+                                Ok(Err(e)) => Ok(serde_json::json!({"language": "javascript", "error": e.to_string()})),
+                                Err(_) => Ok(serde_json::json!({"language": "javascript", "error": "timeout exceeded", "exit_code": -1})),
+                            }
+                        })
+                    });
+                    result
+                }
+                "python" | "py" => {
+                    let rt = tokio::runtime::Handle::current();
+                    let _guard = rt.enter();
+                    let result = tokio::task::block_in_place(|| {
+                        rt.block_on(async {
+                            let temp_dir = std::env::temp_dir();
+                            let file_path = temp_dir.join(format!("mapleos_exec_{}.py", uuid::Uuid::new_v4()));
+                            std::fs::write(&file_path, code)?;
+                            let mut child = tokio::process::Command::new("python3")
+                                .arg(&file_path)
+                                .stdout(std::process::Stdio::piped())
+                                .stderr(std::process::Stdio::piped())
+                                .spawn()?;
+                            let output = tokio::time::timeout(
+                                std::time::Duration::from_secs(timeout_secs),
+                                child.wait_with_output()
+                            ).await;
+                            let _ = std::fs::remove_file(&file_path);
+                            match output {
+                                Ok(Ok(out)) => Ok(serde_json::json!({
+                                    "language": "python",
+                                    "stdout": truncate_str(&String::from_utf8_lossy(&out.stdout), max_output_bytes),
+                                    "stderr": truncate_str(&String::from_utf8_lossy(&out.stderr), max_output_bytes),
+                                    "exit_code": out.status.code().unwrap_or(-1),
+                                })),
+                                Ok(Err(e)) => Ok(serde_json::json!({"language": "python", "error": e.to_string()})),
+                                Err(_) => Ok(serde_json::json!({"language": "python", "error": "timeout exceeded", "exit_code": -1})),
+                            }
+                        })
+                    });
+                    result
+                }
+                _ => Ok(serde_json::json!({
                     "error": format!("Unsupported language: {}", language),
-                    "supported": ["python", "javascript", "bash", "ruby", "perl"],
-                })),
-            };
-
-            let temp_dir = std::env::temp_dir();
-            let filename = format!("mapleos_exec_{}{}", uuid::Uuid::new_v4(), extension);
-            let file_path = temp_dir.join(&filename);
-
-            if let Err(e) = std::fs::write(&file_path, code) {
-                return Ok(serde_json::json!({"error": format!("Failed to write temp file: {}", e)}));
-            }
-
-            let result = std::process::Command::new(interpreter)
-                .arg(&file_path)
-                .output();
-
-            let _ = std::fs::remove_file(&file_path);
-
-            match result {
-                Ok(output) => Ok(serde_json::json!({
-                    "language": language,
-                    "stdout": String::from_utf8_lossy(&output.stdout).to_string(),
-                    "stderr": String::from_utf8_lossy(&output.stderr).to_string(),
-                    "exit_code": output.status.code().unwrap_or(-1),
-                })),
-                Err(e) => Ok(serde_json::json!({
-                    "language": language,
-                    "error": e.to_string(),
+                    "supported": ["javascript", "python"],
+                    "hint": "WASM runtime coming in Phase 3",
                 })),
             }
         }
+    }
+
+    fn truncate_str(s: &str, max: usize) -> String {
+        if s.len() <= max { s.to_string() } else { s[..max].to_string() + "...[truncated]" }
     }
 
     struct FileOpsSkill;
