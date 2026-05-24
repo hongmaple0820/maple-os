@@ -264,8 +264,13 @@ git push origin feat/your-feature
 | SCALE Engine | [scale-engine](https://github.com/hongmaple0820/scale-engine) | AI Agent 治理引擎（核心依赖） |
 
 > 扫码关注微信公众号，获取最新版本公告和技术深度文章。开发者群内有核心作者实时答疑。
-<img width="1222" height="1715" alt="eac49e93d68e98579cb5c2318923d128" src="https://github.com/user-attachments/assets/e5c2e39a-8637-4d24-91da-623edadcd4c1" />
-
+<p align="center">
+  <img src="./docs/images/community-qr.png" alt="MapleOS Community WeChat Group" width="300">
+  <br>
+  <strong>Scan to join "maple-os开源共建" WeChat Group</strong>
+  <br>
+  <sub>QR code valid until May 31</sub>
+</p>
 
 ---
 
