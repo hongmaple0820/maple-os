@@ -7,6 +7,8 @@ import { KnowledgeManager } from "@/components/knowledge-manager";
 import { AgentManager } from "@/components/agent-manager";
 import { ScaleEngineManager } from "@/components/scale-engine-manager";
 import { CommandPalette } from "@/components/command-palette";
+import { SettingsPage } from "@/components/settings-page";
+import { PluginsPage } from "@/components/plugins-page";
 import { Badge, Button } from "@mapleos/ui";
 import { rpcCall, mapleApi } from "@/lib/api";
 
@@ -147,8 +149,8 @@ export default function Home() {
           {activeNav === "agents" && <AgentManager />}
           {activeNav === "knowledge" && <KnowledgeManager />}
           {activeNav === "scale" && <ScaleEngineManager />}
-          {activeNav === "plugins" && <PlaceholderView title="插件市场" desc="技能 / MCP / CLI 工具 / 插件市场（开发中）" />}
-          {activeNav === "settings" && <PlaceholderView title="设置" desc="模型 / 同步 / 安全 / 团队（开发中）" />}
+          {activeNav === "plugins" && <PluginsPage />}
+          {activeNav === "settings" && <SettingsPage />}
         </main>
       </div>
 
