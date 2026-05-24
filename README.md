@@ -264,6 +264,7 @@ git push origin feat/your-feature
 | SCALE Engine | [scale-engine](https://github.com/hongmaple0820/scale-engine) | AI Agent 治理引擎（核心依赖） |
 
 > 扫码关注微信公众号，获取最新版本公告和技术深度文章。开发者群内有核心作者实时答疑。
+![Uploading eac49e93d68e98579cb5c2318923d128.png…]()
 
 ---
 
