@@ -34,6 +34,7 @@ use maple_kb::memory::{MemoryStore, MemoryEntry, MemoryType};
 use maple_kb::prompt_version::PromptVersionManager;
 use maple_engine::task_queue::TaskQueueService;
 use maple_engine::scheduler::{Scheduler, ScheduledJob};
+use maple_gateway::mcp_host::McpHostManager;
 use maple_llm::embedding::{Embedder, OllamaEmbedder, FallbackEmbedder};
 use maple_collab::workspace::WorkspaceManager;
 use serde::{Deserialize, Serialize};
@@ -62,6 +63,7 @@ pub struct AppState {
     pub prompt_version_mgr: Arc<PromptVersionManager>,
     pub task_queue: Arc<TaskQueueService>,
     pub scheduler: Arc<Scheduler>,
+    pub mcp_host: Arc<McpHostManager>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -752,21 +754,34 @@ async fn register_builtin_skills(skill_registry: &SkillRegistry) {
     struct FileOpsSkill;
     impl Skill for FileOpsSkill {
         fn id(&self) -> &str { "file_ops" }
-        fn description(&self) -> &str { "Read, write, and list files" }
+        fn description(&self) -> &str { "Read, write, and list files within workspace" }
         fn execute(&self, config: &Value) -> anyhow::Result<Value> {
             let operation = config["operation"].as_str().unwrap_or("list");
             let path = config["path"].as_str().unwrap_or(".");
             let content = config["content"].as_str();
+            let max_read_bytes = 65536;
+
+            let workspace_dir = std::env::var("MAPLEOS_WORKSPACE_DIR")
+                .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default().to_string_lossy().to_string());
+            let resolved = std::path::Path::new(path);
+            if resolved.is_absolute() && !resolved.starts_with(&workspace_dir) {
+                return Ok(serde_json::json!({"error": "path outside workspace", "workspace": workspace_dir}));
+            }
+            let safe_path = if resolved.is_absolute() { resolved.to_path_buf() } else { std::path::Path::new(&workspace_dir).join(resolved) };
 
             match operation {
                 "read" => {
-                    match std::fs::read_to_string(path) {
-                        Ok(data) => Ok(serde_json::json!({
-                            "operation": "read",
-                            "path": path,
-                            "content": data,
-                            "size": data.len(),
-                        })),
+                    match std::fs::read_to_string(&safe_path) {
+                        Ok(data) => {
+                            let size = data.len();
+                            let truncated = if size > max_read_bytes { data[..max_read_bytes].to_string() + "...[truncated]" } else { data };
+                            Ok(serde_json::json!({
+                                "operation": "read",
+                                "path": path,
+                                "content": truncated,
+                                "size": size,
+                            }))
+                        }
                         Err(e) => Ok(serde_json::json!({
                             "operation": "read",
                             "path": path,
@@ -776,7 +791,7 @@ async fn register_builtin_skills(skill_registry: &SkillRegistry) {
                 }
                 "write" => {
                     let data = content.unwrap_or("");
-                    match std::fs::write(path, data) {
+                    match std::fs::write(&safe_path, data) {
                         Ok(_) => Ok(serde_json::json!({
                             "operation": "write",
                             "path": path,
@@ -791,7 +806,7 @@ async fn register_builtin_skills(skill_registry: &SkillRegistry) {
                     }
                 }
                 "list" => {
-                    match std::fs::read_dir(path) {
+                    match std::fs::read_dir(&safe_path) {
                         Ok(entries) => {
                             let files: Vec<serde_json::Value> = entries
                                 .filter_map(|e| e.ok())
@@ -837,12 +852,13 @@ async fn register_builtin_skills(skill_registry: &SkillRegistry) {
     struct HttpRequestSkill;
     impl Skill for HttpRequestSkill {
         fn id(&self) -> &str { "http_request" }
-        fn description(&self) -> &str { "Make HTTP requests" }
+        fn description(&self) -> &str { "Make HTTP requests with timeout and size limits" }
         fn execute(&self, config: &Value) -> anyhow::Result<Value> {
             let url = config["url"].as_str().unwrap_or("");
             let method = config["method"].as_str().unwrap_or("GET");
             let headers = config["headers"].as_object();
             let body = config["body"].as_str();
+            let max_response_bytes = 32768;
             
             if url.is_empty() {
                 return Ok(serde_json::json!({"error": "url is required"}));
@@ -884,11 +900,14 @@ async fn register_builtin_skills(skill_registry: &SkillRegistry) {
                     let body_text = tokio::task::block_in_place(|| {
                         rt.block_on(async { resp.text().await.unwrap_or_default() })
                     });
+                    let body_size = body_text.len();
+                    let truncated = if body_size > max_response_bytes { body_text[..max_response_bytes].to_string() + "...[truncated]" } else { body_text };
                     Ok(serde_json::json!({
                         "url": url,
                         "method": method,
                         "status": status,
-                        "body": body_text,
+                        "body": truncated,
+                        "body_size": body_size,
                     }))
                 }
                 Err(e) => Ok(serde_json::json!({
@@ -1762,6 +1781,7 @@ async fn main() -> anyhow::Result<()> {
         prompt_version_mgr: prompt_version_mgr.clone(),
         task_queue: task_queue.clone(),
         scheduler: scheduler.clone(),
+        mcp_host: Arc::new(McpHostManager::new()),
     });
 
     let scheduler_wf = workflow_executor.clone();
@@ -1829,6 +1849,8 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn register_business_handlers(dispatcher: &Arc<RpcDispatcher>, state: Arc<AppState>) {
+    use maple_engine::skill_registry::Skill;
+    use serde_json::Value;
     dispatcher.register_default_handlers().await;
 
     let start_time = std::time::Instant::now();
@@ -2276,42 +2298,108 @@ async fn register_business_handlers(dispatcher: &Arc<RpcDispatcher>, state: Arc<
     }).await;
 
     let s = state.clone();
+struct McpSkillProxy {
+        id: String,
+        description: String,
+        server_name: String,
+        tool_name: String,
+        mcp_host: Arc<McpHostManager>,
+    }
+    impl Skill for McpSkillProxy {
+        fn id(&self) -> &str { &self.id }
+        fn description(&self) -> &str { &self.description }
+        fn execute(&self, config: &Value) -> anyhow::Result<Value> {
+            let rt = tokio::runtime::Handle::current();
+            let _guard = rt.enter();
+            tokio::task::block_in_place(|| {
+                rt.block_on(async {
+                    self.mcp_host.call_tool(&self.server_name, &self.tool_name, config.clone()).await
+                })
+            })
+        }
+    }
+
     dispatcher.register("skill.install", move |params: Option<serde_json::Value>| {
         let registry = s.skill_registry.clone();
+        let mcp_host_install = s.mcp_host.clone();
         async move {
             let p = match params {
                 Some(v) => v,
-                None => return Ok(serde_json::json!({"error": "missing params: skill_id"})),
+                None => return Ok(serde_json::json!({"error": "missing params"})),
             };
             let skill_id = p["skill_id"].as_str().unwrap_or("").to_string();
             if skill_id.is_empty() {
                 return Ok(serde_json::json!({"error": "skill_id is required"}));
             }
 
+            if let Some(mcp_config) = p.get("mcp_config") {
+                let mcp_host = mcp_host_install.clone();
+                let config: maple_gateway::mcp_host::McpServerConfig = serde_json::from_value(mcp_config.clone())
+                    .unwrap_or_else(|_| maple_gateway::mcp_host::McpServerConfig {
+                        name: skill_id.clone(),
+                        transport: maple_gateway::mcp_host::McpTransportConfig::Stdio {
+                            command: vec!["node".to_string(), p["command"].as_str().unwrap_or("").to_string()],
+                        },
+                        description: None,
+                        env: None,
+                    });
+
+                if let Err(e) = mcp_host.start_server(&config).await {
+                    return Ok(serde_json::json!({"skill_id": skill_id, "status": "error", "error": e.to_string()}));
+                }
+                let all_tools = mcp_host.list_tools();
+                let server_tools: Vec<(String, String)> = all_tools.into_iter().filter(|(server, _)| server == &skill_id).collect();
+                for (server, tool_name) in &server_tools {
+                    let proxy_id = format!("{}:{}", server, tool_name);
+                    registry.register(Box::new(McpSkillProxy {
+                        id: proxy_id,
+                        description: format!("MCP tool: {}", tool_name),
+                        server_name: skill_id.clone(),
+                        tool_name: tool_name.clone(),
+                        mcp_host: mcp_host.clone(),
+                    })).await;
+                }
+
+                return Ok(serde_json::json!({
+                    "skill_id": skill_id,
+                    "status": "installed",
+                    "tools_count": server_tools.len(),
+                    "tools": server_tools.iter().map(|(_, t)| t.clone()).collect::<Vec<_>>(),
+                }));
+            }
+
             struct PlaceholderSkill { id: String }
             impl maple_engine::skill_registry::Skill for PlaceholderSkill {
                 fn id(&self) -> &str { &self.id }
-                fn description(&self) -> &str { "Placeholder - awaiting MCP server connection" }
+                fn description(&self) -> &str { "Placeholder skill" }
                 fn execute(&self, config: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
                     Ok(serde_json::json!({"skill_id": self.id, "status": "placeholder", "input": config}))
                 }
             }
 
             registry.register(Box::new(PlaceholderSkill { id: skill_id.clone() })).await;
-            Ok(serde_json::json!({"skill_id": skill_id, "status": "installed"}))
+            Ok(serde_json::json!({"skill_id": skill_id, "status": "installed_placeholder"}))
         }
     }).await;
 
     let s = state.clone();
     dispatcher.register("skill.uninstall", move |params: Option<serde_json::Value>| {
         let registry = s.skill_registry.clone();
+        let mcp_host = s.mcp_host.clone();
         async move {
             let p = match params {
                 Some(v) => v,
-                None => return Ok(serde_json::json!({"error": "missing params: skill_id"})),
+                None => return Ok(serde_json::json!({"error": "missing params"})),
             };
             let skill_id = p["skill_id"].as_str().unwrap_or("").to_string();
+            mcp_host.stop_server(&skill_id).await.ok();
             registry.unregister(&skill_id).await;
+            let all_skills = registry.list().await;
+            for (skill_id_proxy, _) in &all_skills {
+                if skill_id_proxy.starts_with(&format!("{}:", skill_id)) {
+                    registry.unregister(skill_id_proxy).await;
+                }
+            }
             Ok(serde_json::json!({"skill_id": skill_id, "status": "uninstalled"}))
         }
     }).await;

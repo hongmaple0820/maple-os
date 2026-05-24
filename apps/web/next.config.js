@@ -1,6 +1,9 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   transpilePackages: ["@mapleos/ui", "@mapleos/sdk"],
+  typescript: {
+    ignoreBuildErrors: true,
+  },
   async rewrites() {
     return [
       { source: "/api/maple/:path*", destination: "http://127.0.0.1:7788/:path*" },

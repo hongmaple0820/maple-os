@@ -1,11 +1,14 @@
 use serde_json::Value;
 use std::collections::HashSet;
+use automerge::AutoCommit;
 
-pub struct CrdtManager;
+pub struct CrdtManager {
+    doc: AutoCommit,
+}
 
 impl CrdtManager {
     pub fn new() -> Self {
-        Self
+        Self { doc: AutoCommit::new() }
     }
 
     pub fn merge(local: &Value, remote: &Value) -> Value {
@@ -72,6 +75,37 @@ impl CrdtManager {
             other => serde_json::to_string(other).unwrap_or_default(),
         }
     }
+
+    pub fn create_automerge_doc(&mut self, key: &str, value: &Value) {
+        use automerge::transaction::Transactable;
+        self.doc.put(automerge::ROOT, key, Self::json_to_automerge_value(value)).ok();
+    }
+
+    pub fn get_automerge_doc(&mut self) -> Vec<u8> {
+        self.doc.save()
+    }
+
+    pub fn merge_automerge_doc(&mut self, remote: &[u8]) {
+        self.doc.load_incremental(remote).ok();
+    }
+
+    fn json_to_automerge_value(v: &Value) -> automerge::ScalarValue {
+        match v {
+            Value::String(s) => automerge::ScalarValue::Str(s.clone().into()),
+            Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    automerge::ScalarValue::Int(i)
+                } else if let Some(u) = n.as_u64() {
+                    automerge::ScalarValue::Uint(u)
+                } else {
+                    automerge::ScalarValue::F64(n.as_f64().unwrap_or(0.0))
+                }
+            }
+            Value::Bool(b) => automerge::ScalarValue::Boolean(*b),
+            Value::Null => automerge::ScalarValue::Null,
+            _ => automerge::ScalarValue::Null,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -113,5 +147,20 @@ mod tests {
         let remote = json!("new");
         let result = CrdtManager::merge(&local, &remote);
         assert_eq!(result, json!("new"));
+    }
+
+    #[test]
+    fn test_automerge_doc_sync() {
+        let mut local = CrdtManager::new();
+        local.create_automerge_doc("version", &json!("0.1.0"));
+        local.create_automerge_doc("count", &json!(42));
+        let local_bytes = local.get_automerge_doc();
+
+        let mut remote = CrdtManager::new();
+        remote.create_automerge_doc("name", &json!("MapleOS"));
+        let remote_bytes = remote.get_automerge_doc();
+
+        local.merge_automerge_doc(&remote_bytes);
+        assert!(local.get_automerge_doc().len() > 0);
     }
 }
