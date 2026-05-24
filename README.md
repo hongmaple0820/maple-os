@@ -265,7 +265,7 @@ git push origin feat/your-feature
 
 > 扫码关注微信公众号，获取最新版本公告和技术深度文章。开发者群内有核心作者实时答疑。
 <p align="center">
-  <img src="./docs/images/community-qr.png" alt="MapleOS Community WeChat Group" width="300">
+  <img src="./community-qr.png" alt="MapleOS Community WeChat Group" width="300">
   <br>
   <strong>Scan to join "maple-os开源共建" WeChat Group</strong>
   <br>
