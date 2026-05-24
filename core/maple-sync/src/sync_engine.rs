@@ -3,7 +3,7 @@ use crate::crdt::CrdtManager;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Mutex};
 use anyhow::Result;
 
 const SYNC_REMOTE_PATH: &str = "/mapleos/sync/state.json";
@@ -37,6 +37,7 @@ pub struct SyncEngine {
     sync_interval_secs: u64,
     pending_changes: Arc<RwLock<Vec<String>>>,
     meta: Arc<RwLock<SyncMeta>>,
+    sync_lock: Arc<Mutex<()>>,
 }
 
 impl SyncEngine {
@@ -52,7 +53,32 @@ impl SyncEngine {
             sync_interval_secs,
             pending_changes: Arc::new(RwLock::new(Vec::new())),
             meta: Arc::new(RwLock::new(meta)),
+            sync_lock: Arc::new(Mutex::new(())),
         }
+    }
+
+    pub async fn load_meta(&mut self) -> Result<()> {
+        let Some(dav) = &self.webdav else {
+            return Ok(());
+        };
+
+        if !dav.exists(SYNC_META_PATH).await? {
+            return Ok(());
+        }
+
+        let data = dav.get(SYNC_META_PATH).await?;
+        let loaded_meta: SyncMeta = serde_json::from_slice(&data)?;
+        
+        let mut meta = self.meta.write().await;
+        *meta = loaded_meta;
+        
+        tracing::info!(
+            last_sync_version = meta.last_sync_version,
+            local_version = meta.local_version,
+            "Loaded sync metadata from remote"
+        );
+        
+        Ok(())
     }
 
     pub async fn write(&self, key: &str, value: Value) -> Result<()> {
@@ -76,6 +102,8 @@ impl SyncEngine {
     }
 
     pub async fn full_sync(&self) -> Result<SyncResult> {
+        let _lock = self.sync_lock.lock().await;
+        
         let Some(dav) = &self.webdav else {
             return Ok(SyncResult {
                 pushed_count: 0,
@@ -89,13 +117,21 @@ impl SyncEngine {
             std::mem::take(&mut *p)
         };
 
+        if pending_keys.is_empty() {
+            return Ok(SyncResult {
+                pushed_count: 0,
+                pulled_count: 0,
+                conflicts: 0,
+            });
+        }
+
         let remote_state = match Self::fetch_remote(dav).await {
             Ok(Some(state)) => Some(state),
             Ok(None) => None,
             Err(e) => {
                 tracing::warn!("Sync pull failed: {}", e);
                 let mut p = self.pending_changes.write().await;
-            p.extend(pending_keys.clone());
+                p.extend(pending_keys.clone());
                 return Ok(SyncResult {
                     pushed_count: 0,
                     pulled_count: 0,
@@ -122,26 +158,35 @@ impl SyncEngine {
         let pushed_count = pending_keys.len();
 
         let payload = serde_json::to_vec(&Value::Object(merged_state))?;
-        if let Err(e) = dav.put(SYNC_REMOTE_PATH, &payload).await {
-            tracing::warn!("Sync push failed: {}", e);
-            let mut p = self.pending_changes.write().await;
-            p.extend(pending_keys);
-        } else {
-            tracing::info!(
-                pushed = pushed_count,
-                pulled = pulled_count,
-                conflicts,
-                "Sync completed"
-            );
-        }
+        match dav.put(SYNC_REMOTE_PATH, &payload).await {
+            Ok(()) => {
+                tracing::info!(
+                    pushed = pushed_count,
+                    pulled = pulled_count,
+                    conflicts,
+                    "Sync completed"
+                );
 
-        {
-            let mut meta = self.meta.write().await;
-            meta.last_sync_version = meta.local_version;
-            meta.last_sync_at = chrono::Utc::now();
-        }
+                {
+                    let mut meta = self.meta.write().await;
+                    meta.last_sync_version = meta.local_version;
+                    meta.last_sync_at = chrono::Utc::now();
+                }
 
-        let _ = self.persist_meta(dav).await;
+                let _ = self.persist_meta(dav).await;
+            }
+            Err(e) => {
+                tracing::warn!("Sync push failed: {}", e);
+                let mut p = self.pending_changes.write().await;
+                p.extend(pending_keys);
+                
+                return Ok(SyncResult {
+                    pushed_count: 0,
+                    pulled_count,
+                    conflicts,
+                });
+            }
+        }
 
         Ok(SyncResult {
             pushed_count,
@@ -218,10 +263,21 @@ impl SyncEngine {
                 ConflictResolution::LocalWins
             }
             (Value::String(ls), Value::String(rs)) => {
-                if ls.len() > rs.len() {
+                if ls == rs {
                     ConflictResolution::LocalWins
-                } else {
+                } else if ls.contains(rs) {
+                    ConflictResolution::LocalWins
+                } else if rs.contains(ls) {
                     ConflictResolution::RemoteWins
+                } else {
+                    ConflictResolution::Merged
+                }
+            }
+            (Value::Bool(lb), Value::Bool(rb)) => {
+                if *rb {
+                    ConflictResolution::RemoteWins
+                } else {
+                    ConflictResolution::LocalWins
                 }
             }
             _ => ConflictResolution::LocalWins,

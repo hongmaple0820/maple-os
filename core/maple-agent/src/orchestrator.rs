@@ -1,6 +1,8 @@
 use crate::registry::{AgentRegistry, AgentRole};
 use crate::delegate::DelegateEngine;
 use std::sync::Arc;
+use dashmap::DashMap;
+use tokio::sync::watch;
 
 use anyhow::Result;
 
@@ -23,6 +25,7 @@ pub struct Orchestrator {
     registry: Arc<AgentRegistry>,
     delegate: Arc<DelegateEngine>,
     max_sub_tasks: usize,
+    approval_channels: Arc<DashMap<String, watch::Sender<bool>>>,
 }
 
 impl Orchestrator {
@@ -31,6 +34,7 @@ impl Orchestrator {
             registry,
             delegate,
             max_sub_tasks: 8,
+            approval_channels: Arc::new(DashMap::new()),
         }
     }
 
@@ -229,7 +233,23 @@ impl Orchestrator {
         Ok(format!("Plan execution completed with {} steps:\n{}", final_results.len(), final_results.join("\n\n---\n\n")))
     }
 
-    pub async fn resolve_approval(&self, _approval_id: &str, _approved: bool) -> bool {
-        false
+    pub async fn resolve_approval(&self, approval_id: &str, approved: bool) -> bool {
+        if let Some(entry) = self.approval_channels.get(approval_id) {
+            let _ = entry.send(approved);
+            true
+        } else {
+            tracing::warn!(approval_id, "Approval channel not found");
+            false
+        }
+    }
+
+    pub fn create_approval_channel(&self, approval_id: &str) -> watch::Receiver<bool> {
+        let (tx, rx) = watch::channel(false);
+        self.approval_channels.insert(approval_id.to_string(), tx);
+        rx
+    }
+
+    pub fn remove_approval_channel(&self, approval_id: &str) {
+        self.approval_channels.remove(approval_id);
     }
 }

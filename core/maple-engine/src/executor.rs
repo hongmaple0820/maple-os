@@ -165,40 +165,93 @@ impl NodeExecutor {
             .filter_map(|id| self.find_node(id).cloned())
             .collect();
 
-        let mut sub_execs: Vec<(String, WorkflowExecution)> = Vec::new();
+        let context_snapshot: HashMap<String, Value> = ctx.context.clone();
+        let mut handles = Vec::new();
+
         for node in &nodes_to_execute {
-            let context_snapshot: HashMap<String, Value> = ctx.context.clone();
+            let node_id = node.id.clone();
             let mut sub_exec = WorkflowExecution::new(
-                &node.id,
+                &node_id,
                 0,
-                Value::Object(context_snapshot.into_iter().collect()),
+                Value::Object(context_snapshot.clone().into_iter().collect()),
             );
             sub_exec.set_running();
-            sub_execs.push((node.id.clone(), sub_exec));
+
+            let executor = self.clone();
+            let node_clone = node.clone();
+
+            handles.push(tokio::spawn(async move {
+                let result = executor.execute(&node_clone, &mut sub_exec).await;
+                (node_id, result, sub_exec)
+            }));
         }
 
+        let mut results: serde_json::Map<String, Value> = serde_json::Map::new();
         let mut completed_count = 0;
-        let total = sub_execs.len();
+        let total = nodes_to_execute.len();
+        let mut first_completed_id = String::new();
+        let mut first_completed_result = Value::Null;
 
-        for (node_id, sub_exec) in &mut sub_execs {
-            if let Some(node) = self.find_node(node_id) {
-                match self.execute(node, sub_exec).await {
-                    Ok(result) => {
-                        ctx.context.insert(node_id.clone(), result);
+        match wait_strategy {
+            crate::workflow::WaitStrategy::WaitAll => {
+                for handle in handles {
+                    match handle.await {
+                        Ok((node_id, Ok(result), _)) => {
+                            results.insert(node_id.clone(), result.clone());
+                            ctx.context.insert(node_id, result);
+                            completed_count += 1;
+                        }
+                        Ok((node_id, Err(e), _)) => {
+                            tracing::warn!(node_id, error = %e, "Parallel node failed");
+                            results.insert(node_id, Value::Null);
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Parallel task join error");
+                        }
+                    }
+                }
+            }
+            crate::workflow::WaitStrategy::WaitAny => {
+                let (first_result, remaining) = futures::future::select_all(handles);
+                
+                match first_result {
+                    Ok((node_id, Ok(result), _)) => {
+                        results.insert(node_id.clone(), result.clone());
+                        ctx.context.insert(node_id.clone(), result.clone());
                         completed_count += 1;
+                        first_completed_id = node_id;
+                        first_completed_result = result;
+                    }
+                    Ok((node_id, Err(e), _)) => {
+                        tracing::warn!(node_id, error = %e, "First parallel node failed");
+                        results.insert(node_id, Value::Null);
                     }
                     Err(e) => {
-                        tracing::warn!(node_id, error = %e, "Parallel node failed");
+                        tracing::warn!(error = %e, "First parallel task join error");
+                    }
+                }
+
+                for handle in remaining {
+                    match handle.await {
+                        Ok((node_id, Ok(result), _)) => {
+                            results.insert(node_id.clone(), result.clone());
+                            ctx.context.insert(node_id, result);
+                            completed_count += 1;
+                        }
+                        Ok((node_id, Err(e), _)) => {
+                            tracing::warn!(node_id, error = %e, "Parallel node failed");
+                            results.insert(node_id, Value::Null);
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Parallel task join error");
+                        }
                     }
                 }
             }
         }
 
-        let mut results: serde_json::Map<String, Value> = serde_json::Map::new();
         for node_id in node_ids {
-            if let Some(node_output) = ctx.context.get(node_id) {
-                results.insert(node_id.clone(), node_output.clone());
-            } else {
+            if !results.contains_key(node_id) {
                 results.insert(node_id.clone(), Value::Null);
             }
         }
@@ -208,11 +261,9 @@ impl NodeExecutor {
                 Ok(Value::Object(results))
             }
             crate::workflow::WaitStrategy::WaitAny => {
-                let first_key = results.iter().find(|(_, v)| !v.is_null()).map(|(k, _)| k.as_str()).unwrap_or("");
-                let first_result = results.get(first_key).cloned().unwrap_or(Value::Null);
                 Ok(serde_json::json!({
-                    "first_completed": first_key,
-                    "result": first_result,
+                    "first_completed": first_completed_id,
+                    "result": first_completed_result,
                     "all": Value::Object(results),
                     "completed": completed_count,
                     "total": total,
@@ -372,8 +423,9 @@ impl NodeExecutor {
             }
         }
 
+        let prefix = format!("{}::", workflow_id);
         let sub_nodes: Vec<WorkflowNode> = self.workflow_nodes.iter()
-            .filter(|n| n.id.starts_with(&format!("{}_", workflow_id)))
+            .filter(|n| n.id.starts_with(&prefix) || n.id == workflow_id)
             .cloned()
             .collect();
 
@@ -426,7 +478,10 @@ impl NodeExecutor {
         body_template: Option<&str>,
         context: &HashMap<String, Value>,
     ) -> Result<Value> {
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .build()?;
         let resolved_url = resolve_template(url, context);
         let resolved_body = body_template.map(|t| resolve_template(t, context));
 
@@ -612,30 +667,83 @@ fn build_topological_order(nodes: &[WorkflowNode]) -> Result<Vec<String>> {
 }
 
 fn eval_condition(expression: &str, context: &HashMap<String, Value>) -> bool {
-    if expression.starts_with("{{") && expression.ends_with("}}") {
-        let path = &expression[2..expression.len()-2].trim();
+    let expr = expression.trim();
+
+    if expr.starts_with("{{") && expr.ends_with("}}") {
+        let path = &expr[2..expr.len()-2].trim();
         return context.get(path as &str).map_or(false, |v| !v.is_null());
     }
 
-    if expression.contains("==") {
-        let parts: Vec<&str> = expression.splitn(2, "==").collect();
-        if parts.len() == 2 {
-            let left = resolve_template(parts[0].trim(), context);
-            let right = resolve_template(parts[1].trim(), context);
-            return left == right;
-        }
+    if let Some(idx) = expr.find("&&") {
+        let left = &expr[..idx];
+        let right = &expr[idx + 2..];
+        return eval_condition(left, context) && eval_condition(right, context);
     }
 
-    if expression.contains("!=") {
-        let parts: Vec<&str> = expression.splitn(2, "!=").collect();
-        if parts.len() == 2 {
-            let left = resolve_template(parts[0].trim(), context);
-            let right = resolve_template(parts[1].trim(), context);
-            return left != right;
-        }
+    if let Some(idx) = expr.find("||") {
+        let left = &expr[..idx];
+        let right = &expr[idx + 2..];
+        return eval_condition(left, context) || eval_condition(right, context);
     }
 
-    false
+    if expr.starts_with('(') && expr.ends_with(')') {
+        return eval_condition(&expr[1..expr.len()-1], context);
+    }
+
+    if let Some(idx) = expr.find(">=") {
+        let left = resolve_template(expr[..idx].trim(), context);
+        let right = resolve_template(expr[idx + 2..].trim(), context);
+        if let (Ok(l), Ok(r)) = (left.parse::<f64>(), right.parse::<f64>()) {
+            return l >= r;
+        }
+        return left >= right;
+    }
+
+    if let Some(idx) = expr.find("<=") {
+        let left = resolve_template(expr[..idx].trim(), context);
+        let right = resolve_template(expr[idx + 2..].trim(), context);
+        if let (Ok(l), Ok(r)) = (left.parse::<f64>(), right.parse::<f64>()) {
+            return l <= r;
+        }
+        return left <= right;
+    }
+
+    if let Some(idx) = expr.find("!=") {
+        let left = resolve_template(expr[..idx].trim(), context);
+        let right = resolve_template(expr[idx + 2..].trim(), context);
+        return left != right;
+    }
+
+    if let Some(idx) = expr.find("==") {
+        let left = resolve_template(expr[..idx].trim(), context);
+        let right = resolve_template(expr[idx + 2..].trim(), context);
+        return left == right;
+    }
+
+    if let Some(idx) = expr.find('>') {
+        let left = resolve_template(expr[..idx].trim(), context);
+        let right = resolve_template(expr[idx + 1..].trim(), context);
+        if let (Ok(l), Ok(r)) = (left.parse::<f64>(), right.parse::<f64>()) {
+            return l > r;
+        }
+        return left > right;
+    }
+
+    if let Some(idx) = expr.find('<') {
+        let left = resolve_template(expr[..idx].trim(), context);
+        let right = resolve_template(expr[idx + 1..].trim(), context);
+        if let (Ok(l), Ok(r)) = (left.parse::<f64>(), right.parse::<f64>()) {
+            return l < r;
+        }
+        return left < right;
+    }
+
+    let resolved = resolve_template(expr, context);
+    match resolved.as_str() {
+        "true" | "1" | "yes" => true,
+        "false" | "0" | "no" | "" => false,
+        _ => context.get(expr).map_or(false, |v| !v.is_null()),
+    }
 }
 
 fn resolve_template(template: &str, context: &HashMap<String, Value>) -> String {

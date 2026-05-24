@@ -47,6 +47,7 @@ hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
 async-stream = "0.3"
+urlencoding = "2"
 
 maple-engine = { path = "core/maple-engine" }
 maple-llm = { path = "core/maple-llm" }

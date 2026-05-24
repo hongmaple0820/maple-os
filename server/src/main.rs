@@ -3,6 +3,7 @@ use axum::Router;
 use axum::extract::ws::WebSocketUpgrade;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
+use axum::middleware::{self, Next};
 
 use maple_engine::workflow::Workflow;
 use maple_engine::executor::{WorkflowExecutor, NodeExecutor};
@@ -38,6 +39,7 @@ use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
 pub struct AppState {
+    pub config: ServerConfig,
     pub db: sqlx::SqlitePool,
     pub event_bus: Arc<EventBus>,
     pub llm_router: Arc<LlmRouter>,
@@ -412,8 +414,8 @@ async fn run_migrations(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn build_llm_router() -> Arc<LlmRouter> {
-    let usage_tracker = Arc::new(UsageTracker::new(50.0));
+fn build_llm_router(config: &ServerConfig) -> Arc<LlmRouter> {
+    let usage_tracker = Arc::new(UsageTracker::new(config.usage_limit_usd));
     let mut router = LlmRouter::new(usage_tracker);
 
     if let Ok(base_url) = std::env::var("OLLAMA_BASE_URL") {
@@ -486,10 +488,66 @@ async fn register_builtin_skills(skill_registry: &SkillRegistry) {
         fn description(&self) -> &str { "Search the web for information" }
         fn execute(&self, config: &Value) -> anyhow::Result<Value> {
             let query = config["query"].as_str().unwrap_or("");
+            let num_results = config["num_results"].as_u64().unwrap_or(5);
+            
+            if query.is_empty() {
+                return Ok(serde_json::json!({"error": "query is required"}));
+            }
+
+            let search_api_key = std::env::var("SEARCH_API_KEY").ok();
+            let search_engine_id = std::env::var("SEARCH_ENGINE_ID").ok();
+
+            if let (Some(api_key), Some(engine_id)) = (search_api_key, search_engine_id) {
+                let rt = tokio::runtime::Handle::current();
+                let _guard = rt.enter();
+                
+                let url = format!(
+                    "https://www.googleapis.com/customsearch/v1?key={}&cx={}&q={}&num={}",
+                    api_key, engine_id, urlencoding::encode(query), num_results
+                );
+
+                let client = reqwest::Client::new();
+                match tokio::task::block_in_place(|| {
+                    rt.block_on(async {
+                        client.get(&url)
+                            .timeout(std::time::Duration::from_secs(10))
+                            .send()
+                            .await
+                    })
+                }) {
+                    Ok(resp) => {
+                        let body = tokio::task::block_in_place(|| {
+                            rt.block_on(async { resp.text().await.unwrap_or_default() })
+                        });
+                        
+                        if let Ok(json) = serde_json::from_str::<Value>(&body) {
+                            let items = json["items"].as_array().unwrap_or(&vec![]);
+                            let results: Vec<Value> = items.iter().map(|item| {
+                                serde_json::json!({
+                                    "title": item["title"].as_str().unwrap_or(""),
+                                    "url": item["link"].as_str().unwrap_or(""),
+                                    "snippet": item["snippet"].as_str().unwrap_or(""),
+                                })
+                            }).collect();
+
+                            return Ok(serde_json::json!({
+                                "query": query,
+                                "results": results,
+                                "source": "google_custom_search",
+                            }));
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Web search API error: {}", e);
+                    }
+                }
+            }
+
             Ok(serde_json::json!({
-                "results": [],
                 "query": query,
-                "message": "Web search not yet configured - connect an MCP server for real search"
+                "results": [],
+                "source": "none",
+                "message": "Web search requires SEARCH_API_KEY and SEARCH_ENGINE_ID environment variables",
             }))
         }
     }
@@ -501,12 +559,51 @@ async fn register_builtin_skills(skill_registry: &SkillRegistry) {
         fn execute(&self, config: &Value) -> anyhow::Result<Value> {
             let language = config["language"].as_str().unwrap_or("unknown");
             let code = config["code"].as_str().unwrap_or("");
-            Ok(serde_json::json!({
-                "stdout": "",
-                "stderr": format!("Code execution not available for {} in current environment", language),
-                "exit_code": 1,
-                "code_preview": &code[..code.len().min(200)]
-            }))
+            let timeout_secs = config["timeout"].as_u64().unwrap_or(30);
+
+            if code.is_empty() {
+                return Ok(serde_json::json!({"error": "code is required"}));
+            }
+
+            let (interpreter, extension) = match language.to_lowercase().as_str() {
+                "python" | "py" => ("python3", ".py"),
+                "javascript" | "js" => ("node", ".js"),
+                "bash" | "sh" => ("bash", ".sh"),
+                "ruby" | "rb" => ("ruby", ".rb"),
+                "perl" | "pl" => ("perl", ".pl"),
+                _ => return Ok(serde_json::json!({
+                    "error": format!("Unsupported language: {}", language),
+                    "supported": ["python", "javascript", "bash", "ruby", "perl"],
+                })),
+            };
+
+            let temp_dir = std::env::temp_dir();
+            let filename = format!("mapleos_exec_{}{}", uuid::Uuid::new_v4(), extension);
+            let file_path = temp_dir.join(&filename);
+
+            if let Err(e) = std::fs::write(&file_path, code) {
+                return Ok(serde_json::json!({"error": format!("Failed to write temp file: {}", e)}));
+            }
+
+            let result = std::process::Command::new(interpreter)
+                .arg(&file_path)
+                .timeout(std::time::Duration::from_secs(timeout_secs))
+                .output();
+
+            let _ = std::fs::remove_file(&file_path);
+
+            match result {
+                Ok(output) => Ok(serde_json::json!({
+                    "language": language,
+                    "stdout": String::from_utf8_lossy(&output.stdout).to_string(),
+                    "stderr": String::from_utf8_lossy(&output.stderr).to_string(),
+                    "exit_code": output.status.code().unwrap_or(-1),
+                })),
+                Err(e) => Ok(serde_json::json!({
+                    "language": language,
+                    "error": e.to_string(),
+                })),
+            }
         }
     }
 
@@ -517,11 +614,81 @@ async fn register_builtin_skills(skill_registry: &SkillRegistry) {
         fn execute(&self, config: &Value) -> anyhow::Result<Value> {
             let operation = config["operation"].as_str().unwrap_or("list");
             let path = config["path"].as_str().unwrap_or(".");
-            Ok(serde_json::json!({
-                "operation": operation,
-                "path": path,
-                "result": "File operations require MCP server connection"
-            }))
+            let content = config["content"].as_str();
+
+            match operation {
+                "read" => {
+                    match std::fs::read_to_string(path) {
+                        Ok(data) => Ok(serde_json::json!({
+                            "operation": "read",
+                            "path": path,
+                            "content": data,
+                            "size": data.len(),
+                        })),
+                        Err(e) => Ok(serde_json::json!({
+                            "operation": "read",
+                            "path": path,
+                            "error": e.to_string(),
+                        })),
+                    }
+                }
+                "write" => {
+                    let data = content.unwrap_or("");
+                    match std::fs::write(path, data) {
+                        Ok(_) => Ok(serde_json::json!({
+                            "operation": "write",
+                            "path": path,
+                            "bytes_written": data.len(),
+                            "status": "success",
+                        })),
+                        Err(e) => Ok(serde_json::json!({
+                            "operation": "write",
+                            "path": path,
+                            "error": e.to_string(),
+                        })),
+                    }
+                }
+                "list" => {
+                    match std::fs::read_dir(path) {
+                        Ok(entries) => {
+                            let files: Vec<serde_json::Value> = entries
+                                .filter_map(|e| e.ok())
+                                .map(|e| {
+                                    let metadata = e.metadata().ok();
+                                    serde_json::json!({
+                                        "name": e.file_name().to_string_lossy(),
+                                        "path": e.path().to_string_lossy(),
+                                        "is_dir": metadata.as_ref().map(|m| m.is_dir()).unwrap_or(false),
+                                        "size": metadata.as_ref().map(|m| m.len()).unwrap_or(0),
+                                    })
+                                })
+                                .collect();
+                            Ok(serde_json::json!({
+                                "operation": "list",
+                                "path": path,
+                                "entries": files,
+                                "count": files.len(),
+                            }))
+                        }
+                        Err(e) => Ok(serde_json::json!({
+                            "operation": "list",
+                            "path": path,
+                            "error": e.to_string(),
+                        })),
+                    }
+                }
+                "exists" => {
+                    Ok(serde_json::json!({
+                        "operation": "exists",
+                        "path": path,
+                        "exists": std::path::Path::new(path).exists(),
+                    }))
+                }
+                _ => Ok(serde_json::json!({
+                    "error": format!("Unknown operation: {}", operation),
+                    "supported": ["read", "write", "list", "exists"],
+                })),
+            }
         }
     }
 
@@ -532,12 +699,62 @@ async fn register_builtin_skills(skill_registry: &SkillRegistry) {
         fn execute(&self, config: &Value) -> anyhow::Result<Value> {
             let url = config["url"].as_str().unwrap_or("");
             let method = config["method"].as_str().unwrap_or("GET");
-            Ok(serde_json::json!({
-                "url": url,
-                "method": method,
-                "status": 0,
-                "body": "HTTP requests not available - use webhook node in workflows"
-            }))
+            let headers = config["headers"].as_object();
+            let body = config["body"].as_str();
+            
+            if url.is_empty() {
+                return Ok(serde_json::json!({"error": "url is required"}));
+            }
+
+            let rt = tokio::runtime::Handle::current();
+            let _guard = rt.enter();
+            
+            let client = reqwest::Client::new();
+            let mut req = match method.to_uppercase().as_str() {
+                "POST" => client.post(url),
+                "PUT" => client.put(url),
+                "DELETE" => client.delete(url),
+                "PATCH" => client.patch(url),
+                _ => client.get(url),
+            };
+
+            if let Some(hdrs) = headers {
+                for (k, v) in hdrs {
+                    if let Some(val) = v.as_str() {
+                        req = req.header(k.as_str(), val);
+                    }
+                }
+            }
+
+            if let Some(b) = body {
+                req = req.body(b.to_string());
+            }
+
+            match tokio::task::block_in_place(|| {
+                rt.block_on(async {
+                    req.timeout(std::time::Duration::from_secs(30))
+                        .send()
+                        .await
+                })
+            }) {
+                Ok(resp) => {
+                    let status = resp.status().as_u16();
+                    let body_text = tokio::task::block_in_place(|| {
+                        rt.block_on(async { resp.text().await.unwrap_or_default() })
+                    });
+                    Ok(serde_json::json!({
+                        "url": url,
+                        "method": method,
+                        "status": status,
+                        "body": body_text,
+                    }))
+                }
+                Err(e) => Ok(serde_json::json!({
+                    "url": url,
+                    "method": method,
+                    "error": e.to_string(),
+                })),
+            }
         }
     }
 
@@ -585,6 +802,41 @@ async fn health_handler() -> impl IntoResponse {
         "status": "ok",
         "version": env!("CARGO_PKG_VERSION"),
     }))
+}
+
+async fn auth_middleware(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    req: axum::http::Request<axum::body::Body>,
+    next: Next,
+) -> Result<axum::response::Response, axum::http::StatusCode> {
+    let path = req.uri().path();
+    
+    if path == "/health" || path.starts_with("/ws/") || path.starts_with("/api/events") {
+        return Ok(next.run(req).await);
+    }
+
+    let auth_header = req.headers()
+        .get("Authorization")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    let token = if auth_header.starts_with("Bearer ") {
+        &auth_header[7..]
+    } else {
+        ""
+    };
+
+    if token.is_empty() {
+        if std::env::var("REQUIRE_AUTH").unwrap_or_default() == "true" {
+            return Err(axum::http::StatusCode::UNAUTHORIZED);
+        }
+        return Ok(next.run(req).await);
+    }
+
+    match state.auth_service.verify_token(token) {
+        Ok(_claims) => Ok(next.run(req).await),
+        Err(_) => Err(axum::http::StatusCode::UNAUTHORIZED),
+    }
 }
 
 async fn models_handler(
@@ -891,31 +1143,286 @@ async fn sse_events_handler(
     sse_gateway::handle_user_sse(state.event_bus.clone()).await
 }
 
+async fn get_workflow_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(workflow_id): axum::extract::Path<String>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    let row = sqlx::query_as::<_, (String, String, i64, String, String, i64, i64)>(
+        "SELECT id, name, version, yaml_content, status, created_at, updated_at FROM workflows WHERE id = ?"
+    )
+    .bind(&workflow_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    match row {
+        Some((id, name, version, yaml, status, created, updated)) => {
+            Ok(axum::Json(serde_json::json!({
+                "id": id,
+                "name": name,
+                "version": version,
+                "yaml_content": yaml,
+                "status": status,
+                "created_at": created,
+                "updated_at": updated,
+            })))
+        }
+        None => Err(axum::http::StatusCode::NOT_FOUND),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateWorkflowRequest {
+    name: Option<String>,
+    yaml_content: Option<String>,
+    status: Option<String>,
+}
+
+async fn update_workflow_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(workflow_id): axum::extract::Path<String>,
+    Json(req): Json<UpdateWorkflowRequest>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    let now = chrono::Utc::now().timestamp();
+    
+    if let Some(name) = &req.name {
+        let _ = sqlx::query("UPDATE workflows SET name = ?, updated_at = ? WHERE id = ?")
+            .bind(name)
+            .bind(now)
+            .bind(&workflow_id)
+            .execute(&state.db)
+            .await;
+    }
+    
+    if let Some(yaml) = &req.yaml_content {
+        let _ = sqlx::query("UPDATE workflows SET yaml_content = ?, version = version + 1, updated_at = ? WHERE id = ?")
+            .bind(yaml)
+            .bind(now)
+            .bind(&workflow_id)
+            .execute(&state.db)
+            .await;
+    }
+    
+    if let Some(status) = &req.status {
+        let _ = sqlx::query("UPDATE workflows SET status = ?, updated_at = ? WHERE id = ?")
+            .bind(status)
+            .bind(now)
+            .bind(&workflow_id)
+            .execute(&state.db)
+            .await;
+    }
+
+    Ok(axum::Json(serde_json::json!({
+        "id": workflow_id,
+        "status": "updated",
+    })))
+}
+
+async fn delete_workflow_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(workflow_id): axum::extract::Path<String>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    let result = sqlx::query("DELETE FROM workflows WHERE id = ?")
+        .bind(&workflow_id)
+        .execute(&state.db)
+        .await
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if result.rows_affected() > 0 {
+        Ok(axum::Json(serde_json::json!({
+            "id": workflow_id,
+            "status": "deleted",
+        })))
+    } else {
+        Err(axum::http::StatusCode::NOT_FOUND)
+    }
+}
+
+async fn get_workflow_executions_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(workflow_id): axum::extract::Path<String>,
+) -> axum::Json<serde_json::Value> {
+    let rows = sqlx::query_as::<_, (String, String, i64, String, Option<String>, Option<String>, i64, Option<i64>, Option<String>)>(
+        "SELECT id, workflow_id, workflow_version, status, input, output, started_at, completed_at, agent_id FROM workflow_executions WHERE workflow_id = ? ORDER BY started_at DESC LIMIT 50"
+    )
+    .bind(&workflow_id)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+
+    let executions: Vec<serde_json::Value> = rows.iter().map(|(id, wf_id, ver, status, input, output, started, completed, agent)| {
+        serde_json::json!({
+            "id": id,
+            "workflow_id": wf_id,
+            "version": ver,
+            "status": status,
+            "input": input,
+            "output": output,
+            "started_at": started,
+            "completed_at": completed,
+            "agent_id": agent,
+        })
+    }).collect();
+
+    axum::Json(serde_json::json!({
+        "workflow_id": workflow_id,
+        "executions": executions,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct LoginRequest {
+    username: String,
+    password: String,
+}
+
+async fn login_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    Json(req): Json<LoginRequest>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    let admin_user = &state.config.admin_username;
+    let admin_pass = &state.config.admin_password;
+
+    if req.username == *admin_user && req.password == *admin_pass {
+        let token = state.auth_service.create_token_for_user(&req.username, "admin", 86400)
+            .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+        
+        Ok(axum::Json(serde_json::json!({
+            "token": token,
+            "user_id": req.username,
+            "role": "admin",
+        })))
+    } else {
+        Err(axum::http::StatusCode::UNAUTHORIZED)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct TokenRequest {
+    agent_id: String,
+}
+
+async fn token_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    Json(req): Json<TokenRequest>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    let token = state.auth_service.create_token_for_agent(&req.agent_id, 86400)
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+    
+    Ok(axum::Json(serde_json::json!({
+        "token": token,
+        "agent_id": req.agent_id,
+        "expires_in": 86400,
+    })))
+}
+
+async fn get_memory_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(memory_id): axum::extract::Path<String>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    let store = state.memory_store.lock().await;
+    match store.get(&memory_id).await {
+        Ok(Some(entry)) => {
+            Ok(axum::Json(serde_json::json!({
+                "id": entry.id,
+                "content": entry.content,
+                "type": entry.memory_type.as_str(),
+                "metadata": entry.metadata,
+                "created_at": entry.created_at,
+                "access_count": entry.access_count,
+            })))
+        }
+        Ok(None) => Err(axum::http::StatusCode::NOT_FOUND),
+        Err(_) => Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+async fn delete_memory_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(memory_id): axum::extract::Path<String>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    let mut store = state.memory_store.lock().await;
+    match store.delete(&memory_id).await {
+        Ok(true) => {
+            Ok(axum::Json(serde_json::json!({
+                "id": memory_id,
+                "status": "deleted",
+            })))
+        }
+        Ok(false) => Err(axum::http::StatusCode::NOT_FOUND),
+        Err(_) => Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+#[derive(Clone)]
+struct ServerConfig {
+    pub host: String,
+    pub port: u16,
+    pub database_url: String,
+    pub jwt_secret: String,
+    pub require_auth: bool,
+    pub admin_username: String,
+    pub admin_password: String,
+    pub usage_limit_usd: f64,
+    pub log_level: String,
+}
+
+impl ServerConfig {
+    pub fn from_env() -> Self {
+        Self {
+            host: std::env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string()),
+            port: std::env::var("PORT")
+                .unwrap_or_else(|_| "7788".to_string())
+                .parse()
+                .unwrap_or(7788),
+            database_url: std::env::var("DATABASE_URL")
+                .unwrap_or_else(|_| "sqlite:mapleos.db?mode=rwc".to_string()),
+            jwt_secret: std::env::var("JWT_SECRET")
+                .unwrap_or_else(|_| "mapleos-dev-secret-change-me".to_string()),
+            require_auth: std::env::var("REQUIRE_AUTH")
+                .unwrap_or_default() == "true",
+            admin_username: std::env::var("ADMIN_USERNAME")
+                .unwrap_or_else(|_| "admin".to_string()),
+            admin_password: std::env::var("ADMIN_PASSWORD")
+                .unwrap_or_else(|_| "mapleos".to_string()),
+            usage_limit_usd: std::env::var("USAGE_LIMIT_USD")
+                .unwrap_or_else(|_| "50.0".to_string())
+                .parse()
+                .unwrap_or(50.0),
+            log_level: std::env::var("LOG_LEVEL")
+                .unwrap_or_else(|_| "mapleos_server=debug,maple_engine=debug,maple_llm=debug".to_string()),
+        }
+    }
+
+    pub fn bind_address(&self) -> String {
+        format!("{}:{}", self.host, self.port)
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let config = ServerConfig::from_env();
+    
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "mapleos_server=debug,maple_engine=debug,maple_llm=debug".into())
+                .unwrap_or_else(|_| config.log_level.clone().into())
         )
         .init();
 
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "sqlite:mapleos.db?mode=rwc".to_string());
+    let database_url = &config.database_url;
 
     let pool = sqlx::SqlitePool::connect(&database_url).await?;
     run_migrations(&pool).await?;
 
     let event_bus = Arc::new(EventBus::new());
-    let llm_router = build_llm_router();
+    let llm_router = build_llm_router(&config);
     let skill_registry = Arc::new(SkillRegistry::new());
     register_builtin_skills(&skill_registry).await;
     let hook_runner = Arc::new(HookRunner::new());
     let checkpoint_mgr = Arc::new(CheckpointManager::new(pool.clone()));
     let agent_registry = Arc::new(AgentRegistry::new());
-    let auth_service = Arc::new(AuthService::new(
-        std::env::var("JWT_SECRET").unwrap_or_else(|_| "mapleos-dev-secret-change-me".to_string())
-    ));
+    let auth_service = Arc::new(AuthService::new(config.jwt_secret.clone()));
     let workspace_manager = Arc::new(tokio::sync::Mutex::new(WorkspaceManager::new(pool.clone())));
     {
         let wm = workspace_manager.lock().await;
@@ -1028,6 +1535,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let state = Arc::new(AppState {
+        config: config.clone(),
         db: pool.clone(),
         event_bus: event_bus.clone(),
         llm_router: llm_router.clone(),
@@ -1065,21 +1573,28 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/sessions", get(sessions_handler))
         .route("/api/memories", post(memory_store_handler))
         .route("/api/memories/search", post(memory_search_handler))
+        .route("/api/memories/:id", get(get_memory_handler).delete(delete_memory_handler))
         .route("/api/prompts", post(prompt_create_handler))
         .route("/api/tasks/enqueue", post(task_enqueue_handler))
         .route("/api/tasks/stats", get(task_stats_handler))
         .route("/api/tasks/dead-letter", get(task_dead_letter_handler))
         .route("/api/tasks/:id/requeue", post(task_requeue_handler))
         .route("/api/events", get(sse_events_handler))
+        .route("/api/workflows/:id", get(get_workflow_handler).put(update_workflow_handler).delete(delete_workflow_handler))
+        .route("/api/workflows/:id/executions", get(get_workflow_executions_handler))
+        .route("/api/auth/login", post(login_handler))
+        .route("/api/auth/token", post(token_handler))
         .with_state(state);
 
     let app = Router::new()
         .merge(rpc_router)
         .merge(state_routes)
+        .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http());
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:7788").await?;
+    let bind_addr = config.bind_address();
+    let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
     tracing::info!("MapleOS Server listening on {}", listener.local_addr()?);
 
     axum::serve(listener, app).await?;
