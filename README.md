@@ -10,14 +10,18 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/version-0.1.0-orange?style=flat-square" alt="version" />
-  <img src="badge/rust-1.95-blue?style=flat-square" />
-  <img src="badge/node-26-blue?style=flat-square" />
-  <img src="badge/license-MIT-green?style=flat-square" />
+  <img src="https://img.shields.io/badge/rust-1.95-blue?style=flat-square" alt="rust" />
+  <img src="https://img.shields.io/badge/node-26-blue?style=flat-square" alt="node" />
+  <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="license" />
   <a href="https://scale-os.hongmaple.top/"><img src="https://img.shields.io/badge/官网-scale--os.hongmaple.top-blue?style=flat-square" alt="官网" /></a>
 </p>
 
 <p align="center">
-  <a href="https://scale-os.hongmaple.top/">官网</a> · <a href="./.monkeycode/docs/product-design-blueprint.md">设计蓝图</a> · <a href="#社区">社区</a> · <a href="#贡献指南">贡献指南</a>
+  <a href="https://repostars.dev/?repos=hongmaple0820%2Fmaple-os&theme=copper"><img src="https://repostars.dev/api/embed?repo=hongmaple0820%2Fmaple-os&theme=copper" alt="RepoStars" /></a>
+</p>
+
+<p align="center">
+  <a href="https://scale-os.hongmaple.top/">官网</a> · <a href="./.monkeycode/docs/product-design-blueprint.md">设计蓝图</a> · <a href="./README.en.md">English</a> · <a href="#社区">社区</a> · <a href="#贡献指南">贡献指南</a>
 </p>
 
 ---
