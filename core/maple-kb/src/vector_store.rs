@@ -107,6 +107,8 @@ impl VectorSearch for InMemoryVectorStore {
                 content,
                 score,
                 source: format!("document:{}", source),
+                source_type: "vector".to_string(),
+                metadata: serde_json::Value::Null,
             }
         }).collect()
     }
@@ -239,6 +241,8 @@ impl VectorSearch for QdrantVectorStore {
                         content,
                         score: point.score as f64,
                         source: format!("document:{}", document_id),
+                        source_type: "qdrant".to_string(),
+                        metadata: serde_json::Value::Null,
                     }
                 }).collect()
             }

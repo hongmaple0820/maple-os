@@ -1007,6 +1007,8 @@ async fn kb_search_handler(
             "content": r.content,
             "score": r.score,
             "source": r.source,
+            "source_type": r.source_type,
+            "metadata": r.metadata,
         })).collect(),
     })
 }
@@ -1072,6 +1074,9 @@ async fn memory_search_handler(
                 "id": e.id,
                 "content": e.content,
                 "type": e.memory_type.as_str(),
+                "source_type": e.memory_type.as_str(),
+                "score": 1.0,
+                "metadata": e.metadata,
                 "created_at": e.created_at,
             })).collect::<Vec<_>>()
         })),

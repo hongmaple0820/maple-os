@@ -556,6 +556,12 @@ impl WorkflowExecutor {
                 }
             };
 
+            self.event_bus.publish(Event::NodeStarted {
+                workflow_id: workflow_id.to_string(),
+                exec_id: exec.exec_id,
+                node_id: node_id.clone(),
+            }).await;
+
             let node_executor = self.node_executor.read().await;
             match self.execute_with_retry(&node_executor, &node, &mut exec).await {
                 Ok(result) => {
@@ -587,12 +593,17 @@ impl WorkflowExecutor {
 
         if exec.status == ExecStatus::Running {
             exec.set_completed();
+            self.event_bus.publish(Event::WorkflowCompleted {
+                workflow_id: workflow_id.to_string(),
+                exec_id: exec.exec_id,
+            }).await;
+        } else {
+            self.event_bus.publish(Event::WorkflowFailed {
+                workflow_id: workflow_id.to_string(),
+                exec_id: exec.exec_id,
+                error: exec.error.clone().unwrap_or_default(),
+            }).await;
         }
-
-        self.event_bus.publish(Event::WorkflowCompleted {
-            workflow_id: workflow_id.to_string(),
-            exec_id: exec.exec_id,
-        }).await;
 
         Ok(ExecResult::from_execution(&exec))
     }

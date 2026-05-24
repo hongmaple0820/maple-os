@@ -9,9 +9,11 @@ use uuid::Uuid;
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
     WorkflowStarted { workflow_id: String, exec_id: Uuid },
+    NodeStarted { workflow_id: String, exec_id: Uuid, node_id: String },
     NodeCompleted { workflow_id: String, exec_id: Uuid, node_id: String },
     NodeFailed { workflow_id: String, exec_id: Uuid, node_id: String, error: String },
     WorkflowCompleted { workflow_id: String, exec_id: Uuid },
+    WorkflowFailed { workflow_id: String, exec_id: Uuid, error: String },
     MessageReceived { channel: String, sender: String, content: String },
     AgentOnline { agent_id: String },
     AgentOffline { agent_id: String },
@@ -24,9 +26,11 @@ impl Event {
     pub fn event_type(&self) -> String {
         match self {
             Event::WorkflowStarted { .. } => "workflow.started",
+            Event::NodeStarted { .. } => "node.started",
             Event::NodeCompleted { .. } => "node.completed",
             Event::NodeFailed { .. } => "node.failed",
             Event::WorkflowCompleted { .. } => "workflow.completed",
+            Event::WorkflowFailed { .. } => "workflow.failed",
             Event::MessageReceived { .. } => "message.received",
             Event::AgentOnline { .. } => "agent.online",
             Event::AgentOffline { .. } => "agent.offline",
@@ -70,9 +74,11 @@ impl EventBus {
         let (tx, rx) = mpsc::channel(1024);
         for event_type in &[
             "workflow.started",
+            "node.started",
             "node.completed",
             "node.failed",
             "workflow.completed",
+            "workflow.failed",
             "message.received",
             "agent.online",
             "agent.offline",

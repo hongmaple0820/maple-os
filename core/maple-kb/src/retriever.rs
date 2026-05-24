@@ -8,6 +8,10 @@ pub struct RetrievalResult {
     pub content: String,
     pub score: f64,
     pub source: String,
+    #[serde(default)]
+    pub source_type: String,
+    #[serde(default)]
+    pub metadata: serde_json::Value,
 }
 
 pub struct HybridRetriever {
@@ -48,7 +52,7 @@ impl HybridRetriever {
 
         Ok(ranked.into_iter().take(top_k).map(|(id, score)| {
             let (content, source) = content_map.remove(&id).unwrap_or_default();
-            RetrievalResult { id, content, score, source }
+            RetrievalResult { id, content, score, source, source_type: String::new(), metadata: serde_json::Value::Null }
         }).collect())
     }
 }

@@ -1,9 +1,18 @@
+export interface KnowledgeRef {
+  id: string;
+  title: string;
+  source_type: string;
+  score: number;
+  snippet: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
   timestamp: number;
   toolCalls?: ToolCall[];
+  knowledgeRefs?: KnowledgeRef[];
 }
 
 export interface ToolCall {

@@ -100,6 +100,8 @@ impl BM25Searcher {
                 content,
                 score,
                 source: format!("document:{}", source),
+                source_type: "bm25".to_string(),
+                metadata: serde_json::Value::Null,
             }
         }).collect()
     }

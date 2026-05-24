@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import type { ChatMessage, ToolCall } from "@/lib/types";
+import type { ChatMessage, ToolCall, KnowledgeRef } from "@/lib/types";
 import { Button, Input, Badge, Card, CardContent, Spinner } from "@mapleos/ui";
 import { mapleApi, rpcCall } from "@/lib/api";
 
@@ -41,6 +41,12 @@ function MessageBubble({ message }: { message: ChatMessage }) {
             {message.toolCalls.map((tc: ToolCall) => <ToolCallCard key={tc.id} toolCall={tc} />)}
           </div>
         )}
+        {message.knowledgeRefs && message.knowledgeRefs.length > 0 && (
+          <div className="mt-2 space-y-1">
+            <div className="text-[10px] text-muted-foreground">引用知识库:</div>
+            {message.knowledgeRefs.map((ref: KnowledgeRef) => <KnowledgeRefCard key={ref.id} ref={ref} />)}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -60,6 +66,27 @@ function ToolCallCard({ toolCall }: { toolCall: ToolCall }) {
         {toolCall.status === "completed" && toolCall.result !== undefined && (
           <pre className="mt-1 text-[11px] bg-muted p-1 rounded overflow-x-auto">{JSON.stringify(toolCall.result as object, null, 2)}</pre>
         )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function KnowledgeRefCard({ ref }: { ref: KnowledgeRef }) {
+  const scorePercent = Math.round(ref.score * 100);
+  const scoreColor = scorePercent >= 80 ? "bg-success" : scorePercent >= 50 ? "bg-primary" : "bg-warning";
+
+  return (
+    <Card className="border-dashed shadow-none">
+      <CardContent className="p-2">
+        <div className="flex items-center gap-2">
+          <Badge variant="outline" className="text-[10px]">{ref.source_type}</Badge>
+          <span className="text-[12px] font-medium truncate max-w-[200px]">{ref.title}</span>
+          <div className="flex items-center gap-1 ml-auto">
+            <div className={`h-1.5 rounded-full ${scoreColor}`} style={{ width: `${scorePercent}px` }} />
+            <span className="text-[10px] text-muted-foreground">{scorePercent}%</span>
+          </div>
+        </div>
+        {ref.snippet && <div className="mt-1 text-[11px] text-muted-foreground line-clamp-2">{ref.snippet}</div>}
       </CardContent>
     </Card>
   );
@@ -101,7 +128,21 @@ export function ChatPanel() {
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
     setIsStreaming(true);
-    const assistantMsg: ChatMessage = { id: `msg-${Date.now() + 1}`, role: "assistant", content: "", timestamp: Date.now(), toolCalls: [] };
+
+    let knowledgeRefs: KnowledgeRef[] = [];
+    try {
+      const kbRes = await fetch("/api/maple/api/kb/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: text.trim(), top_k: 3 }),
+      });
+      if (kbRes.ok) {
+        const kbData = await kbRes.json() as { results: KnowledgeRef[] };
+        knowledgeRefs = kbData.results ?? [];
+      }
+    } catch { /* kb search optional */ }
+
+    const assistantMsg: ChatMessage = { id: `msg-${Date.now() + 1}`, role: "assistant", content: "", timestamp: Date.now(), toolCalls: [], knowledgeRefs };
     setMessages((prev) => [...prev, assistantMsg]);
 
     try {

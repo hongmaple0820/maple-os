@@ -187,19 +187,60 @@ export function WorkflowManager() {
 
   const handleExecute = async (workflowId: string) => {
     setExecuting(workflowId);
+    setCanvasNodes((prev) => prev.map((n) => ({ ...n, status: "idle" as WFNode["status"] })));
     setConsoleLogs((prev) => [...prev, `[执行] 开始执行工作流 ${workflowId}`]);
     try {
       const result = await rpcCall<{ exec_id: string; status: string; result?: string; error?: string }>("workflow.execute", { workflow_id: workflowId });
       if (result.error) {
         setConsoleLogs((prev) => [...prev, `[执行] 失败: ${result.error}`]);
       } else {
-        setConsoleLogs((prev) => [...prev, `[执行] 成功! exec_id=${result.exec_id}, 状态=${result.status}`]);
-        if (result.result) setConsoleLogs((prev) => [...prev, `[结果] ${result.result}`]);
+        setConsoleLogs((prev) => [...prev, `[执行] 已提交! exec_id=${result.exec_id}, 状态=${result.status}`]);
       }
     } catch (err) {
       setConsoleLogs((prev) => [...prev, `[执行] 出错: ${(err as Error).message}`]);
     } finally { setExecuting(null); }
   };
+
+  useEffect(() => {
+    let es: EventSource | null = null;
+    try {
+      es = new EventSource("/api/maple/api/events");
+      es.addEventListener("node.started", (e) => {
+        try {
+          const d = JSON.parse(e.data);
+          setCanvasNodes((prev) => prev.map((n) => n.id === d.node_id ? { ...n, status: "running" } : n));
+          setConsoleLogs((prev) => [...prev, `[SSE] 节点开始: ${d.node_id}`]);
+        } catch { /* ignore */ }
+      });
+      es.addEventListener("node.completed", (e) => {
+        try {
+          const d = JSON.parse(e.data);
+          setCanvasNodes((prev) => prev.map((n) => n.id === d.node_id ? { ...n, status: "completed" } : n));
+          setConsoleLogs((prev) => [...prev, `[SSE] 节点完成: ${d.node_id}`]);
+        } catch { /* ignore */ }
+      });
+      es.addEventListener("node.failed", (e) => {
+        try {
+          const d = JSON.parse(e.data);
+          setCanvasNodes((prev) => prev.map((n) => n.id === d.node_id ? { ...n, status: "failed" } : n));
+          setConsoleLogs((prev) => [...prev, `[SSE] 节点失败: ${d.node_id} - ${d.error}`]);
+        } catch { /* ignore */ }
+      });
+      es.addEventListener("workflow.completed", (e) => {
+        try {
+          const d = JSON.parse(e.data);
+          setConsoleLogs((prev) => [...prev, `[SSE] 工作流完成: ${d.workflow_id}`]);
+        } catch { /* ignore */ }
+      });
+      es.addEventListener("workflow.failed", (e) => {
+        try {
+          const d = JSON.parse(e.data);
+          setConsoleLogs((prev) => [...prev, `[SSE] 工作流失败: ${d.workflow_id} - ${d.error}`]);
+        } catch { /* ignore */ }
+      });
+    } catch { /* EventSource unavailable */ }
+    return () => { es?.close(); };
+  }, []);
 
   const filtered = workflows.filter((wf) => wf.name.toLowerCase().includes(search.toLowerCase()));
   if (loading) return <div className="flex items-center justify-center h-full"><Spinner className="w-8 h-8" /></div>;
@@ -226,6 +267,7 @@ export function WorkflowManager() {
     );
   };
 
+  const statusBorder: Record<string, string> = { idle: "border", running: "border-2 border-warning animate-pulse", completed: "border-2 border-success", failed: "border-2 border-destructive", waiting: "border-2 border-muted-foreground" };
   const nodeColors = nodeTypeColor;
 
   return (
@@ -339,8 +381,8 @@ export function WorkflowManager() {
                 } ${connectingFrom === node.id ? "ring-2 ring-warning z-10" : ""}`}
                 style={{ left: node.x, top: node.y, width: NODE_W }}
               >
-                <div className={`rounded-lg border shadow-card transition-shadow hover:shadow-lg p-3 ${
-                  colors ? `bg-card border-[${colors.border.replace("stroke-", "")}]` : "bg-card border"
+                <div className={`rounded-lg shadow-card transition-shadow hover:shadow-lg p-3 ${
+                  statusBorder[node.status ?? "idle"] ?? "border"
                 }`}>
                   <div className="flex items-center gap-1.5 mb-1">
                     <svg className={`w-4 h-4 ${colors?.accent ?? "text-muted-foreground"}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d={nodeTypeIcon[node.type]} /></svg>
