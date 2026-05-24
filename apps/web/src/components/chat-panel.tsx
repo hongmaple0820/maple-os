@@ -105,6 +105,8 @@ export function ChatPanel() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [agents, setAgents] = useState<AgentOption[]>([]);
   const [selectedAgent, setSelectedAgent] = useState<string>("");
+  const [currentSession, setCurrentSession] = useState<string>("");
+  const [sessionList, setSessionList] = useState<{ id: string; title: string; created_at: number }[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -117,13 +119,28 @@ export function ChatPanel() {
       } catch { setAgents([]); }
     };
     loadAgents();
+    loadSessions();
   }, []);
+
+  const loadSessions = async () => {
+    try {
+      const res = await mapleApi<{ sessions: { id: string; title: string; created_at: number }[] }>("/api/maple/api/sessions");
+      setSessionList(res.sessions ?? []);
+    } catch { setSessionList([]); }
+  };
+
+  const newSession = () => {
+    setMessages([]);
+    setCurrentSession("");
+  };
 
   useEffect(() => { scrollRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
   const sendMessage = async (overrideInput?: string) => {
     const text = overrideInput ?? input;
     if (!text.trim() || isStreaming) return;
+    const sessionId = currentSession || `session-${Date.now()}`;
+    if (!currentSession) setCurrentSession(sessionId);
     const userMsg: ChatMessage = { id: `msg-${Date.now()}`, role: "user", content: text.trim(), timestamp: Date.now() };
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
@@ -235,6 +252,17 @@ export function ChatPanel() {
         <div className="flex items-center gap-2">
           {isStreaming && <Spinner className="w-4 h-4" />}
           <Badge variant="outline" className="text-[10px]">{messages.length} 条消息</Badge>
+          {sessionList.length > 1 && (
+            <select
+              value={currentSession}
+              onChange={(e) => { setCurrentSession(e.target.value); setMessages([]); }}
+              className="h-7 rounded border bg-background text-[11px] px-1"
+            >
+              <option value="">新建对话</option>
+              {sessionList.map((s) => <option key={s.id} value={s.id}>{s.title}</option>)}
+            </select>
+          )}
+          <Button size="sm" variant="ghost" onClick={newSession}>新建对话</Button>
         </div>
       </div>
 

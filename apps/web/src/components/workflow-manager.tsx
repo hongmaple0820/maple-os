@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Card, CardContent, Badge, Button, Input, Spinner } from "@mapleos/ui";
-import { rpcCall } from "@/lib/api";
+import { rpcCall, mapleApi } from "@/lib/api";
 
 interface WorkflowItem { id: string; name: string; version: number; status: string; created_at: number; updated_at: number }
 
@@ -58,6 +58,8 @@ export function WorkflowManager() {
   const [canvasNodes, setCanvasNodes] = useState<WFNode[]>([]);
   const [edges, setEdges] = useState<WFEdge[]>([]);
   const [consoleLogs, setConsoleLogs] = useState<string[]>([]);
+  const [rightTab, setRightTab] = useState<"console" | "history" | "config">("console");
+  const [execHistory, setExecHistory] = useState<{ id: string; status: string; started_at: number; completed_at: number | null }[]>([]);
   const [selectedNode, setSelectedNode] = useState<WFNode | null>(null);
   const [connectingFrom, setConnectingFrom] = useState<string | null>(null);
   const [draggingNode, setDraggingNode] = useState<string | null>(null);
@@ -242,6 +244,14 @@ export function WorkflowManager() {
     return () => { es?.close(); };
   }, []);
 
+  const loadExecHistory = async (wfId: string) => {
+    try {
+      const res = await mapleApi<{ executions: { id: string; status: string; started_at: number; completed_at: number | null }[] }>("/api/maple/api/workflows/" + wfId + "/executions");
+      setExecHistory(res.executions ?? []);
+      setRightTab("history");
+    } catch { setExecHistory([]); }
+  };
+
   const filtered = workflows.filter((wf) => wf.name.toLowerCase().includes(search.toLowerCase()));
   if (loading) return <div className="flex items-center justify-center h-full"><Spinner className="w-8 h-8" /></div>;
 
@@ -334,6 +344,7 @@ export function WorkflowManager() {
               <Button size="sm" className="w-full" onClick={() => handleExecute(selectedWf)} disabled={executing === selectedWf}>
                 {executing === selectedWf ? "执行中..." : "运行此工作流"}
               </Button>
+              <Button size="sm" variant="outline" className="w-full" onClick={() => loadExecHistory(selectedWf)}>执行历史</Button>
             </div>
           )}
           <div className="p-2 text-[10px] text-muted-foreground">
@@ -456,13 +467,44 @@ export function WorkflowManager() {
             <div className="p-3 border-b text-[11px] text-muted-foreground">点击节点查看配置</div>
           )}
           <div className="flex-1 overflow-y-auto p-3">
-            <div className="text-[11px] text-muted-foreground mb-1">控制台</div>
-            <div className="space-y-0.5">
-              {consoleLogs.map((log, i) => (
-                <div key={i} className="text-[11px] font-mono text-muted-foreground leading-tight">{log}</div>
+            <div className="flex gap-2 mb-2">
+              {(["console", "history", "config"] as const).map((tab) => (
+                <button
+                  key={tab}
+                  onClick={() => setRightTab(tab)}
+                  className={`text-[11px] px-2 py-0.5 rounded ${rightTab === tab ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent"}`}
+                >
+                  {tab === "console" ? "控制台" : tab === "history" ? "历史" : "配置"}
+                </button>
               ))}
-              {consoleLogs.length === 0 && <div className="text-[11px] text-muted-foreground">暂无日志</div>}
             </div>
+            {rightTab === "console" && (
+              <div className="space-y-0.5">
+                {consoleLogs.map((log, i) => (
+                  <div key={i} className="text-[11px] font-mono text-muted-foreground leading-tight">{log}</div>
+                ))}
+                {consoleLogs.length === 0 && <div className="text-[11px] text-muted-foreground">暂无日志</div>}
+              </div>
+            )}
+            {rightTab === "history" && (
+              <div className="space-y-1">
+                {execHistory.map((exec) => (
+                  <div key={exec.id} className="flex items-center gap-2 p-1.5 rounded border text-[11px]">
+                    <Badge variant={exec.status === "completed" ? "default" : exec.status === "failed" ? "destructive" : "secondary"} className="text-[10px]">{exec.status}</Badge>
+                    <span className="text-muted-foreground">{new Date(exec.started_at * 1000).toLocaleString("zh-CN")}</span>
+                    {exec.completed_at && <span className="text-muted-foreground">{((exec.completed_at - exec.started_at)).toFixed(1)}s</span>}
+                  </div>
+                ))}
+                {execHistory.length === 0 && <div className="text-[11px] text-muted-foreground">暂无执行历史</div>}
+              </div>
+            )}
+            {rightTab === "config" && selectedNode && (
+              <div className="space-y-1">
+                <div className="text-[11px] text-muted-foreground">ID: {selectedNode.id}</div>
+                <div className="text-[11px] text-muted-foreground">类型: {nodeTypeLabel[selectedNode.type]}</div>
+                <div className="text-[11px] font-mono">pos: ({Math.round(selectedNode.x)}, {Math.round(selectedNode.y)})</div>
+              </div>
+            )}
           </div>
         </div>
       </div>

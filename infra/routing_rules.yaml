@@ -1,0 +1,38 @@
+rules:
+  - name: code_generation
+    condition: "task.type == 'code'"
+    preferred:
+      - "ollama/deepseek-coder:6.7b"
+      - "openai/gpt-4o-mini"
+    fallback_to_cloud: true
+
+  - name: sensitive_data
+    condition: "task.privacy_level == 'sensitive'"
+    preferred:
+      - "ollama/llama3:8b"
+    fallback_to_cloud: false
+
+  - name: vision_tasks
+    condition: "task.has_image == true"
+    preferred:
+      - "openai/gpt-4o"
+    fallback_to_cloud: true
+
+  - name: quick_response
+    condition: "task.priority == 'low'"
+    preferred:
+      - "ollama/llama3:8b"
+      - "openai/gpt-4o-mini"
+    fallback_to_cloud: true
+
+  - name: high_priority
+    condition: "task.priority == 'high'"
+    preferred:
+      - "openai/gpt-4o"
+      - "anthropic/claude-3.5-sonnet"
+    fallback_to_cloud: true
+
+fallback_chain:
+  - "ollama/llama3:8b"
+  - "openai/gpt-4o-mini"
+  - "openai/gpt-4o"

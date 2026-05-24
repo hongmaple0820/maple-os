@@ -7,7 +7,7 @@ use axum::routing::{get, post};
 use std::convert::Infallible;
 use axum::middleware::{self, Next};
 
-use maple_engine::workflow::Workflow;
+use maple_engine::workflow::{Workflow, WorkflowNode};
 use maple_engine::executor::{WorkflowExecutor, NodeExecutor};
 use maple_engine::event_bus::EventBus;
 use maple_engine::checkpoint::CheckpointManager;
@@ -33,6 +33,7 @@ use maple_kb::retriever::HybridRetriever;
 use maple_kb::memory::{MemoryStore, MemoryEntry, MemoryType};
 use maple_kb::prompt_version::PromptVersionManager;
 use maple_engine::task_queue::TaskQueueService;
+use maple_engine::scheduler::{Scheduler, ScheduledJob};
 use maple_llm::embedding::{Embedder, OllamaEmbedder, FallbackEmbedder};
 use maple_collab::workspace::WorkspaceManager;
 use serde::{Deserialize, Serialize};
@@ -60,6 +61,7 @@ pub struct AppState {
     pub memory_store: Arc<tokio::sync::Mutex<MemoryStore>>,
     pub prompt_version_mgr: Arc<PromptVersionManager>,
     pub task_queue: Arc<TaskQueueService>,
+    pub scheduler: Arc<Scheduler>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -468,6 +470,30 @@ fn build_llm_router(config: &ServerConfig) -> Arc<LlmRouter> {
     }
     router.set_fallback_chain(fallback);
 
+    let rules_path = std::env::var("ROUTING_RULES_PATH")
+        .unwrap_or_else(|_| "infra/routing_rules.yaml".to_string());
+    if let Ok(content) = std::fs::read_to_string(&rules_path) {
+        if let Ok(yaml) = serde_yaml::from_str::<serde_json::Value>(&content) {
+            if let Some(rules_arr) = yaml.get("rules").and_then(|r| r.as_array()) {
+                let rules: Vec<maple_llm::router::RoutingRule> = rules_arr.iter()
+                    .filter_map(|r| serde_json::from_value(r.clone()).ok())
+                    .collect();
+                let rules_count = rules.len();
+                router.set_routing_rules(rules);
+                tracing::info!("Loaded {} routing rules from {}", rules_count, rules_path);
+            }
+            if let Some(chain) = yaml.get("fallback_chain").and_then(|c| c.as_array()) {
+                let chain: Vec<String> = chain.iter()
+                    .filter_map(|c| c.as_str().map(|s| s.to_string()))
+                    .collect();
+                router.set_fallback_chain(chain);
+                tracing::info!("Loaded fallback chain from {}", rules_path);
+            }
+        }
+    } else {
+        tracing::info!("No routing_rules.yaml found, using default rules");
+    }
+
     Arc::new(router)
 }
 
@@ -490,8 +516,8 @@ async fn register_builtin_skills(skill_registry: &SkillRegistry) {
         fn description(&self) -> &str { "Search the web for information" }
         fn execute(&self, config: &Value) -> anyhow::Result<Value> {
             let query = config["query"].as_str().unwrap_or("");
-            let num_results = config["num_results"].as_u64().unwrap_or(5);
-            
+            let num_results = config["num_results"].as_u64().unwrap_or(5) as usize;
+
             if query.is_empty() {
                 return Ok(serde_json::json!({"error": "query is required"}));
             }
@@ -525,7 +551,7 @@ async fn register_builtin_skills(skill_registry: &SkillRegistry) {
                         if let Ok(json) = serde_json::from_str::<Value>(&body) {
                             let empty: Vec<Value> = vec![];
                             let items = json["items"].as_array().unwrap_or(&empty);
-                            let results: Vec<Value> = items.iter().map(|item| {
+                            let results: Vec<Value> = items.iter().take(num_results).map(|item| {
                                 serde_json::json!({
                                     "title": item["title"].as_str().unwrap_or(""),
                                     "url": item["link"].as_str().unwrap_or(""),
@@ -546,13 +572,92 @@ async fn register_builtin_skills(skill_registry: &SkillRegistry) {
                 }
             }
 
-            Ok(serde_json::json!({
-                "query": query,
-                "results": [],
-                "source": "none",
-                "message": "Web search requires SEARCH_API_KEY and SEARCH_ENGINE_ID environment variables",
-            }))
+            let rt = tokio::runtime::Handle::current();
+            let _guard = rt.enter();
+            let ddg_url = format!("https://lite.duckduckgo.com/lite/?q={}", urlencoding::encode(query));
+
+            let client = reqwest::Client::new();
+            let resp = tokio::task::block_in_place(|| {
+                rt.block_on(async {
+                    client.get(&ddg_url)
+                        .header("User-Agent", "Mozilla/5.0 (compatible; MapleOS/1.0)")
+                        .timeout(std::time::Duration::from_secs(10))
+                        .send()
+                        .await
+                })
+            });
+
+            match resp {
+                Ok(response) => {
+                    let html = tokio::task::block_in_place(|| {
+                        rt.block_on(async { response.text().await.unwrap_or_default() })
+                    });
+                    let results = parse_ddg_lite(&html, num_results);
+                    Ok(serde_json::json!({
+                        "query": query,
+                        "results": results,
+                        "source": "duckduckgo_lite",
+                    }))
+                }
+                Err(e) => {
+                    tracing::warn!("DuckDuckGo search error: {}", e);
+                    Ok(serde_json::json!({
+                        "query": query,
+                        "results": [],
+                        "source": "none",
+                        "message": format!("Search unavailable: {}", e),
+                    }))
+                }
+            }
         }
+    }
+
+    fn parse_ddg_lite(html: &str, max: usize) -> Vec<Value> {
+        let mut results: Vec<Value> = Vec::new();
+        let mut title = String::new();
+        let mut url = String::new();
+        let mut snippet = String::new();
+        let mut in_link = false;
+
+        for line in html.lines() {
+            let trimmed = line.trim();
+            if trimmed.contains("class=\"result__a\"") {
+                in_link = true;
+                if let Some(start) = trimmed.find(">") {
+                    if let Some(end) = trimmed.find("</a>") {
+                        title = trimmed[start+1..end].trim().to_string();
+                    }
+                }
+                if let Some(href_start) = trimmed.find("href=\"") {
+                    let rest = &trimmed[href_start+6..];
+                    if let Some(href_end) = rest.find("\"") {
+                        url = rest[..href_end].to_string();
+                        if url.starts_with("//") {
+                            url = format!("https:{}", url);
+                        }
+                    }
+                }
+            } else if in_link && trimmed.contains("class=\"result__snippet\"") {
+                if let Some(start) = trimmed.find(">") {
+                    if let Some(end) = trimmed.find("</td>") {
+                        snippet = trimmed[start+1..end].trim().to_string();
+                    } else {
+                        snippet = trimmed[start+1..].trim().to_string();
+                    }
+                }
+                in_link = false;
+                if !title.is_empty() {
+                    results.push(serde_json::json!({
+                        "title": title,
+                        "url": url,
+                        "snippet": snippet,
+                    }));
+                    title.clear(); url.clear(); snippet.clear();
+                }
+                if results.len() >= max { break; }
+            }
+        }
+        results
     }
 
     struct CodeExecSkill;
@@ -1540,6 +1645,22 @@ async fn main() -> anyhow::Result<()> {
     let task_queue = Arc::new(TaskQueueService::new(pool.clone()));
     task_queue.init_schema().await?;
 
+    let scheduler = Arc::new(Scheduler::new());
+    let job_count: usize;
+    {
+        let rows: Vec<(String, String, String, String, Option<i64>, i64, bool)> = sqlx::query_as(
+            "SELECT id, workflow_id, cron_expr, timezone, last_run_at, next_run_at, enabled FROM scheduled_jobs WHERE enabled = 1"
+        ).fetch_all(&pool).await?;
+        job_count = rows.len();
+        for row in rows {
+            scheduler.add_job(ScheduledJob {
+                id: row.0, workflow_id: row.1, cron_expr: row.2, timezone: row.3,
+                last_run_at: row.4, next_run_at: row.5, enabled: row.6,
+            }).await?;
+        }
+    }
+    tracing::info!("Scheduler loaded {} active jobs from DB", job_count);
+
     let task_worker_queue = task_queue.clone();
     let task_worker_skills = skill_registry.clone();
     let task_worker_llm = llm_router.clone();
@@ -1605,7 +1726,26 @@ async fn main() -> anyhow::Result<()> {
         memory_store: memory_store.clone(),
         prompt_version_mgr: prompt_version_mgr.clone(),
         task_queue: task_queue.clone(),
+        scheduler: scheduler.clone(),
     });
+
+    let scheduler_wf = workflow_executor.clone();
+    let scheduler_db = pool.clone();
+    scheduler.start_loop(60, move |job: ScheduledJob| {
+        let wf = scheduler_wf.clone();
+        let db = scheduler_db.clone();
+        async move {
+            tracing::info!(job_id = %job.id, workflow_id = %job.workflow_id, "Scheduled job triggered");
+            let yaml_str: Option<String> = sqlx::query_scalar(
+                "SELECT yaml_content FROM workflows WHERE id = ?"
+            ).bind(&job.workflow_id).fetch_optional(&db).await.ok().flatten();
+            if let Some(yaml) = yaml_str {
+                let nodes: Vec<WorkflowNode> = serde_json::from_str(&yaml).unwrap_or_default();
+                let _ = wf.execute(&nodes, &job.workflow_id, 1, serde_json::Value::Null).await;
+            }
+            Ok(())
+        }
+    }).await;
 
     let dispatcher = Arc::new(RpcDispatcher::new());
     register_business_handlers(&dispatcher, state.clone()).await;

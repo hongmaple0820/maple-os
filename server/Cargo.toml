@@ -29,3 +29,4 @@ reqwest = { workspace = true }
 urlencoding = { workspace = true }
 async-stream = "0.3"
 tokio-stream = "0.1"
+serde_yaml = "0.9"
