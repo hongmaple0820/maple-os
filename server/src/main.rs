@@ -982,6 +982,51 @@ async fn main() -> anyhow::Result<()> {
     let task_queue = Arc::new(TaskQueueService::new(pool.clone()));
     task_queue.init_schema().await?;
 
+    let task_worker_queue = task_queue.clone();
+    let task_worker_skills = skill_registry.clone();
+    let task_worker_llm = llm_router.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            match task_worker_queue.dequeue().await {
+                Ok(Some(task)) => {
+                    let payload = task.payload.clone();
+                    let prompt = payload["prompt"].as_str().unwrap_or("").to_string();
+                    let task_id = task.id.clone();
+                    if !prompt.is_empty() {
+                        let llm_request = maple_llm::request::LlmRequest::new(prompt, "task-worker");
+                        match task_worker_llm.route(&llm_request).await {
+                            Ok(adapter) => {
+                                match adapter.complete(llm_request).await {
+                                    Ok(_) => {
+                                        let _ = task_worker_queue.complete(&task_id).await;
+                                    }
+                                    Err(e) => {
+                                        let _ = task_worker_queue.fail(&task_id, &e.to_string()).await;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                let _ = task_worker_queue.fail(&task_id, &format!("LLM routing: {}", e)).await;
+                            }
+                        }
+                    } else {
+                        let skill_id = payload["skill_id"].as_str().unwrap_or("echo");
+                        match task_worker_skills.execute(skill_id, &payload).await {
+                            Ok(_) => {
+                                let _ = task_worker_queue.complete(&task_id).await;
+                            }
+                            Err(e) => {
+                                let _ = task_worker_queue.fail(&task_id, &e.to_string()).await;
+                            }
+                        }
+                    }
+                }
+                Ok(None) | Err(_) => {}
+            }
+        }
+    });
+
     let state = Arc::new(AppState {
         db: pool.clone(),
         event_bus: event_bus.clone(),
@@ -1043,6 +1088,30 @@ async fn main() -> anyhow::Result<()> {
 
 async fn register_business_handlers(dispatcher: &Arc<RpcDispatcher>, state: Arc<AppState>) {
     dispatcher.register_default_handlers().await;
+
+    let start_time = std::time::Instant::now();
+    let s = state.clone();
+    dispatcher.register("system.info", move |_: Option<serde_json::Value>| {
+        let registry = s.agent_registry.clone();
+        let db = s.db.clone();
+        let task_queue = s.task_queue.clone();
+        let start = start_time;
+        async move {
+            let uptime_secs = start.elapsed().as_secs() as i64;
+            let agents_count: i64 = registry.list_agents().await.len() as i64;
+            let workflows_count: i64 = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM workflows")
+                .fetch_one(&db).await.unwrap_or(0);
+            let stats = task_queue.stats().await.unwrap_or(maple_engine::task_queue::TaskQueueStats { pending: 0, running: 0, completed: 0, failed: 0, dead_letter: 0 });
+            Ok(serde_json::json!({
+                "name": "MapleOS",
+                "version": env!("CARGO_PKG_VERSION"),
+                "uptime_secs": uptime_secs,
+                "agents_count": agents_count,
+                "workflows_count": workflows_count,
+                "tasks_count": stats.pending + stats.running + stats.completed + stats.failed + stats.dead_letter,
+            }))
+        }
+    }).await;
 
     let s = state.clone();
     dispatcher.register("workflow.list", move |_: Option<serde_json::Value>| {
@@ -1275,6 +1344,233 @@ async fn register_business_handlers(dispatcher: &Arc<RpcDispatcher>, state: Arc<
                 }
                 Err(e) => Ok(serde_json::json!({"error": e.to_string(), "note": "scale-engine HTTP bridge not running on port 7790"})),
             }
+        }
+    }).await;
+
+    let s = state.clone();
+    dispatcher.register("agent.chat", move |params: Option<serde_json::Value>| {
+        let llm_router = s.llm_router.clone();
+        let session_store = s.session_store.clone();
+        let skill_registry = s.skill_registry.clone();
+        async move {
+            let p = match params {
+                Some(v) => v,
+                None => return Ok(serde_json::json!({"error": "missing params: agent_id + prompt"})),
+            };
+            let agent_id = p["agent_id"].as_str().unwrap_or("default").to_string();
+            let prompt = p["prompt"].as_str().unwrap_or("").to_string();
+            if prompt.is_empty() {
+                return Ok(serde_json::json!({"error": "prompt is required"}));
+            }
+
+            let session_id = format!("agent-chat-{}", agent_id);
+            let _ = session_store.save_message(&session_id, "user", &prompt, None, None).await;
+
+            let llm_request = maple_llm::request::LlmRequest::new(prompt.clone(), &agent_id);
+            let adapter = match llm_router.route(&llm_request).await {
+                Ok(a) => a,
+                Err(e) => return Ok(serde_json::json!({"response": format!("No LLM available: {}", e), "agent_id": agent_id})),
+            };
+
+            match adapter.complete(llm_request).await {
+                Ok(response) => {
+                    let _ = session_store.save_message(&session_id, "assistant", &response.content, None, response.tool_calls.as_deref()).await;
+                    Ok(serde_json::json!({
+                        "response": response.content,
+                        "agent_id": agent_id,
+                        "model": adapter.name().to_string(),
+                    }))
+                }
+                Err(e) => Ok(serde_json::json!({
+                    "response": format!("LLM error: {}", e),
+                    "agent_id": agent_id,
+                }))
+            }
+        }
+    }).await;
+
+    let s = state.clone();
+    dispatcher.register("agent.register", move |params: Option<serde_json::Value>| {
+        let registry = s.agent_registry.clone();
+        let db = s.db.clone();
+        async move {
+            let p = match params {
+                Some(v) => v,
+                None => return Ok(serde_json::json!({"error": "missing params"})),
+            };
+            let name = p["name"].as_str().unwrap_or("unnamed-agent").to_string();
+            let id = p["id"].as_str().map(|s| s.to_string()).unwrap_or_else(|| format!("agent-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("x")));
+            let now = chrono::Utc::now().timestamp();
+
+            let _ = sqlx::query(
+                "INSERT OR IGNORE INTO agents (id, name, transport_type, transport_config, capabilities, status, created_at) VALUES (?, ?, 'local', '{}', '[]', 'Idle', ?)"
+            )
+            .bind(&id)
+            .bind(&name)
+            .bind(now)
+            .execute(&db)
+            .await;
+
+            registry.register_agent(&id, &name, maple_agent::registry::AgentStatus::Online).await;
+
+            Ok(serde_json::json!({
+                "id": id,
+                "name": name,
+                "status": "Idle",
+            }))
+        }
+    }).await;
+
+    let s = state.clone();
+    dispatcher.register("task.create", move |params: Option<serde_json::Value>| {
+        let task_queue = s.task_queue.clone();
+        async move {
+            let p = match params {
+                Some(v) => v,
+                None => return Ok(serde_json::json!({"error": "missing params"})),
+            };
+            let task_type = p["task_type"].as_str().unwrap_or("generic").to_string();
+            let agent_id = p["agent_id"].as_str().unwrap_or("").to_string();
+            let prompt = p["prompt"].as_str().unwrap_or("").to_string();
+            let priority = p["priority"].as_i64().unwrap_or(0) as i32;
+
+            let payload = serde_json::json!({
+                "agent_id": agent_id,
+                "prompt": prompt,
+            });
+
+            match task_queue.enqueue(&task_type, priority, payload, 3, 0, Some(&agent_id)).await {
+                Ok(id) => Ok(serde_json::json!({
+                    "id": id,
+                    "task_type": task_type,
+                    "agent_id": agent_id,
+                    "status": "pending",
+                })),
+                Err(e) => Ok(serde_json::json!({"error": e.to_string()})),
+            }
+        }
+    }).await;
+
+    let s = state.clone();
+    dispatcher.register("config.get", move |_: Option<serde_json::Value>| {
+        let db = s.db.clone();
+        async move {
+            let rows = sqlx::query_as::<_, (String, String)>(
+                "SELECT key, value FROM kv_store WHERE key LIKE 'config.%'"
+            )
+            .fetch_all(&db)
+            .await
+            .unwrap_or_default();
+
+            let config: serde_json::Map<String, serde_json::Value> = rows.iter().map(|(k, v)| {
+                let key = k.replace("config.", "");
+                let val: serde_json::Value = serde_json::from_str(v).unwrap_or_else(|_| serde_json::Value::String(v.clone()));
+                (key, val)
+            }).collect();
+
+            Ok(serde_json::json!({
+                "ollama_url": config.get("ollama_url").and_then(|v| v.as_str()).unwrap_or("http://localhost:11434"),
+                "openai_api_key": config.get("openai_api_key").and_then(|v| v.as_str()).unwrap_or(""),
+                "default_model": config.get("default_model").and_then(|v| v.as_str()).unwrap_or("auto"),
+                "webdav_url": config.get("webdav_url").and_then(|v| v.as_str()).unwrap_or(""),
+                "webdav_username": config.get("webdav_username").and_then(|v| v.as_str()).unwrap_or(""),
+                "webdav_password": config.get("webdav_password").and_then(|v| v.as_str()).unwrap_or(""),
+                "qdrant_url": config.get("qdrant_url").and_then(|v| v.as_str()).unwrap_or(""),
+                "gateway_mode": config.get("gateway_mode").and_then(|v| v.as_str()).unwrap_or("strict"),
+                "data_local_only": config.get("data_local_only").and_then(|v| v.as_bool()).unwrap_or(true),
+            }))
+        }
+    }).await;
+
+    let s = state.clone();
+    dispatcher.register("config.update", move |params: Option<serde_json::Value>| {
+        let db = s.db.clone();
+        async move {
+            let p = match params {
+                Some(v) => v,
+                None => return Ok(serde_json::json!({"error": "missing params"})),
+            };
+            let now = chrono::Utc::now().timestamp();
+            let fields = [
+                ("ollama_url", p.get("ollama_url").and_then(|v| v.as_str())),
+                ("openai_api_key", p.get("openai_api_key").and_then(|v| v.as_str())),
+                ("default_model", p.get("default_model").and_then(|v| v.as_str())),
+                ("webdav_url", p.get("webdav_url").and_then(|v| v.as_str())),
+                ("webdav_username", p.get("webdav_username").and_then(|v| v.as_str())),
+                ("webdav_password", p.get("webdav_password").and_then(|v| v.as_str())),
+                ("qdrant_url", p.get("qdrant_url").and_then(|v| v.as_str())),
+                ("gateway_mode", p.get("gateway_mode").and_then(|v| v.as_str())),
+            ];
+
+            for (key, value) in fields {
+                if let Some(val) = value {
+                    let config_key = format!("config.{}", key);
+                    let _ = sqlx::query(
+                        "INSERT OR REPLACE INTO kv_store (key, value, updated_at) VALUES (?, ?, ?)"
+                    )
+                    .bind(&config_key)
+                    .bind(val)
+                    .bind(now)
+                    .execute(&db)
+                    .await;
+                }
+            }
+
+            if let Some(val) = p.get("data_local_only").and_then(|v| v.as_bool()) {
+                let config_key = "config.data_local_only";
+                let val_str = if val { "true" } else { "false" };
+                let _ = sqlx::query(
+                    "INSERT OR REPLACE INTO kv_store (key, value, updated_at) VALUES (?, ?, ?)"
+                )
+                .bind(config_key)
+                .bind(val_str)
+                .bind(now)
+                .execute(&db)
+                .await;
+            }
+
+            Ok(serde_json::json!({"status": "updated"}))
+        }
+    }).await;
+
+    let s = state.clone();
+    dispatcher.register("skill.install", move |params: Option<serde_json::Value>| {
+        let registry = s.skill_registry.clone();
+        async move {
+            let p = match params {
+                Some(v) => v,
+                None => return Ok(serde_json::json!({"error": "missing params: skill_id"})),
+            };
+            let skill_id = p["skill_id"].as_str().unwrap_or("").to_string();
+            if skill_id.is_empty() {
+                return Ok(serde_json::json!({"error": "skill_id is required"}));
+            }
+
+            struct PlaceholderSkill { id: String }
+            impl maple_engine::skill_registry::Skill for PlaceholderSkill {
+                fn id(&self) -> &str { &self.id }
+                fn description(&self) -> &str { "Placeholder - awaiting MCP server connection" }
+                fn execute(&self, config: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
+                    Ok(serde_json::json!({"skill_id": self.id, "status": "placeholder", "input": config}))
+                }
+            }
+
+            registry.register(Box::new(PlaceholderSkill { id: skill_id.clone() })).await;
+            Ok(serde_json::json!({"skill_id": skill_id, "status": "installed"}))
+        }
+    }).await;
+
+    let s = state.clone();
+    dispatcher.register("skill.uninstall", move |params: Option<serde_json::Value>| {
+        let registry = s.skill_registry.clone();
+        async move {
+            let p = match params {
+                Some(v) => v,
+                None => return Ok(serde_json::json!({"error": "missing params: skill_id"})),
+            };
+            let skill_id = p["skill_id"].as_str().unwrap_or("").to_string();
+            registry.unregister(&skill_id).await;
+            Ok(serde_json::json!({"skill_id": skill_id, "status": "uninstalled"}))
         }
     }).await;
 }

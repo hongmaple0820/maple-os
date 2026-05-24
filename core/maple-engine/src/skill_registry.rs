@@ -53,6 +53,11 @@ impl SkillRegistry {
         let skills = self.skills.read().await;
         skills.values().map(|s| (s.id().to_string(), s.description().to_string())).collect()
     }
+
+    pub async fn unregister(&self, skill_id: &str) {
+        let mut skills = self.skills.write().await;
+        skills.remove(skill_id);
+    }
 }
 
 #[cfg(test)]

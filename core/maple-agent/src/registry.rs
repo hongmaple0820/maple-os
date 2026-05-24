@@ -129,6 +129,25 @@ impl AgentRegistry {
         Ok(())
     }
 
+pub async fn register_agent(&self, id: &str, name: &str, status: AgentStatus) {
+        let schema = AgentSchema {
+            id: id.to_string(),
+            name: name.to_string(),
+            description: None,
+            avatar_url: None,
+            transport: Transport::WebSocket,
+            capabilities: AgentCapabilities::default(),
+            triggers: AgentTriggers::default(),
+            max_concurrent_tasks: 3,
+        };
+        self.agents.insert(id.to_string(), AgentEntry {
+            schema,
+            status,
+            last_heartbeat: Instant::now(),
+            current_task_count: 0,
+        });
+    }
+
     pub async fn set_online(&self, agent_id: &str) {
         if let Some(mut entry) = self.agents.get_mut(agent_id) {
             entry.status = AgentStatus::Online;
