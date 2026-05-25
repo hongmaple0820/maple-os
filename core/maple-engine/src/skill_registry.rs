@@ -8,6 +8,12 @@ pub struct SkillRegistry {
     skills: Arc<RwLock<HashMap<String, Box<dyn Skill + Send + Sync>>>>,
 }
 
+impl Default for SkillRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub trait Skill: Send + Sync {
     fn id(&self) -> &str;
     fn description(&self) -> &str;

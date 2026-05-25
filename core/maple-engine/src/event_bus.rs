@@ -45,6 +45,12 @@ pub struct EventBus {
     subscribers: DashMap<String, Vec<mpsc::Sender<Event>>>,
 }
 
+impl Default for EventBus {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EventBus {
     pub fn new() -> Self {
         Self {

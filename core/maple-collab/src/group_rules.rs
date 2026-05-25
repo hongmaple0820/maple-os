@@ -44,6 +44,12 @@ pub struct GroupRulesEngine {
     rate_limit_tracker: HashMap<String, RateLimitEntry>,
 }
 
+impl Default for GroupRulesEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GroupRulesEngine {
     pub fn new() -> Self {
         Self {

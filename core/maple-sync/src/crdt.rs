@@ -6,6 +6,12 @@ pub struct CrdtManager {
     doc: AutoCommit,
 }
 
+impl Default for CrdtManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CrdtManager {
     pub fn new() -> Self {
         Self { doc: AutoCommit::new() }
@@ -32,12 +38,11 @@ impl CrdtManager {
             }
             (Value::Object(local_map), _) => {
                 let merged = local_map.clone();
-                if let Some(ts) = remote.get("_timestamp").and_then(|v| v.as_u64()) {
-                    if let Some(local_ts) = merged.get("_timestamp").and_then(|v| v.as_u64()) {
-                        if ts >= local_ts {
-                            return remote.clone();
-                        }
-                    }
+                if let Some(ts) = remote.get("_timestamp").and_then(|v| v.as_u64())
+                    && let Some(local_ts) = merged.get("_timestamp").and_then(|v| v.as_u64())
+                    && ts >= local_ts
+                {
+                    return remote.clone();
                 }
                 Value::Object(merged)
             }
@@ -154,13 +159,12 @@ mod tests {
         let mut local = CrdtManager::new();
         local.create_automerge_doc("version", &json!("0.1.0"));
         local.create_automerge_doc("count", &json!(42));
-        let local_bytes = local.get_automerge_doc();
 
         let mut remote = CrdtManager::new();
         remote.create_automerge_doc("name", &json!("MapleOS"));
         let remote_bytes = remote.get_automerge_doc();
 
         local.merge_automerge_doc(&remote_bytes);
-        assert!(local.get_automerge_doc().len() > 0);
+        assert!(!local.get_automerge_doc().is_empty());
     }
 }

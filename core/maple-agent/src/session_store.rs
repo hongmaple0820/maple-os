@@ -27,7 +27,7 @@ impl SessionStore {
         for (role, content, metadata) in &rows {
             let meta: Option<serde_json::Value> = serde_json::from_str(metadata).ok();
             let tool_call_id = meta.as_ref().and_then(|m| m["tool_call_id"].as_str()).map(|s| s.to_string());
-            let tool_calls = meta.as_ref().and_then(|m| m["tool_calls"].as_array()).map(|a| a.clone());
+            let tool_calls = meta.as_ref().and_then(|m| m["tool_calls"].as_array()).cloned();
 
             let msg = Message {
                 role: role.clone(),

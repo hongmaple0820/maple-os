@@ -49,7 +49,7 @@ struct McpServerInstance {
     stdin: Option<tokio::process::ChildStdin>,
     stdout_reader: Option<Mutex<BufReader<tokio::process::ChildStdout>>>,
     ws_writer: Option<Mutex<WsSink>>,
-    stderr_handle: Option<tokio::task::JoinHandle<()>>,
+    _stderr_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Drop for McpServerInstance {
@@ -73,6 +73,12 @@ pub struct McpHostManager {
     servers: DashMap<String, Mutex<McpServerInstance>>,
     tool_index: DashMap<String, ToolRoute>,
     next_request_id: std::sync::atomic::AtomicU64,
+}
+
+impl Default for McpHostManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl McpHostManager {
@@ -170,7 +176,7 @@ impl McpHostManager {
                     stdin: Some(stdin_writer),
                     stdout_reader: Some(Mutex::new(reader)),
                     ws_writer: None,
-                    stderr_handle,
+                    _stderr_handle: stderr_handle,
                 }));
             }
             McpTransportConfig::Http { url } => {
@@ -188,7 +194,7 @@ impl McpHostManager {
                     stdin: None,
                     stdout_reader: None,
                     ws_writer: None,
-                    stderr_handle: None,
+                    _stderr_handle: None,
                 }));
             }
             McpTransportConfig::WebSocket { url } => {
@@ -234,7 +240,7 @@ impl McpHostManager {
                     stdin: None,
                     stdout_reader: None,
                     ws_writer: Some(Mutex::new(write)),
-                    stderr_handle: None,
+                    _stderr_handle: None,
                 }));
             }
         }
@@ -461,10 +467,10 @@ impl McpHostManager {
             while let Some(msg) = read.next().await {
                 match msg {
                     Ok(Message::Text(text)) => {
-                        if let Ok(json) = serde_json::from_str::<Value>(&text) {
-                            if json.get("id").is_some() {
-                                return Some(json);
-                            }
+                        if let Ok(json) = serde_json::from_str::<Value>(&text)
+                            && json.get("id").is_some()
+                        {
+                            return Some(json);
                         }
                     }
                     Ok(Message::Close(_)) => return None,

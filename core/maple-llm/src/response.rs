@@ -31,7 +31,7 @@ impl LlmResponse {
     }
 
     pub fn has_tool_calls(&self) -> bool {
-        self.tool_calls.as_ref().map_or(false, |tc| !tc.is_empty())
+        self.tool_calls.as_ref().is_some_and(|tc| !tc.is_empty())
     }
 
     pub fn with_tool_calls(mut self, calls: Vec<serde_json::Value>) -> Self {

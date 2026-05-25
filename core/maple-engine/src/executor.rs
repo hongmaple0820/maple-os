@@ -65,10 +65,10 @@ impl NodeExecutor {
         ctx: &'a mut WorkflowExecution,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send + 'a>> {
         Box::pin(async move {
-            if let Some(cond) = &node.condition {
-                if !eval_condition(cond, &ctx.context) {
-                    return Ok(Value::Null);
-                }
+            if let Some(cond) = &node.condition
+                && !eval_condition(cond, &ctx.context)
+            {
+                return Ok(Value::Null);
             }
 
             let result = match &node.node_type {
@@ -145,10 +145,10 @@ impl NodeExecutor {
         context: &HashMap<String, Value>,
     ) -> Result<Value> {
         for branch in branches {
-            if let Some(expr) = &branch.expression {
-                if eval_condition(expr, context) {
-                    return Ok(Value::String(branch.target_node.clone()));
-                }
+            if let Some(expr) = &branch.expression
+                && eval_condition(expr, context)
+            {
+                return Ok(Value::String(branch.target_node.clone()));
             }
         }
         Ok(Value::String("default".to_string()))
@@ -443,9 +443,11 @@ impl NodeExecutor {
             }
         }
 
-        let output = sub_exec.context.get("output").cloned().unwrap_or_else(|| {
-            Value::Object(sub_input)
-        });
+        let output = sub_exec
+            .context
+            .get("output")
+            .cloned()
+            .unwrap_or(Value::Object(sub_input));
 
         ctx.context.insert(format!("sub_workflow_{}_result", workflow_id), output.clone());
 
@@ -668,7 +670,7 @@ fn eval_condition(expression: &str, context: &HashMap<String, Value>) -> bool {
 
     if expr.starts_with("{{") && expr.ends_with("}}") {
         let path = &expr[2..expr.len()-2].trim();
-        return context.get(path as &str).map_or(false, |v| !v.is_null());
+        return context.get(path as &str).is_some_and(|v| !v.is_null());
     }
 
     if let Some(idx) = expr.find("&&") {
@@ -739,7 +741,7 @@ fn eval_condition(expression: &str, context: &HashMap<String, Value>) -> bool {
     match resolved.as_str() {
         "true" | "1" | "yes" => true,
         "false" | "0" | "no" | "" => false,
-        _ => context.get(expr).map_or(false, |v| !v.is_null()),
+        _ => context.get(expr).is_some_and(|v| !v.is_null()),
     }
 }
 

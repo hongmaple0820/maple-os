@@ -43,7 +43,7 @@ use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
 pub struct AppState {
-    pub config: ServerConfig,
+    config: ServerConfig,
     pub db: sqlx::SqlitePool,
     pub event_bus: Arc<EventBus>,
     pub llm_router: Arc<LlmRouter>,
@@ -628,10 +628,10 @@ async fn register_builtin_skills(skill_registry: &SkillRegistry) {
             let trimmed = line.trim();
             if trimmed.contains("class=\"result__a\"") {
                 in_link = true;
-                if let Some(start) = trimmed.find(">") {
-                    if let Some(end) = trimmed.find("</a>") {
-                        title = trimmed[start+1..end].trim().to_string();
-                    }
+                if let Some(start) = trimmed.find(">")
+                    && let Some(end) = trimmed.find("</a>")
+                {
+                    title = trimmed[start + 1..end].trim().to_string();
                 }
                 if let Some(href_start) = trimmed.find("href=\"") {
                     let rest = &trimmed[href_start+6..];
@@ -683,9 +683,9 @@ async fn register_builtin_skills(skill_registry: &SkillRegistry) {
                 "javascript" | "js" => {
                     let rt = tokio::runtime::Handle::current();
                     let _guard = rt.enter();
-                    let result = tokio::task::block_in_place(|| {
+                    tokio::task::block_in_place(|| {
                         rt.block_on(async {
-                            let mut child = tokio::process::Command::new("node")
+                            let child = tokio::process::Command::new("node")
                                 .arg("-e")
                                 .arg(code)
                                 .stdout(std::process::Stdio::piped())
@@ -706,18 +706,17 @@ async fn register_builtin_skills(skill_registry: &SkillRegistry) {
                                 Err(_) => Ok(serde_json::json!({"language": "javascript", "error": "timeout exceeded", "exit_code": -1})),
                             }
                         })
-                    });
-                    result
+                    })
                 }
                 "python" | "py" => {
                     let rt = tokio::runtime::Handle::current();
                     let _guard = rt.enter();
-                    let result = tokio::task::block_in_place(|| {
+                    tokio::task::block_in_place(|| {
                         rt.block_on(async {
                             let temp_dir = std::env::temp_dir();
                             let file_path = temp_dir.join(format!("mapleos_exec_{}.py", uuid::Uuid::new_v4()));
                             std::fs::write(&file_path, code)?;
-                            let mut child = tokio::process::Command::new("python3")
+                            let child = tokio::process::Command::new("python3")
                                 .arg(&file_path)
                                 .stdout(std::process::Stdio::piped())
                                 .stderr(std::process::Stdio::piped())
@@ -738,8 +737,7 @@ async fn register_builtin_skills(skill_registry: &SkillRegistry) {
                                 Err(_) => Ok(serde_json::json!({"language": "python", "error": "timeout exceeded", "exit_code": -1})),
                             }
                         })
-                    });
-                    result
+                    })
                 }
                 _ => Ok(serde_json::json!({
                     "error": format!("Unsupported language: {}", language),
@@ -984,14 +982,10 @@ async fn auth_middleware(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
 
-    let token = if auth_header.starts_with("Bearer ") {
-        &auth_header[7..]
-    } else {
-        ""
-    };
+    let token = auth_header.strip_prefix("Bearer ").unwrap_or_default();
 
     if token.is_empty() {
-        if std::env::var("REQUIRE_AUTH").unwrap_or_default() == "true" {
+        if state.config.require_auth {
             return Err(axum::http::StatusCode::UNAUTHORIZED);
         }
         return Ok(next.run(req).await);
@@ -1040,7 +1034,7 @@ async fn chat_stream_handler(
             let model_name = adapter.name().to_string();
             match adapter.complete(llm_request).await {
                 Ok(response) => Some((model_name, response.content)),
-                Err(e) => None,
+                Err(_) => None,
             }
         }
         Err(_) => None,
@@ -1221,7 +1215,7 @@ async fn memory_store_handler(
 ) -> impl IntoResponse {
     let entry = MemoryEntry {
         id: uuid::Uuid::new_v4().to_string(),
-        memory_type: MemoryType::from_str(&req.memory_type),
+        memory_type: req.memory_type.parse::<MemoryType>().unwrap_or(MemoryType::Working),
         content: req.content,
         metadata: req.metadata,
         created_at: chrono::Utc::now().timestamp(),
@@ -1249,7 +1243,7 @@ async fn memory_search_handler(
     Json(req): Json<MemorySearchRequest>,
 ) -> impl IntoResponse {
     let store = state.memory_store.lock().await;
-    let mt = MemoryType::from_str(&req.memory_type);
+    let mt = req.memory_type.parse::<MemoryType>().unwrap_or(MemoryType::Working);
     match store.search_by_type(&mt, &req.keyword, req.limit).await {
         Ok(entries) => axum::Json(serde_json::json!({
             "results": entries.iter().map(|e| serde_json::json!({
@@ -1646,7 +1640,7 @@ async fn main() -> anyhow::Result<()> {
 
     let database_url = &config.database_url;
 
-    let pool = sqlx::SqlitePool::connect(&database_url).await?;
+    let pool = sqlx::SqlitePool::connect(database_url).await?;
     run_migrations(&pool).await?;
 
     let event_bus = Arc::new(EventBus::new());
@@ -1726,7 +1720,8 @@ async fn main() -> anyhow::Result<()> {
     let scheduler = Arc::new(Scheduler::new());
     let job_count: usize;
     {
-        let rows: Vec<(String, String, String, String, Option<i64>, i64, bool)> = sqlx::query_as(
+        type ScheduledJobRow = (String, String, String, String, Option<i64>, i64, bool);
+        let rows: Vec<ScheduledJobRow> = sqlx::query_as(
             "SELECT id, workflow_id, cron_expr, timezone, last_run_at, next_run_at, enabled FROM scheduled_jobs WHERE enabled = 1"
         ).fetch_all(&pool).await?;
         job_count = rows.len();
@@ -1745,41 +1740,38 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            match task_worker_queue.dequeue().await {
-                Ok(Some(task)) => {
-                    let payload = task.payload.clone();
-                    let prompt = payload["prompt"].as_str().unwrap_or("").to_string();
-                    let task_id = task.id.clone();
-                    if !prompt.is_empty() {
-                        let llm_request = maple_llm::request::LlmRequest::new(prompt, "task-worker");
-                        match task_worker_llm.route(&llm_request).await {
-                            Ok(adapter) => {
-                                match adapter.complete(llm_request).await {
-                                    Ok(_) => {
-                                        let _ = task_worker_queue.complete(&task_id).await;
-                                    }
-                                    Err(e) => {
-                                        let _ = task_worker_queue.fail(&task_id, &e.to_string()).await;
-                                    }
+            if let Ok(Some(task)) = task_worker_queue.dequeue().await {
+                let payload = task.payload.clone();
+                let prompt = payload["prompt"].as_str().unwrap_or("").to_string();
+                let task_id = task.id.clone();
+                if !prompt.is_empty() {
+                    let llm_request = maple_llm::request::LlmRequest::new(prompt, "task-worker");
+                    match task_worker_llm.route(&llm_request).await {
+                        Ok(adapter) => {
+                            match adapter.complete(llm_request).await {
+                                Ok(_) => {
+                                    let _ = task_worker_queue.complete(&task_id).await;
+                                }
+                                Err(e) => {
+                                    let _ = task_worker_queue.fail(&task_id, &e.to_string()).await;
                                 }
                             }
-                            Err(e) => {
-                                let _ = task_worker_queue.fail(&task_id, &format!("LLM routing: {}", e)).await;
-                            }
                         }
-                    } else {
-                        let skill_id = payload["skill_id"].as_str().unwrap_or("echo");
-                        match task_worker_skills.execute(skill_id, &payload).await {
-                            Ok(_) => {
-                                let _ = task_worker_queue.complete(&task_id).await;
-                            }
-                            Err(e) => {
-                                let _ = task_worker_queue.fail(&task_id, &e.to_string()).await;
-                            }
+                        Err(e) => {
+                            let _ = task_worker_queue.fail(&task_id, &format!("LLM routing: {}", e)).await;
+                        }
+                    }
+                } else {
+                    let skill_id = payload["skill_id"].as_str().unwrap_or("echo");
+                    match task_worker_skills.execute(skill_id, &payload).await {
+                        Ok(_) => {
+                            let _ = task_worker_queue.complete(&task_id).await;
+                        }
+                        Err(e) => {
+                            let _ = task_worker_queue.fail(&task_id, &e.to_string()).await;
                         }
                     }
                 }
-                Ok(None) | Err(_) => {}
             }
         }
     });
@@ -2139,7 +2131,6 @@ async fn register_business_handlers(dispatcher: &Arc<RpcDispatcher>, state: Arc<
     dispatcher.register("agent.chat", move |params: Option<serde_json::Value>| {
         let llm_router = s.llm_router.clone();
         let session_store = s.session_store.clone();
-        let skill_registry = s.skill_registry.clone();
         async move {
             let p = match params {
                 Some(v) => v,
