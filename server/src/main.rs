@@ -970,6 +970,7 @@ async fn auth_middleware(
     next: Next,
 ) -> Result<axum::response::Response, axum::http::StatusCode> {
     let path = req.uri().path();
+    let method = req.method().clone();
     
     if path == "/health" || path == "/health/deep" || path.starts_with("/ws/") || path.starts_with("/api/events") {
         return Ok(next.run(req).await);
@@ -994,8 +995,57 @@ async fn auth_middleware(
     }
 
     match state.auth_service.verify_token(token) {
-        Ok(_claims) => Ok(next.run(req).await),
+        Ok(claims) => {
+            let required_permission = get_required_permission(path, &method);
+            if let Some(permission) = required_permission {
+                if !claims.has_permission(&permission) {
+                    tracing::warn!(
+                        user_id = ?claims.user_id,
+                        role = %claims.role,
+                        path = %path,
+                        method = %method,
+                        "Permission denied"
+                    );
+                    return Err(axum::http::StatusCode::FORBIDDEN);
+                }
+            }
+            Ok(next.run(req).await)
+        }
         Err(_) => Err(axum::http::StatusCode::UNAUTHORIZED),
+    }
+}
+
+fn get_required_permission(path: &str, method: &axum::http::Method) -> Option<maple_gateway::auth::Permission> {
+    use maple_gateway::auth::Permission;
+    
+    match (method.as_str(), path) {
+        ("GET", p) if p.starts_with("/api/workflows") => Some(Permission::ReadWorkflows),
+        ("POST", p) if p.starts_with("/api/workflows") => Some(Permission::WriteWorkflows),
+        ("PUT", p) if p.starts_with("/api/workflows") => Some(Permission::WriteWorkflows),
+        ("DELETE", p) if p.starts_with("/api/workflows") => Some(Permission::DeleteWorkflows),
+        
+        ("GET", p) if p.starts_with("/api/agents") => Some(Permission::ReadAgents),
+        ("POST", p) if p.starts_with("/api/agents") => Some(Permission::WriteAgents),
+        ("DELETE", p) if p.starts_with("/api/agents") => Some(Permission::ManageAgents),
+        
+        ("GET", p) if p.starts_with("/api/sessions") => Some(Permission::ReadSessions),
+        ("DELETE", p) if p.starts_with("/api/sessions") => Some(Permission::DeleteSessions),
+        
+        ("GET", p) if p.starts_with("/api/memories") => Some(Permission::ReadMemories),
+        ("POST", p) if p.starts_with("/api/memories") => Some(Permission::WriteMemories),
+        ("DELETE", p) if p.starts_with("/api/memories") => Some(Permission::DeleteMemories),
+        
+        ("GET", p) if p.starts_with("/api/prompts") => Some(Permission::ReadPrompts),
+        ("POST", p) if p.starts_with("/api/prompts") => Some(Permission::WritePrompts),
+        
+        ("GET", "/api/config") => Some(Permission::ManageConfig),
+        ("PUT", "/api/config") => Some(Permission::ManageConfig),
+        
+        ("GET", "/health/deep") => Some(Permission::ViewMetrics),
+        ("GET", "/api/agents/status") => Some(Permission::ViewMetrics),
+        ("GET", "/api/tasks/stats") => Some(Permission::ViewMetrics),
+        
+        _ => None,
     }
 }
 
@@ -1359,6 +1409,112 @@ async fn get_checkpoints_handler(
             "output": output,
             "created_at": created,
         })).collect::<Vec<_>>(),
+    }))
+}
+
+async fn workflow_stats_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(workflow_id): axum::extract::Path<String>,
+) -> axum::Json<serde_json::Value> {
+    let total: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM workflow_executions WHERE workflow_id = ?"
+    )
+    .bind(&workflow_id)
+    .fetch_one(&*state.db)
+    .await
+    .unwrap_or(0);
+
+    let completed: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM workflow_executions WHERE workflow_id = ? AND status = 'completed'"
+    )
+    .bind(&workflow_id)
+    .fetch_one(&*state.db)
+    .await
+    .unwrap_or(0);
+
+    let failed: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM workflow_executions WHERE workflow_id = ? AND status = 'failed'"
+    )
+    .bind(&workflow_id)
+    .fetch_one(&*state.db)
+    .await
+    .unwrap_or(0);
+
+    let avg_duration: Option<f64> = sqlx::query_scalar(
+        "SELECT AVG(CAST((completed_at - started_at) AS REAL)) FROM workflow_executions WHERE workflow_id = ? AND status = 'completed' AND completed_at IS NOT NULL"
+    )
+    .bind(&workflow_id)
+    .fetch_one(&*state.db)
+    .await
+    .unwrap_or(None);
+
+    axum::Json(serde_json::json!({
+        "workflow_id": workflow_id,
+        "total_executions": total,
+        "completed": completed,
+        "failed": failed,
+        "success_rate": if total > 0 { (completed as f64 / total as f64 * 100.0).round() } else { 0.0 },
+        "avg_duration_secs": avg_duration.map(|d| d.round()),
+    }))
+}
+
+async fn system_metrics_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::Json<serde_json::Value> {
+    let db_ok = sqlx::query("SELECT 1").execute(&*state.db).await.is_ok();
+    let agents = state.agent_registry.list_agents().await;
+    let tasks = state.task_queue.stats().await.unwrap_or_default();
+
+    let total_workflows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM workflows")
+        .fetch_one(&*state.db)
+        .await
+        .unwrap_or(0);
+
+    let total_executions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM workflow_executions")
+        .fetch_one(&*state.db)
+        .await
+        .unwrap_or(0);
+
+    let total_sessions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chat_messages")
+        .fetch_one(&*state.db)
+        .await
+        .unwrap_or(0);
+
+    let total_memories: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM memories")
+        .fetch_one(&*state.db)
+        .await
+        .unwrap_or(0);
+
+    let total_documents: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM kb_documents")
+        .fetch_one(&*state.db)
+        .await
+        .unwrap_or(0);
+
+    axum::Json(serde_json::json!({
+        "status": if db_ok { "healthy" } else { "degraded" },
+        "version": env!("CARGO_PKG_VERSION"),
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+        "database": {
+            "connected": db_ok,
+            "workflows": total_workflows,
+            "executions": total_executions,
+            "sessions": total_sessions,
+            "memories": total_memories,
+            "documents": total_documents,
+        },
+        "agents": {
+            "total": agents.len(),
+            "online": agents.iter().filter(|(_, _, s)| *s == maple_agent::registry::AgentStatus::Online).count(),
+            "offline": agents.iter().filter(|(_, _, s)| *s == maple_agent::registry::AgentStatus::Offline).count(),
+            "busy": agents.iter().filter(|(_, _, s)| *s == maple_agent::registry::AgentStatus::Busy).count(),
+        },
+        "tasks": {
+            "pending": tasks.pending,
+            "running": tasks.running,
+            "completed": tasks.completed,
+            "failed": tasks.failed,
+            "dead_letter": tasks.dead_letter,
+        },
     }))
 }
 
@@ -2225,6 +2381,7 @@ async fn main() -> anyhow::Result<()> {
     let state_routes = Router::new()
         .route("/health", get(health_handler))
         .route("/health/deep", get(deep_health_handler))
+        .route("/metrics", get(system_metrics_handler))
         .route("/ws/agents", get(ws_agent_handler))
         .route("/api/chat", post(chat_handler))
         .route("/api/models", get(models_handler))
@@ -2254,6 +2411,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/events", get(sse_events_handler))
         .route("/api/workflows/:id", get(get_workflow_handler).put(update_workflow_handler).delete(delete_workflow_handler))
         .route("/api/workflows/:id/executions", get(get_workflow_executions_handler))
+        .route("/api/workflows/:id/stats", get(workflow_stats_handler))
         .route("/api/executions/:id", get(get_execution_handler))
         .route("/api/executions/:id/checkpoints", get(get_checkpoints_handler))
         .route("/api/workspaces/:id", get(get_workspace_handler).put(update_workspace_handler).delete(delete_workspace_handler))
