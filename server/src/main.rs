@@ -1297,6 +1297,71 @@ async fn task_requeue_handler(
     }
 }
 
+async fn get_execution_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(exec_id): axum::extract::Path<String>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    let row = sqlx::query_as::<_, (String, String, i64, String, Option<String>, Option<String>, i64, Option<i64>, Option<String>)>(
+        "SELECT id, workflow_id, workflow_version, status, input, output, started_at, completed_at, agent_id FROM workflow_executions WHERE id = ?"
+    )
+    .bind(&exec_id)
+    .fetch_optional(&*state.db)
+    .await
+    .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    match row {
+        Some((id, wf_id, ver, status, input, output, started, completed, agent)) => {
+            let checkpoints = sqlx::query_as::<_, (String, String, String, i64)>(
+                "SELECT exec_id, node_id, output, created_at FROM checkpoints WHERE exec_id = ? ORDER BY created_at"
+            )
+            .bind(&exec_id)
+            .fetch_all(&*state.db)
+            .await
+            .unwrap_or_default();
+
+            Ok(axum::Json(serde_json::json!({
+                "id": id,
+                "workflow_id": wf_id,
+                "version": ver,
+                "status": status,
+                "input": input,
+                "output": output,
+                "started_at": started,
+                "completed_at": completed,
+                "agent_id": agent,
+                "checkpoints": checkpoints.iter().map(|(_, node_id, output, created)| serde_json::json!({
+                    "node_id": node_id,
+                    "output": output,
+                    "created_at": created,
+                })).collect::<Vec<_>>(),
+            })))
+        }
+        None => Err(axum::http::StatusCode::NOT_FOUND),
+    }
+}
+
+async fn get_checkpoints_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(exec_id): axum::extract::Path<String>,
+) -> axum::Json<serde_json::Value> {
+    let checkpoints = sqlx::query_as::<_, (String, String, String, i64)>(
+        "SELECT exec_id, node_id, output, created_at FROM checkpoints WHERE exec_id = ? ORDER BY created_at"
+    )
+    .bind(&exec_id)
+    .fetch_all(&*state.db)
+    .await
+    .unwrap_or_default();
+
+    axum::Json(serde_json::json!({
+        "exec_id": exec_id,
+        "checkpoints": checkpoints.iter().map(|(_, node_id, output, created)| serde_json::json!({
+            "node_id": node_id,
+            "output": output,
+            "created_at": created,
+        })).collect::<Vec<_>>(),
+    }))
+}
+
 async fn sse_events_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> impl IntoResponse {
@@ -1721,6 +1786,56 @@ async fn deep_health_handler(
     }))
 }
 
+async fn agent_status_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::Json<serde_json::Value> {
+    let agents = state.agent_registry.list_agents().await;
+    let tasks = state.task_queue.stats().await.unwrap_or_default();
+
+    let agent_details: Vec<serde_json::Value> = agents.iter().map(|(id, name, status)| {
+        serde_json::json!({
+            "id": id,
+            "name": name,
+            "status": format!("{:?}", status),
+            "is_online": *status == maple_agent::registry::AgentStatus::Online,
+        })
+    }).collect();
+
+    axum::Json(serde_json::json!({
+        "agents": agent_details,
+        "summary": {
+            "total": agents.len(),
+            "online": agents.iter().filter(|(_, _, s)| *s == maple_agent::registry::AgentStatus::Online).count(),
+            "offline": agents.iter().filter(|(_, _, s)| *s == maple_agent::registry::AgentStatus::Offline).count(),
+            "busy": agents.iter().filter(|(_, _, s)| *s == maple_agent::registry::AgentStatus::Busy).count(),
+        },
+        "tasks": {
+            "pending": tasks.pending,
+            "running": tasks.running,
+            "completed": tasks.completed,
+            "failed": tasks.failed,
+        },
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+    }))
+}
+
+async fn agent_heartbeat_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(agent_id): axum::extract::Path<String>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    match state.agent_registry.get_agent(&agent_id).await {
+        Some(_) => {
+            state.agent_registry.update_heartbeat(&agent_id).await;
+            Ok(axum::Json(serde_json::json!({
+                "agent_id": agent_id,
+                "status": "ok",
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+            })))
+        }
+        None => Err(axum::http::StatusCode::NOT_FOUND),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct UpdateConfigRequest {
     host: Option<String>,
@@ -2119,6 +2234,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/kb/search", post(kb_search_handler))
         .route("/api/agents", get(list_agents_handler).post(register_agent_handler))
         .route("/api/agents/:id", get(get_agent_handler).delete(delete_agent_handler))
+        .route("/api/agents/:id/heartbeat", post(agent_heartbeat_handler))
+        .route("/api/agents/status", get(agent_status_handler))
         .route("/api/sessions", get(sessions_handler))
         .route("/api/sessions/:id", delete(delete_session_handler))
         .route("/api/sessions/:id/messages", get(get_session_messages_handler))
@@ -2137,6 +2254,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/events", get(sse_events_handler))
         .route("/api/workflows/:id", get(get_workflow_handler).put(update_workflow_handler).delete(delete_workflow_handler))
         .route("/api/workflows/:id/executions", get(get_workflow_executions_handler))
+        .route("/api/executions/:id", get(get_execution_handler))
+        .route("/api/executions/:id/checkpoints", get(get_checkpoints_handler))
         .route("/api/workspaces/:id", get(get_workspace_handler).put(update_workspace_handler).delete(delete_workspace_handler))
         .route("/api/auth/login", post(login_handler))
         .route("/api/auth/token", post(token_handler))
