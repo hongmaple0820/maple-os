@@ -255,17 +255,15 @@ impl SyncEngine {
             (Value::Object(_), Value::Object(_)) => ConflictResolution::Merged,
             (Value::Array(_), Value::Array(_)) => ConflictResolution::Merged,
             (Value::Number(ln), Value::Number(rn)) => {
-                if let (Some(l), Some(r)) = (ln.as_f64(), rn.as_f64()) {
-                    if r > l {
-                        return ConflictResolution::RemoteWins;
-                    }
+                if let (Some(l), Some(r)) = (ln.as_f64(), rn.as_f64())
+                    && r > l
+                {
+                    return ConflictResolution::RemoteWins;
                 }
                 ConflictResolution::LocalWins
             }
             (Value::String(ls), Value::String(rs)) => {
-                if ls == rs {
-                    ConflictResolution::LocalWins
-                } else if ls.contains(rs) {
+                if ls == rs || ls.contains(rs) {
                     ConflictResolution::LocalWins
                 } else if rs.contains(ls) {
                     ConflictResolution::RemoteWins
@@ -273,7 +271,7 @@ impl SyncEngine {
                     ConflictResolution::Merged
                 }
             }
-            (Value::Bool(lb), Value::Bool(rb)) => {
+            (Value::Bool(_), Value::Bool(rb)) => {
                 if *rb {
                     ConflictResolution::RemoteWins
                 } else {

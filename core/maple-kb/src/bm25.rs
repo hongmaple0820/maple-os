@@ -20,6 +20,12 @@ pub struct BM25Searcher {
     avg_dl: std::sync::atomic::AtomicU64,
 }
 
+impl Default for BM25Searcher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BM25Searcher {
     pub fn new() -> Self {
         Self {
@@ -55,7 +61,7 @@ impl BM25Searcher {
         self.doc_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let count = self.doc_count.load(std::sync::atomic::Ordering::Relaxed);
         let total_len: usize = self.chunks.iter().map(|c| c.length).sum();
-        let avg = if count > 0 { total_len / count } else { 0 };
+        let avg = total_len.checked_div(count).unwrap_or(0);
         self.avg_dl.store(avg as u64, std::sync::atomic::Ordering::Relaxed);
     }
 

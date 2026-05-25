@@ -147,21 +147,11 @@ pub enum TriggerConfig {
     Manual,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct HookConfig {
     pub on_start: Option<Vec<String>>,
     pub on_error: Option<Vec<String>>,
     pub on_complete: Option<Vec<String>>,
-}
-
-impl Default for HookConfig {
-    fn default() -> Self {
-        Self {
-            on_start: None,
-            on_error: None,
-            on_complete: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

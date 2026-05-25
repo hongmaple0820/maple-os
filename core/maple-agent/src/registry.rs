@@ -46,23 +46,12 @@ impl Default for AgentCapabilities {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AgentTriggers {
     pub events: Vec<String>,
     pub keywords: Vec<String>,
     pub cron: Option<String>,
     pub workflow_ids: Vec<String>,
-}
-
-impl Default for AgentTriggers {
-    fn default() -> Self {
-        Self {
-            events: Vec::new(),
-            keywords: Vec::new(),
-            cron: None,
-            workflow_ids: Vec::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,6 +96,12 @@ pub struct AgentRegistry {
     agents: DashMap<String, AgentEntry>,
     task_channels: DashMap<String, mpsc::Sender<AgentTask>>,
     result_channels: DashMap<String, oneshot::Sender<String>>,
+}
+
+impl Default for AgentRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AgentRegistry {

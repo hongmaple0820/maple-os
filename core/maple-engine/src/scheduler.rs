@@ -19,6 +19,12 @@ pub struct Scheduler {
     jobs: Arc<Mutex<Vec<ScheduledJob>>>,
 }
 
+impl Default for Scheduler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Scheduler {
     pub fn new() -> Self {
         Self {
@@ -84,10 +90,10 @@ impl Scheduler {
                         let mut guard = jobs.lock().await;
                         if let Some(j) = guard.iter_mut().find(|j| j.id == job_id) {
                             j.last_run_at = Some(now);
-                            if let Ok(cron) = parse_cron(&j.cron_expr) {
-                                if let Ok(next) = next_timestamp(&cron, now) {
-                                    j.next_run_at = next;
-                                }
+                            if let Ok(cron) = parse_cron(&j.cron_expr)
+                                && let Ok(next) = next_timestamp(&cron, now)
+                            {
+                                j.next_run_at = next;
                             }
                         }
                     }
@@ -141,7 +147,7 @@ fn parse_field(input: &str, min: i64, max: i64) -> Result<CronField> {
 }
 
 fn parse_cron(expr: &str) -> Result<CronExpr> {
-    let parts: Vec<&str> = expr.trim().split_whitespace().collect();
+    let parts: Vec<&str> = expr.split_whitespace().collect();
     if parts.len() != 5 {
         return Err(anyhow::anyhow!("Cron expression must have 5 fields: min hour day month weekday"));
     }
@@ -167,7 +173,7 @@ fn next_timestamp(cron: &CronExpr, from: i64) -> Result<i64> {
         {
             return Ok(dt.timestamp());
         }
-        dt = dt + chrono::Duration::minutes(1);
+        dt += chrono::Duration::minutes(1);
     }
     Err(anyhow::anyhow!("No matching time found within 1 year"))
 }

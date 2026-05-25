@@ -12,7 +12,7 @@ pub async fn handle_user_sse(
     let stream = async_stream::stream! {
         while let Some(event) = rx.recv().await {
             let data = serde_json::to_string(&event).unwrap_or_default();
-            yield Ok(Event::default().event(&event.event_type()).data(data));
+            yield Ok(Event::default().event(event.event_type()).data(data));
         }
     };
 

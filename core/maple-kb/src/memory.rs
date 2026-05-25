@@ -19,12 +19,17 @@ impl MemoryType {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
-        match s {
+}
+
+impl std::str::FromStr for MemoryType {
+    type Err = ();
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(match s {
             "episodic" => MemoryType::Episodic,
             "semantic" => MemoryType::Semantic,
             _ => MemoryType::Working,
-        }
+        })
     }
 }
 
@@ -98,7 +103,7 @@ pub async fn search_by_type(&self, memory_type: &MemoryType, keyword: &str, limi
 
         let entries: Vec<MemoryEntry> = rows.into_iter().map(|(id, mt, content, metadata, created_at, access_count)| {
             let metadata_map: HashMap<String, String> = serde_json::from_str(&metadata).unwrap_or_default();
-            MemoryEntry { id, memory_type: MemoryType::from_str(&mt), content, metadata: metadata_map, created_at, access_count: access_count as u32 }
+            MemoryEntry { id, memory_type: mt.parse::<MemoryType>().unwrap_or(MemoryType::Working), content, metadata: metadata_map, created_at, access_count: access_count as u32 }
         }).collect();
         Ok(entries)
     }
@@ -113,7 +118,7 @@ pub async fn search_by_type(&self, memory_type: &MemoryType, keyword: &str, limi
 
         Ok(row.map(|(id, mt, content, metadata, created_at, access_count)| {
             let metadata_map: HashMap<String, String> = serde_json::from_str(&metadata).unwrap_or_default();
-            MemoryEntry { id, memory_type: MemoryType::from_str(&mt), content, metadata: metadata_map, created_at, access_count: access_count as u32 }
+            MemoryEntry { id, memory_type: mt.parse::<MemoryType>().unwrap_or(MemoryType::Working), content, metadata: metadata_map, created_at, access_count: access_count as u32 }
         }))
     }
 
@@ -136,7 +141,7 @@ pub async fn search_by_type(&self, memory_type: &MemoryType, keyword: &str, limi
             let metadata_map: HashMap<String, String> = serde_json::from_str(&metadata).unwrap_or_default();
             let entry = MemoryEntry {
                 id,
-                memory_type: MemoryType::from_str(&mt),
+                memory_type: mt.parse::<MemoryType>().unwrap_or(MemoryType::Working),
                 content,
                 metadata: metadata_map,
                 created_at,

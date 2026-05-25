@@ -1,9 +1,10 @@
+#![allow(dead_code)]
+
 use async_trait::async_trait;
 use serde_json::Value;
 use reqwest::Client;
 use anyhow::Result;
 use uuid::Uuid;
-use tracing::info;
 
 use serde_json::json;
 #[derive(Debug, Clone)]

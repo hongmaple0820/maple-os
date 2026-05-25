@@ -18,6 +18,12 @@ pub struct HybridRetriever {
     rrf_k: usize,
 }
 
+impl Default for HybridRetriever {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HybridRetriever {
     pub fn new() -> Self {
         Self { rrf_k: 60 }

@@ -5,7 +5,6 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use sqlx::SqlitePool;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChunkEmbedding {
@@ -139,7 +138,7 @@ impl VectorSearch for InMemoryVectorStore {
 pub struct QdrantVectorStore {
     client: qdrant_client::Qdrant,
     collection_name: String,
-    dimension: usize,
+    _dimension: usize,
     id_map: DashMap<u64, String>,
 }
 
@@ -164,7 +163,7 @@ impl QdrantVectorStore {
         Ok(Self {
             client,
             collection_name: collection_name.to_string(),
-            dimension,
+            _dimension: dimension,
             id_map: DashMap::new(),
         })
     }
