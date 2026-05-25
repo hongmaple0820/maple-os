@@ -104,4 +104,36 @@ impl SessionStore {
             })
         }).collect())
     }
+
+    pub async fn delete_session(&self, session_id: &str) -> Result<bool> {
+        let result = sqlx::query(
+            "DELETE FROM chat_messages WHERE session_id = ?"
+        )
+        .bind(session_id)
+        .execute(&self.db)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn get_session_messages(&self, session_id: &str) -> Result<Vec<SessionMessage>> {
+        let rows = sqlx::query_as::<_, (String, String, i64)>(
+            "SELECT role, content, created_at FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC"
+        )
+        .bind(session_id)
+        .fetch_all(&self.db)
+        .await?;
+
+        Ok(rows.into_iter().map(|(role, content, created_at)| SessionMessage {
+            role,
+            content,
+            created_at,
+        }).collect())
+    }
+}
+
+pub struct SessionMessage {
+    pub role: String,
+    pub content: String,
+    pub created_at: i64,
 }

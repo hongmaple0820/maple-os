@@ -60,8 +60,9 @@ impl Orchestrator {
 
     pub async fn create_plan(&self, goal: &str, tools: &[String]) -> Result<ExecutionPlan> {
         let available_agents = self.registry.list_agents().await;
-        let online_agents: Vec<_> = available_agents.iter()
+        let online_agents: Vec<(String, String, crate::registry::AgentStatus)> = available_agents.iter()
             .filter(|(_, _, s)| *s == crate::registry::AgentStatus::Online)
+            .cloned()
             .collect();
 
         if online_agents.len() <= 1 {
@@ -106,7 +107,7 @@ impl Orchestrator {
             if let Some(agent_info) = agent {
                 let capabilities = &agent_info.capabilities;
                 let score = required_tools.iter()
-                    .filter(|tool| capabilities.iter().any(|cap| cap.contains(tool.as_str()) || tool.contains(cap.as_str())))
+                    .filter(|tool| capabilities.tools.iter().any(|cap| cap.contains(tool.as_str()) || tool.contains(cap.as_str())))
                     .count();
                 
                 if score > best_score {

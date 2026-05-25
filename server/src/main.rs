@@ -3,7 +3,7 @@ use axum::Router;
 use axum::extract::ws::WebSocketUpgrade;
 use axum::response::IntoResponse;
 use axum::response::sse::{Event, Sse};
-use axum::routing::{get, post};
+use axum::routing::{get, post, delete};
 use std::convert::Infallible;
 use axum::middleware::{self, Next};
 
@@ -102,6 +102,7 @@ pub struct AppState {
     pub memory_store: Arc<tokio::sync::Mutex<MemoryStore>>,
     pub prompt_version_mgr: Arc<PromptVersionManager>,
     pub task_queue: Arc<TaskQueueService>,
+    pub mcp_host: Arc<McpHostManager>,
     pub rate_limiter: RateLimiter,
 }
 
@@ -1123,7 +1124,6 @@ async fn audit_log_middleware(
 
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use tokio::sync::RwLock;
 use std::time::Instant;
 
@@ -1208,7 +1208,7 @@ async fn auth_middleware(
     let token = auth_header.strip_prefix("Bearer ").unwrap_or_default();
 
     if token.is_empty() {
-        if state.config.require_auth {
+        if state.config.read().await.require_auth {
             return Err(axum::http::StatusCode::UNAUTHORIZED);
         }
         return Ok(next.run(req).await);
@@ -1785,7 +1785,7 @@ async fn get_execution_handler(
         "SELECT id, workflow_id, workflow_version, status, input, output, started_at, completed_at, agent_id FROM workflow_executions WHERE id = ?"
     )
     .bind(&exec_id)
-    .fetch_optional(&*state.db)
+    .fetch_optional(&state.db)
     .await
     .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -1795,7 +1795,7 @@ async fn get_execution_handler(
                 "SELECT exec_id, node_id, output, created_at FROM checkpoints WHERE exec_id = ? ORDER BY created_at"
             )
             .bind(&exec_id)
-            .fetch_all(&*state.db)
+            .fetch_all(&state.db)
             .await
             .unwrap_or_default();
 
@@ -1828,7 +1828,7 @@ async fn get_checkpoints_handler(
         "SELECT exec_id, node_id, output, created_at FROM checkpoints WHERE exec_id = ? ORDER BY created_at"
     )
     .bind(&exec_id)
-    .fetch_all(&*state.db)
+    .fetch_all(&state.db)
     .await
     .unwrap_or_default();
 
@@ -1850,7 +1850,7 @@ async fn workflow_stats_handler(
         "SELECT COUNT(*) FROM workflow_executions WHERE workflow_id = ?"
     )
     .bind(&workflow_id)
-    .fetch_one(&*state.db)
+    .fetch_one(&state.db)
     .await
     .unwrap_or(0);
 
@@ -1858,7 +1858,7 @@ async fn workflow_stats_handler(
         "SELECT COUNT(*) FROM workflow_executions WHERE workflow_id = ? AND status = 'completed'"
     )
     .bind(&workflow_id)
-    .fetch_one(&*state.db)
+    .fetch_one(&state.db)
     .await
     .unwrap_or(0);
 
@@ -1866,7 +1866,7 @@ async fn workflow_stats_handler(
         "SELECT COUNT(*) FROM workflow_executions WHERE workflow_id = ? AND status = 'failed'"
     )
     .bind(&workflow_id)
-    .fetch_one(&*state.db)
+    .fetch_one(&state.db)
     .await
     .unwrap_or(0);
 
@@ -1874,7 +1874,7 @@ async fn workflow_stats_handler(
         "SELECT AVG(CAST((completed_at - started_at) AS REAL)) FROM workflow_executions WHERE workflow_id = ? AND status = 'completed' AND completed_at IS NOT NULL"
     )
     .bind(&workflow_id)
-    .fetch_one(&*state.db)
+    .fetch_one(&state.db)
     .await
     .unwrap_or(None);
 
@@ -1891,32 +1891,32 @@ async fn workflow_stats_handler(
 async fn system_metrics_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> axum::Json<serde_json::Value> {
-    let db_ok = sqlx::query("SELECT 1").execute(&*state.db).await.is_ok();
+    let db_ok = sqlx::query("SELECT 1").execute(&state.db).await.is_ok();
     let agents = state.agent_registry.list_agents().await;
     let tasks = state.task_queue.stats().await.unwrap_or_default();
 
     let total_workflows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM workflows")
-        .fetch_one(&*state.db)
+        .fetch_one(&state.db)
         .await
         .unwrap_or(0);
 
     let total_executions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM workflow_executions")
-        .fetch_one(&*state.db)
+        .fetch_one(&state.db)
         .await
         .unwrap_or(0);
 
     let total_sessions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chat_messages")
-        .fetch_one(&*state.db)
+        .fetch_one(&state.db)
         .await
         .unwrap_or(0);
 
     let total_memories: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM memories")
-        .fetch_one(&*state.db)
+        .fetch_one(&state.db)
         .await
         .unwrap_or(0);
 
     let total_documents: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM kb_documents")
-        .fetch_one(&*state.db)
+        .fetch_one(&state.db)
         .await
         .unwrap_or(0);
 
@@ -2420,7 +2420,7 @@ async fn get_workspace_handler(
         "SELECT id, name, description, owner_id, max_agents, auto_approve, knowledge_base_enabled, created_at FROM workspaces WHERE id = ?"
     )
     .bind(&workspace_id)
-    .fetch_optional(&*state.db)
+    .fetch_optional(&state.db)
     .await
     .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -2457,23 +2457,23 @@ async fn update_workspace_handler(
 ) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
     if let Some(name) = &req.name {
         let _ = sqlx::query("UPDATE workspaces SET name = ? WHERE id = ?")
-            .bind(name).bind(&workspace_id).execute(&*state.db).await;
+            .bind(name).bind(&workspace_id).execute(&state.db).await;
     }
     if let Some(desc) = &req.description {
         let _ = sqlx::query("UPDATE workspaces SET description = ? WHERE id = ?")
-            .bind(desc).bind(&workspace_id).execute(&*state.db).await;
+            .bind(desc).bind(&workspace_id).execute(&state.db).await;
     }
     if let Some(max) = req.max_agents {
         let _ = sqlx::query("UPDATE workspaces SET max_agents = ? WHERE id = ?")
-            .bind(max).bind(&workspace_id).execute(&*state.db).await;
+            .bind(max).bind(&workspace_id).execute(&state.db).await;
     }
     if let Some(auto) = req.auto_approve {
         let _ = sqlx::query("UPDATE workspaces SET auto_approve = ? WHERE id = ?")
-            .bind(auto as i64).bind(&workspace_id).execute(&*state.db).await;
+            .bind(auto as i64).bind(&workspace_id).execute(&state.db).await;
     }
     if let Some(kb) = req.knowledge_base_enabled {
         let _ = sqlx::query("UPDATE workspaces SET knowledge_base_enabled = ? WHERE id = ?")
-            .bind(kb as i64).bind(&workspace_id).execute(&*state.db).await;
+            .bind(kb as i64).bind(&workspace_id).execute(&state.db).await;
     }
 
     Ok(axum::Json(serde_json::json!({
@@ -2488,7 +2488,7 @@ async fn delete_workspace_handler(
 ) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
     let result = sqlx::query("DELETE FROM workspaces WHERE id = ?")
         .bind(&workspace_id)
-        .execute(&*state.db)
+        .execute(&state.db)
         .await
         .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -2505,7 +2505,7 @@ async fn delete_workspace_handler(
 async fn deep_health_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> axum::Json<serde_json::Value> {
-    let db_ok = sqlx::query("SELECT 1").execute(&*state.db).await.is_ok();
+    let db_ok = sqlx::query("SELECT 1").execute(&state.db).await.is_ok();
     let agents = state.agent_registry.list_agents().await;
     let tasks = state.task_queue.stats().await.unwrap_or_default();
 
@@ -2682,7 +2682,7 @@ async fn register_agent_handler(
     .bind(capabilities_json.to_string())
     .bind(req.max_concurrent_tasks.unwrap_or(3) as i64)
     .bind(now)
-    .execute(&*state.db)
+    .execute(&state.db)
     .await;
 
     state.agent_registry.register_agent(
@@ -2738,7 +2738,7 @@ async fn delete_agent_handler(
 
     let result = sqlx::query("DELETE FROM agents WHERE id = ?")
         .bind(&agent_id)
-        .execute(&*state.db)
+        .execute(&state.db)
         .await
         .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -2986,6 +2986,7 @@ async fn main() -> anyhow::Result<()> {
         memory_store: memory_store.clone(),
         prompt_version_mgr: prompt_version_mgr.clone(),
         task_queue: task_queue.clone(),
+        mcp_host: Arc::new(McpHostManager::new()),
         rate_limiter,
     });
 

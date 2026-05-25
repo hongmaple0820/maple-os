@@ -91,4 +91,21 @@ impl PromptVersionManager {
             None => Ok(prompt_ref.to_string()),
         }
     }
+
+    pub async fn rollback(&self, prompt_ref: &str, target_version: i32) -> Result<u32> {
+        let row = sqlx::query_as::<_, (String, i64, String, Option<String>, Option<String>, i64)>(
+            "SELECT prompt_ref, version, content, change_reason, ab_test_result, created_at FROM prompt_versions WHERE prompt_ref = ? AND version = ?"
+        )
+        .bind(prompt_ref)
+        .bind(target_version)
+        .fetch_optional(&self.db)
+        .await?;
+
+        match row {
+            Some((_, _, content, _, _, _)) => {
+                self.create_version(prompt_ref, &content, Some("rollback")).await
+            }
+            None => anyhow::bail!("Version {} not found for prompt '{}'", target_version, prompt_ref),
+        }
+    }
 }

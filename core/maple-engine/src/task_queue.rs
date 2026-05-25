@@ -399,7 +399,7 @@ impl TaskQueueService {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Default, Serialize)]
 pub struct TaskQueueStats {
     pub pending: i64,
     pub running: i64,
