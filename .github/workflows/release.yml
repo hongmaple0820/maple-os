@@ -7,9 +7,11 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 env:
   CARGO_TERM_COLOR: always
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build-server-binaries:
@@ -104,7 +106,7 @@ jobs:
           corepack prepare pnpm@latest --activate
 
       - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install
 
       - name: Build shared packages
         run: pnpm --filter=@mapleos/ui --filter=@mapleos/sdk build
