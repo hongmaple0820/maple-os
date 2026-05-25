@@ -3,8 +3,130 @@ use jsonwebtoken::{encode, decode, Header, Algorithm, Validation, EncodingKey, D
 use anyhow::Result;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
+use std::collections::HashSet;
 
 type HmacSha256 = Hmac<Sha256>;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum Role {
+    Admin,
+    Editor,
+    Viewer,
+    Agent,
+}
+
+impl Role {
+    pub fn from_str(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "admin" => Role::Admin,
+            "editor" => Role::Editor,
+            "viewer" => Role::Viewer,
+            "agent" => Role::Agent,
+            _ => Role::Viewer,
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        match self {
+            Role::Admin => "admin",
+            Role::Editor => "editor",
+            Role::Viewer => "viewer",
+            Role::Agent => "agent",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum Permission {
+    ReadWorkflows,
+    WriteWorkflows,
+    ExecuteWorkflows,
+    DeleteWorkflows,
+    ReadAgents,
+    WriteAgents,
+    ManageAgents,
+    ReadSessions,
+    WriteSessions,
+    DeleteSessions,
+    ReadMemories,
+    WriteMemories,
+    DeleteMemories,
+    ReadPrompts,
+    WritePrompts,
+    ManageConfig,
+    ManageUsers,
+    ViewMetrics,
+}
+
+impl Role {
+    pub fn permissions(&self) -> HashSet<Permission> {
+        match self {
+            Role::Admin => {
+                let mut perms = HashSet::new();
+                perms.insert(Permission::ReadWorkflows);
+                perms.insert(Permission::WriteWorkflows);
+                perms.insert(Permission::ExecuteWorkflows);
+                perms.insert(Permission::DeleteWorkflows);
+                perms.insert(Permission::ReadAgents);
+                perms.insert(Permission::WriteAgents);
+                perms.insert(Permission::ManageAgents);
+                perms.insert(Permission::ReadSessions);
+                perms.insert(Permission::WriteSessions);
+                perms.insert(Permission::DeleteSessions);
+                perms.insert(Permission::ReadMemories);
+                perms.insert(Permission::WriteMemories);
+                perms.insert(Permission::DeleteMemories);
+                perms.insert(Permission::ReadPrompts);
+                perms.insert(Permission::WritePrompts);
+                perms.insert(Permission::ManageConfig);
+                perms.insert(Permission::ManageUsers);
+                perms.insert(Permission::ViewMetrics);
+                perms
+            }
+            Role::Editor => {
+                let mut perms = HashSet::new();
+                perms.insert(Permission::ReadWorkflows);
+                perms.insert(Permission::WriteWorkflows);
+                perms.insert(Permission::ExecuteWorkflows);
+                perms.insert(Permission::ReadAgents);
+                perms.insert(Permission::ReadSessions);
+                perms.insert(Permission::WriteSessions);
+                perms.insert(Permission::ReadMemories);
+                perms.insert(Permission::WriteMemories);
+                perms.insert(Permission::ReadPrompts);
+                perms.insert(Permission::WritePrompts);
+                perms.insert(Permission::ViewMetrics);
+                perms
+            }
+            Role::Viewer => {
+                let mut perms = HashSet::new();
+                perms.insert(Permission::ReadWorkflows);
+                perms.insert(Permission::ReadAgents);
+                perms.insert(Permission::ReadSessions);
+                perms.insert(Permission::ReadMemories);
+                perms.insert(Permission::ReadPrompts);
+                perms.insert(Permission::ViewMetrics);
+                perms
+            }
+            Role::Agent => {
+                let mut perms = HashSet::new();
+                perms.insert(Permission::ReadWorkflows);
+                perms.insert(Permission::ExecuteWorkflows);
+                perms.insert(Permission::ReadSessions);
+                perms.insert(Permission::WriteSessions);
+                perms.insert(Permission::ReadMemories);
+                perms.insert(Permission::WriteMemories);
+                perms
+            }
+        }
+    }
+
+    pub fn has_permission(&self, permission: &Permission) -> bool {
+        self.permissions().contains(permission)
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthClaims {
@@ -14,6 +136,16 @@ pub struct AuthClaims {
     pub role: String,
     pub exp: u64,
     pub iat: u64,
+}
+
+impl AuthClaims {
+    pub fn role(&self) -> Role {
+        Role::from_str(&self.role)
+    }
+
+    pub fn has_permission(&self, permission: &Permission) -> bool {
+        self.role().has_permission(permission)
+    }
 }
 
 pub struct AuthService {

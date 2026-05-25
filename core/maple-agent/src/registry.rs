@@ -217,6 +217,10 @@ impl AgentRegistry {
         self.task_channels.get(agent_id).map(|tx| tx.clone())
     }
 
+    pub async fn get_agent(&self, agent_id: &str) -> Option<AgentSchema> {
+        self.agents.get(agent_id).map(|entry| entry.schema.clone())
+    }
+
     pub async fn complete_task(&self, task_id: &str, result: String) -> bool {
         if let Some((_, tx)) = self.result_channels.remove(task_id) {
             tx.send(result).is_ok()

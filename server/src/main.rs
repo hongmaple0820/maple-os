@@ -42,8 +42,48 @@ use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
+#[derive(Debug, Serialize)]
+struct ApiError {
+    error: String,
+    code: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    details: Option<serde_json::Value>,
+}
+
+impl ApiError {
+    fn new(error: impl Into<String>, code: impl Into<String>) -> Self {
+        Self {
+            error: error.into(),
+            code: code.into(),
+            details: None,
+        }
+    }
+
+    fn with_details(error: impl Into<String>, code: impl Into<String>, details: serde_json::Value) -> Self {
+        Self {
+            error: error.into(),
+            code: code.into(),
+            details: Some(details),
+        }
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> axum::response::Response {
+        let status = match self.code.as_str() {
+            "NOT_FOUND" => axum::http::StatusCode::NOT_FOUND,
+            "UNAUTHORIZED" => axum::http::StatusCode::UNAUTHORIZED,
+            "FORBIDDEN" => axum::http::StatusCode::FORBIDDEN,
+            "BAD_REQUEST" => axum::http::StatusCode::BAD_REQUEST,
+            "CONFLICT" => axum::http::StatusCode::CONFLICT,
+            _ => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        (status, Json(self)).into_response()
+    }
+}
+
 pub struct AppState {
-    config: ServerConfig,
+    pub config: Arc<tokio::sync::RwLock<ServerConfig>>,
     pub db: sqlx::SqlitePool,
     pub event_bus: Arc<EventBus>,
     pub llm_router: Arc<LlmRouter>,
@@ -62,8 +102,13 @@ pub struct AppState {
     pub memory_store: Arc<tokio::sync::Mutex<MemoryStore>>,
     pub prompt_version_mgr: Arc<PromptVersionManager>,
     pub task_queue: Arc<TaskQueueService>,
-    pub scheduler: Arc<Scheduler>,
-    pub mcp_host: Arc<McpHostManager>,
+    pub rate_limiter: RateLimiter,
+}
+
+impl AppState {
+    pub async fn get_config(&self) -> ServerConfig {
+        self.config.read().await.clone()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -997,19 +1042,28 @@ async fn ws_agent_handler(
     ws: WebSocketUpgrade,
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     let token = headers
         .get("X-Agent-Token")
         .and_then(|v| v.to_str().ok())
+        .filter(|s| !s.is_empty())
+        .or_else(|| headers.get("Authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.strip_prefix("Bearer ")))
+        .or_else(|| params.get("token").map(|s| s.as_str()))
         .unwrap_or("");
 
     let agent_id = match state.auth_service.verify_agent_token(token).await {
         Ok(id) => id,
         Err(_) => {
-            tracing::warn!("WebSocket auth failed, rejecting connection");
-            return ws.on_upgrade(move |_socket| async move {
-                tracing::warn!("Unauthenticated WebSocket connection closed");
-            });
+            if state.config.read().await.require_auth {
+                tracing::warn!("WebSocket auth failed, rejecting connection");
+                return ws.on_upgrade(move |_socket| async move {
+                    tracing::warn!("Unauthenticated WebSocket connection closed");
+                });
+            }
+            "anonymous-agent".to_string()
         }
     };
 
@@ -1030,15 +1084,119 @@ async fn health_handler() -> impl IntoResponse {
     }))
 }
 
-async fn auth_middleware(
+async fn audit_log_middleware(
+    req: axum::http::Request<axum::body::Body>,
+    next: Next,
+) -> axum::response::Response {
+    let method = req.method().clone();
+    let path = req.uri().path().to_string();
+    let query = req.uri().query().map(|q| q.to_string()).unwrap_or_default();
+    let user_agent = req.headers()
+        .get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown")
+        .to_string();
+    let client_ip = req.headers()
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown")
+        .to_string();
+
+    let start = std::time::Instant::now();
+    let response = next.run(req).await;
+    let duration = start.elapsed();
+    let status = response.status().as_u16();
+
+    tracing::info!(
+        method = %method,
+        path = %path,
+        query = %query,
+        status = status,
+        duration_ms = duration.as_millis() as u64,
+        user_agent = %user_agent,
+        client_ip = %client_ip,
+        "API request"
+    );
+
+    response
+}
+
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+use std::time::Instant;
+
+#[derive(Clone)]
+struct RateLimiter {
+    requests: Arc<RwLock<HashMap<String, Vec<Instant>>>>,
+    max_requests: usize,
+    window_secs: u64,
+}
+
+impl RateLimiter {
+    fn new(max_requests: usize, window_secs: u64) -> Self {
+        Self {
+            requests: Arc::new(RwLock::new(HashMap::new())),
+            max_requests,
+            window_secs,
+        }
+    }
+
+    async fn check(&self, key: &str) -> bool {
+        let mut requests = self.requests.write().await;
+        let now = Instant::now();
+        let window = std::time::Duration::from_secs(self.window_secs);
+
+        let entry = requests.entry(key.to_string()).or_insert_with(Vec::new);
+        entry.retain(|t| now.duration_since(*t) < window);
+
+        if entry.len() >= self.max_requests {
+            false
+        } else {
+            entry.push(now);
+            true
+        }
+    }
+}
+
+async fn rate_limit_middleware(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
     req: axum::http::Request<axum::body::Body>,
     next: Next,
 ) -> Result<axum::response::Response, axum::http::StatusCode> {
     let path = req.uri().path();
     
-    if path == "/health" || path.starts_with("/ws/") || path.starts_with("/api/events")
-        || path == "/api/auth/login" || path == "/api/auth/register" || path == "/api/auth/refresh" {
+    if path == "/health" || path == "/health/deep" || path.starts_with("/ws/") {
+        return Ok(next.run(req).await);
+    }
+
+    let client_ip = req.headers()
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown")
+        .split(',')
+        .next()
+        .unwrap_or("unknown")
+        .trim()
+        .to_string();
+
+    if state.rate_limiter.check(&client_ip).await {
+        Ok(next.run(req).await)
+    } else {
+        Err(axum::http::StatusCode::TOO_MANY_REQUESTS)
+    }
+}
+
+async fn auth_middleware(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    req: axum::http::Request<axum::body::Body>,
+    next: Next,
+) -> Result<axum::response::Response, axum::http::StatusCode> {
+    let path = req.uri().path();
+    let method = req.method().clone();
+    
+    if path == "/health" || path == "/health/deep" || path.starts_with("/ws/") || path.starts_with("/api/events") {
         return Ok(next.run(req).await);
     }
 
@@ -1057,8 +1215,57 @@ async fn auth_middleware(
     }
 
     match state.auth_service.verify_token(token) {
-        Ok(_claims) => Ok(next.run(req).await),
+        Ok(claims) => {
+            let required_permission = get_required_permission(path, &method);
+            if let Some(permission) = required_permission {
+                if !claims.has_permission(&permission) {
+                    tracing::warn!(
+                        user_id = ?claims.user_id,
+                        role = %claims.role,
+                        path = %path,
+                        method = %method,
+                        "Permission denied"
+                    );
+                    return Err(axum::http::StatusCode::FORBIDDEN);
+                }
+            }
+            Ok(next.run(req).await)
+        }
         Err(_) => Err(axum::http::StatusCode::UNAUTHORIZED),
+    }
+}
+
+fn get_required_permission(path: &str, method: &axum::http::Method) -> Option<maple_gateway::auth::Permission> {
+    use maple_gateway::auth::Permission;
+    
+    match (method.as_str(), path) {
+        ("GET", p) if p.starts_with("/api/workflows") => Some(Permission::ReadWorkflows),
+        ("POST", p) if p.starts_with("/api/workflows") => Some(Permission::WriteWorkflows),
+        ("PUT", p) if p.starts_with("/api/workflows") => Some(Permission::WriteWorkflows),
+        ("DELETE", p) if p.starts_with("/api/workflows") => Some(Permission::DeleteWorkflows),
+        
+        ("GET", p) if p.starts_with("/api/agents") => Some(Permission::ReadAgents),
+        ("POST", p) if p.starts_with("/api/agents") => Some(Permission::WriteAgents),
+        ("DELETE", p) if p.starts_with("/api/agents") => Some(Permission::ManageAgents),
+        
+        ("GET", p) if p.starts_with("/api/sessions") => Some(Permission::ReadSessions),
+        ("DELETE", p) if p.starts_with("/api/sessions") => Some(Permission::DeleteSessions),
+        
+        ("GET", p) if p.starts_with("/api/memories") => Some(Permission::ReadMemories),
+        ("POST", p) if p.starts_with("/api/memories") => Some(Permission::WriteMemories),
+        ("DELETE", p) if p.starts_with("/api/memories") => Some(Permission::DeleteMemories),
+        
+        ("GET", p) if p.starts_with("/api/prompts") => Some(Permission::ReadPrompts),
+        ("POST", p) if p.starts_with("/api/prompts") => Some(Permission::WritePrompts),
+        
+        ("GET", "/api/config") => Some(Permission::ManageConfig),
+        ("PUT", "/api/config") => Some(Permission::ManageConfig),
+        
+        ("GET", "/health/deep") => Some(Permission::ViewMetrics),
+        ("GET", "/api/agents/status") => Some(Permission::ViewMetrics),
+        ("GET", "/api/tasks/stats") => Some(Permission::ViewMetrics),
+        
+        _ => None,
     }
 }
 
@@ -1570,6 +1777,177 @@ async fn task_requeue_handler(
     }
 }
 
+async fn get_execution_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(exec_id): axum::extract::Path<String>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    let row = sqlx::query_as::<_, (String, String, i64, String, Option<String>, Option<String>, i64, Option<i64>, Option<String>)>(
+        "SELECT id, workflow_id, workflow_version, status, input, output, started_at, completed_at, agent_id FROM workflow_executions WHERE id = ?"
+    )
+    .bind(&exec_id)
+    .fetch_optional(&*state.db)
+    .await
+    .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    match row {
+        Some((id, wf_id, ver, status, input, output, started, completed, agent)) => {
+            let checkpoints = sqlx::query_as::<_, (String, String, String, i64)>(
+                "SELECT exec_id, node_id, output, created_at FROM checkpoints WHERE exec_id = ? ORDER BY created_at"
+            )
+            .bind(&exec_id)
+            .fetch_all(&*state.db)
+            .await
+            .unwrap_or_default();
+
+            Ok(axum::Json(serde_json::json!({
+                "id": id,
+                "workflow_id": wf_id,
+                "version": ver,
+                "status": status,
+                "input": input,
+                "output": output,
+                "started_at": started,
+                "completed_at": completed,
+                "agent_id": agent,
+                "checkpoints": checkpoints.iter().map(|(_, node_id, output, created)| serde_json::json!({
+                    "node_id": node_id,
+                    "output": output,
+                    "created_at": created,
+                })).collect::<Vec<_>>(),
+            })))
+        }
+        None => Err(axum::http::StatusCode::NOT_FOUND),
+    }
+}
+
+async fn get_checkpoints_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(exec_id): axum::extract::Path<String>,
+) -> axum::Json<serde_json::Value> {
+    let checkpoints = sqlx::query_as::<_, (String, String, String, i64)>(
+        "SELECT exec_id, node_id, output, created_at FROM checkpoints WHERE exec_id = ? ORDER BY created_at"
+    )
+    .bind(&exec_id)
+    .fetch_all(&*state.db)
+    .await
+    .unwrap_or_default();
+
+    axum::Json(serde_json::json!({
+        "exec_id": exec_id,
+        "checkpoints": checkpoints.iter().map(|(_, node_id, output, created)| serde_json::json!({
+            "node_id": node_id,
+            "output": output,
+            "created_at": created,
+        })).collect::<Vec<_>>(),
+    }))
+}
+
+async fn workflow_stats_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(workflow_id): axum::extract::Path<String>,
+) -> axum::Json<serde_json::Value> {
+    let total: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM workflow_executions WHERE workflow_id = ?"
+    )
+    .bind(&workflow_id)
+    .fetch_one(&*state.db)
+    .await
+    .unwrap_or(0);
+
+    let completed: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM workflow_executions WHERE workflow_id = ? AND status = 'completed'"
+    )
+    .bind(&workflow_id)
+    .fetch_one(&*state.db)
+    .await
+    .unwrap_or(0);
+
+    let failed: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM workflow_executions WHERE workflow_id = ? AND status = 'failed'"
+    )
+    .bind(&workflow_id)
+    .fetch_one(&*state.db)
+    .await
+    .unwrap_or(0);
+
+    let avg_duration: Option<f64> = sqlx::query_scalar(
+        "SELECT AVG(CAST((completed_at - started_at) AS REAL)) FROM workflow_executions WHERE workflow_id = ? AND status = 'completed' AND completed_at IS NOT NULL"
+    )
+    .bind(&workflow_id)
+    .fetch_one(&*state.db)
+    .await
+    .unwrap_or(None);
+
+    axum::Json(serde_json::json!({
+        "workflow_id": workflow_id,
+        "total_executions": total,
+        "completed": completed,
+        "failed": failed,
+        "success_rate": if total > 0 { (completed as f64 / total as f64 * 100.0).round() } else { 0.0 },
+        "avg_duration_secs": avg_duration.map(|d| d.round()),
+    }))
+}
+
+async fn system_metrics_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::Json<serde_json::Value> {
+    let db_ok = sqlx::query("SELECT 1").execute(&*state.db).await.is_ok();
+    let agents = state.agent_registry.list_agents().await;
+    let tasks = state.task_queue.stats().await.unwrap_or_default();
+
+    let total_workflows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM workflows")
+        .fetch_one(&*state.db)
+        .await
+        .unwrap_or(0);
+
+    let total_executions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM workflow_executions")
+        .fetch_one(&*state.db)
+        .await
+        .unwrap_or(0);
+
+    let total_sessions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chat_messages")
+        .fetch_one(&*state.db)
+        .await
+        .unwrap_or(0);
+
+    let total_memories: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM memories")
+        .fetch_one(&*state.db)
+        .await
+        .unwrap_or(0);
+
+    let total_documents: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM kb_documents")
+        .fetch_one(&*state.db)
+        .await
+        .unwrap_or(0);
+
+    axum::Json(serde_json::json!({
+        "status": if db_ok { "healthy" } else { "degraded" },
+        "version": env!("CARGO_PKG_VERSION"),
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+        "database": {
+            "connected": db_ok,
+            "workflows": total_workflows,
+            "executions": total_executions,
+            "sessions": total_sessions,
+            "memories": total_memories,
+            "documents": total_documents,
+        },
+        "agents": {
+            "total": agents.len(),
+            "online": agents.iter().filter(|(_, _, s)| *s == maple_agent::registry::AgentStatus::Online).count(),
+            "offline": agents.iter().filter(|(_, _, s)| *s == maple_agent::registry::AgentStatus::Offline).count(),
+            "busy": agents.iter().filter(|(_, _, s)| *s == maple_agent::registry::AgentStatus::Busy).count(),
+        },
+        "tasks": {
+            "pending": tasks.pending,
+            "running": tasks.running,
+            "completed": tasks.completed,
+            "failed": tasks.failed,
+            "dead_letter": tasks.dead_letter,
+        },
+    }))
+}
+
 async fn sse_events_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> impl IntoResponse {
@@ -1720,51 +2098,10 @@ async fn login_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
     Json(req): Json<LoginRequest>,
 ) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
-    let user_row: Option<(String, String, String)> = sqlx::query_as(
-        "SELECT id, password_hash, role FROM users WHERE username = ?"
-    )
-    .bind(&req.username)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+    let config = state.config.read().await;
+    let admin_user = &config.admin_username;
+    let admin_pass = &config.admin_password;
 
-    if let Some((user_id, password_hash, role)) = user_row {
-        let valid = bcrypt::verify(&req.password, &password_hash)
-            .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
-        if !valid {
-            return Err(axum::http::StatusCode::UNAUTHORIZED);
-        }
-        let access_token = state.auth_service.create_token_for_user(&user_id, &role, 3600)
-            .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
-        let refresh_token = uuid::Uuid::new_v4().to_string();
-        let refresh_hash = bcrypt::hash(&refresh_token, bcrypt::DEFAULT_COST)
-            .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
-        let now = chrono::Utc::now().timestamp();
-        let refresh_expires = now + 7 * 86400;
-        let _ = sqlx::query(
-            "INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)"
-        )
-        .bind(uuid::Uuid::new_v4().to_string())
-        .bind(&user_id)
-        .bind(&refresh_hash)
-        .bind(refresh_expires)
-        .bind(now)
-        .execute(&state.db)
-        .await;
-
-        return Ok(axum::Json(serde_json::json!({
-            "token": access_token,
-            "refresh_token": refresh_token,
-            "user_id": user_id,
-            "username": req.username,
-            "role": role,
-            "expires_in": 3600,
-        })));
-    }
-
-    // Fallback: admin account from env
-    let admin_user = &state.config.admin_username;
-    let admin_pass = &state.config.admin_password;
     if req.username == *admin_user && req.password == *admin_pass {
         let user_id = format!("admin-{}", req.username);
         let token = state.auth_service.create_token_for_user(&user_id, "admin", 3600)
@@ -1984,6 +2321,437 @@ async fn delete_memory_handler(
     }
 }
 
+async fn delete_session_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(session_id): axum::extract::Path<String>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    match state.session_store.delete_session(&session_id).await {
+        Ok(true) => Ok(axum::Json(serde_json::json!({
+            "session_id": session_id,
+            "status": "deleted",
+        }))),
+        Ok(false) => Err(axum::http::StatusCode::NOT_FOUND),
+        Err(_) => Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+async fn get_session_messages_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(session_id): axum::extract::Path<String>,
+) -> axum::Json<serde_json::Value> {
+    match state.session_store.get_session_messages(&session_id).await {
+        Ok(messages) => axum::Json(serde_json::json!({
+            "session_id": session_id,
+            "messages": messages.iter().map(|m| serde_json::json!({
+                "role": m.role,
+                "content": m.content,
+                "created_at": m.created_at,
+            })).collect::<Vec<_>>(),
+        })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn get_prompt_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(prompt_ref): axum::extract::Path<String>,
+) -> axum::Json<serde_json::Value> {
+    match state.prompt_version_mgr.get_latest(&prompt_ref).await {
+        Ok(Some(version)) => axum::Json(serde_json::json!({
+            "prompt_ref": prompt_ref,
+            "version": version.version,
+            "content": version.content,
+            "created_at": version.created_at,
+        })),
+        Ok(None) => axum::Json(serde_json::json!({
+            "error": "Prompt not found",
+            "prompt_ref": prompt_ref,
+        })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn rollback_prompt_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(prompt_ref): axum::extract::Path<String>,
+    Json(req): Json<serde_json::Value>,
+) -> axum::Json<serde_json::Value> {
+    let version = req["version"].as_i64().unwrap_or(0) as i32;
+    match state.prompt_version_mgr.rollback(&prompt_ref, version).await {
+        Ok(new_version) => axum::Json(serde_json::json!({
+            "prompt_ref": prompt_ref,
+            "rolled_back_to": version,
+            "new_version": new_version,
+            "status": "rolled_back",
+        })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn trigger_sync_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::Json<serde_json::Value> {
+    match state.sync_engine.full_sync().await {
+        Ok(result) => axum::Json(serde_json::json!({
+            "status": "completed",
+            "pushed": result.pushed_count,
+            "pulled": result.pulled_count,
+            "conflicts": result.conflicts,
+        })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn sync_status_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::Json<serde_json::Value> {
+    axum::Json(serde_json::json!({
+        "status": "ok",
+        "engine": "webdav",
+        "interval_secs": 300,
+    }))
+}
+
+async fn get_workspace_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(workspace_id): axum::extract::Path<String>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    let row = sqlx::query_as::<_, (String, String, Option<String>, String, i64, i64, i64, i64)>(
+        "SELECT id, name, description, owner_id, max_agents, auto_approve, knowledge_base_enabled, created_at FROM workspaces WHERE id = ?"
+    )
+    .bind(&workspace_id)
+    .fetch_optional(&*state.db)
+    .await
+    .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    match row {
+        Some((id, name, desc, owner, max_agents, auto_approve, kb_enabled, created)) => {
+            Ok(axum::Json(serde_json::json!({
+                "id": id,
+                "name": name,
+                "description": desc,
+                "owner_id": owner,
+                "max_agents": max_agents,
+                "auto_approve": auto_approve,
+                "knowledge_base_enabled": kb_enabled,
+                "created_at": created,
+            })))
+        }
+        None => Err(axum::http::StatusCode::NOT_FOUND),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateWorkspaceRequest {
+    name: Option<String>,
+    description: Option<String>,
+    max_agents: Option<i64>,
+    auto_approve: Option<bool>,
+    knowledge_base_enabled: Option<bool>,
+}
+
+async fn update_workspace_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(workspace_id): axum::extract::Path<String>,
+    Json(req): Json<UpdateWorkspaceRequest>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    if let Some(name) = &req.name {
+        let _ = sqlx::query("UPDATE workspaces SET name = ? WHERE id = ?")
+            .bind(name).bind(&workspace_id).execute(&*state.db).await;
+    }
+    if let Some(desc) = &req.description {
+        let _ = sqlx::query("UPDATE workspaces SET description = ? WHERE id = ?")
+            .bind(desc).bind(&workspace_id).execute(&*state.db).await;
+    }
+    if let Some(max) = req.max_agents {
+        let _ = sqlx::query("UPDATE workspaces SET max_agents = ? WHERE id = ?")
+            .bind(max).bind(&workspace_id).execute(&*state.db).await;
+    }
+    if let Some(auto) = req.auto_approve {
+        let _ = sqlx::query("UPDATE workspaces SET auto_approve = ? WHERE id = ?")
+            .bind(auto as i64).bind(&workspace_id).execute(&*state.db).await;
+    }
+    if let Some(kb) = req.knowledge_base_enabled {
+        let _ = sqlx::query("UPDATE workspaces SET knowledge_base_enabled = ? WHERE id = ?")
+            .bind(kb as i64).bind(&workspace_id).execute(&*state.db).await;
+    }
+
+    Ok(axum::Json(serde_json::json!({
+        "id": workspace_id,
+        "status": "updated",
+    })))
+}
+
+async fn delete_workspace_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(workspace_id): axum::extract::Path<String>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    let result = sqlx::query("DELETE FROM workspaces WHERE id = ?")
+        .bind(&workspace_id)
+        .execute(&*state.db)
+        .await
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if result.rows_affected() > 0 {
+        Ok(axum::Json(serde_json::json!({
+            "id": workspace_id,
+            "status": "deleted",
+        })))
+    } else {
+        Err(axum::http::StatusCode::NOT_FOUND)
+    }
+}
+
+async fn deep_health_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::Json<serde_json::Value> {
+    let db_ok = sqlx::query("SELECT 1").execute(&*state.db).await.is_ok();
+    let agents = state.agent_registry.list_agents().await;
+    let tasks = state.task_queue.stats().await.unwrap_or_default();
+
+    axum::Json(serde_json::json!({
+        "status": if db_ok { "healthy" } else { "degraded" },
+        "version": env!("CARGO_PKG_VERSION"),
+        "checks": {
+            "database": db_ok,
+            "agents_online": agents.iter().filter(|(_, _, s)| *s == maple_agent::registry::AgentStatus::Online).count(),
+            "agents_total": agents.len(),
+            "tasks": {
+                "pending": tasks.pending,
+                "running": tasks.running,
+                "completed": tasks.completed,
+                "failed": tasks.failed,
+            }
+        },
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+    }))
+}
+
+async fn agent_status_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::Json<serde_json::Value> {
+    let agents = state.agent_registry.list_agents().await;
+    let tasks = state.task_queue.stats().await.unwrap_or_default();
+
+    let agent_details: Vec<serde_json::Value> = agents.iter().map(|(id, name, status)| {
+        serde_json::json!({
+            "id": id,
+            "name": name,
+            "status": format!("{:?}", status),
+            "is_online": *status == maple_agent::registry::AgentStatus::Online,
+        })
+    }).collect();
+
+    axum::Json(serde_json::json!({
+        "agents": agent_details,
+        "summary": {
+            "total": agents.len(),
+            "online": agents.iter().filter(|(_, _, s)| *s == maple_agent::registry::AgentStatus::Online).count(),
+            "offline": agents.iter().filter(|(_, _, s)| *s == maple_agent::registry::AgentStatus::Offline).count(),
+            "busy": agents.iter().filter(|(_, _, s)| *s == maple_agent::registry::AgentStatus::Busy).count(),
+        },
+        "tasks": {
+            "pending": tasks.pending,
+            "running": tasks.running,
+            "completed": tasks.completed,
+            "failed": tasks.failed,
+        },
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+    }))
+}
+
+async fn agent_heartbeat_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(agent_id): axum::extract::Path<String>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    match state.agent_registry.get_agent(&agent_id).await {
+        Some(_) => {
+            state.agent_registry.update_heartbeat(&agent_id).await;
+            Ok(axum::Json(serde_json::json!({
+                "agent_id": agent_id,
+                "status": "ok",
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+            })))
+        }
+        None => Err(axum::http::StatusCode::NOT_FOUND),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateConfigRequest {
+    host: Option<String>,
+    port: Option<u16>,
+    jwt_secret: Option<String>,
+    require_auth: Option<bool>,
+    admin_username: Option<String>,
+    admin_password: Option<String>,
+    usage_limit_usd: Option<f64>,
+    log_level: Option<String>,
+}
+
+async fn get_config_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::Json<serde_json::Value> {
+    let config = state.config.read().await;
+    axum::Json(serde_json::json!({
+        "host": config.host,
+        "port": config.port,
+        "require_auth": config.require_auth,
+        "usage_limit_usd": config.usage_limit_usd,
+        "log_level": config.log_level,
+    }))
+}
+
+async fn update_config_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    Json(req): Json<UpdateConfigRequest>,
+) -> axum::Json<serde_json::Value> {
+    let mut config = state.config.write().await;
+    
+    if let Some(host) = req.host {
+        config.host = host;
+    }
+    if let Some(port) = req.port {
+        config.port = port;
+    }
+    if let Some(secret) = req.jwt_secret {
+        config.jwt_secret = secret;
+    }
+    if let Some(auth) = req.require_auth {
+        config.require_auth = auth;
+    }
+    if let Some(user) = req.admin_username {
+        config.admin_username = user;
+    }
+    if let Some(pass) = req.admin_password {
+        config.admin_password = pass;
+    }
+    if let Some(limit) = req.usage_limit_usd {
+        config.usage_limit_usd = limit;
+    }
+    if let Some(level) = req.log_level {
+        config.log_level = level;
+    }
+
+    axum::Json(serde_json::json!({
+        "status": "updated",
+        "message": "Configuration updated. Some changes may require restart.",
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct AgentRegisterRequest {
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    transport_type: Option<String>,
+    #[serde(default)]
+    transport_config: Option<serde_json::Value>,
+    #[serde(default)]
+    capabilities: Option<Vec<String>>,
+    #[serde(default)]
+    max_concurrent_tasks: Option<u32>,
+}
+
+async fn register_agent_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    Json(req): Json<AgentRegisterRequest>,
+) -> axum::Json<serde_json::Value> {
+    let agent_id = format!("agent-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("x"));
+    let now = chrono::Utc::now().timestamp();
+
+    let capabilities_json = serde_json::json!({
+        "tools": req.capabilities.unwrap_or_default(),
+        "skills": [],
+        "max_context_length": 128000,
+        "supports_streaming": true,
+        "supports_function_calling": true,
+    });
+
+    let transport_type = req.transport_type.unwrap_or_else(|| "websocket".to_string());
+    let transport_config = req.transport_config.unwrap_or_else(|| serde_json::json!({}));
+
+    let _ = sqlx::query(
+        "INSERT INTO agents (id, name, transport_type, transport_config, capabilities, status, max_concurrent_tasks, created_at) VALUES (?, ?, ?, ?, ?, 'offline', ?, ?)"
+    )
+    .bind(&agent_id)
+    .bind(&req.name)
+    .bind(&transport_type)
+    .bind(transport_config.to_string())
+    .bind(capabilities_json.to_string())
+    .bind(req.max_concurrent_tasks.unwrap_or(3) as i64)
+    .bind(now)
+    .execute(&*state.db)
+    .await;
+
+    state.agent_registry.register_agent(
+        &agent_id,
+        &req.name,
+        maple_agent::registry::AgentStatus::Offline,
+    ).await;
+
+    axum::Json(serde_json::json!({
+        "id": agent_id,
+        "name": req.name,
+        "description": req.description,
+        "status": "registered",
+    }))
+}
+
+async fn list_agents_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::Json<serde_json::Value> {
+    let agents = state.agent_registry.list_agents().await;
+    axum::Json(serde_json::json!({
+        "agents": agents.into_iter().map(|(id, name, status)| serde_json::json!({
+            "id": id,
+            "name": name,
+            "status": format!("{:?}", status),
+        })).collect::<Vec<_>>(),
+    }))
+}
+
+async fn get_agent_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(agent_id): axum::extract::Path<String>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    match state.agent_registry.get_agent(&agent_id).await {
+        Some(agent) => Ok(axum::Json(serde_json::json!({
+            "id": agent.id,
+            "name": agent.name,
+            "description": agent.description,
+            "transport": agent.transport,
+            "capabilities": agent.capabilities,
+            "max_concurrent_tasks": agent.max_concurrent_tasks,
+        }))),
+        None => Err(axum::http::StatusCode::NOT_FOUND),
+    }
+}
+
+async fn delete_agent_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(agent_id): axum::extract::Path<String>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    state.agent_registry.set_offline(&agent_id).await;
+    state.agent_registry.remove_task_channel(&agent_id).await;
+
+    let result = sqlx::query("DELETE FROM agents WHERE id = ?")
+        .bind(&agent_id)
+        .execute(&*state.db)
+        .await
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if result.rows_affected() > 0 {
+        Ok(axum::Json(serde_json::json!({
+            "id": agent_id,
+            "status": "deleted",
+        })))
+    } else {
+        Err(axum::http::StatusCode::NOT_FOUND)
+    }
+}
+
 #[derive(Clone)]
 struct ServerConfig {
     pub host: String,
@@ -2196,8 +2964,10 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    let rate_limiter = RateLimiter::new(100, 60);
+
     let state = Arc::new(AppState {
-        config: config.clone(),
+        config: Arc::new(tokio::sync::RwLock::new(config.clone())),
         db: pool.clone(),
         event_bus: event_bus.clone(),
         llm_router: llm_router.clone(),
@@ -2216,8 +2986,7 @@ async fn main() -> anyhow::Result<()> {
         memory_store: memory_store.clone(),
         prompt_version_mgr: prompt_version_mgr.clone(),
         task_queue: task_queue.clone(),
-        scheduler: scheduler.clone(),
-        mcp_host: Arc::new(McpHostManager::new()),
+        rate_limiter,
     });
 
     let scheduler_wf = workflow_executor.clone();
@@ -2247,20 +3016,31 @@ async fn main() -> anyhow::Result<()> {
 
     let state_routes = Router::new()
         .route("/health", get(health_handler))
+        .route("/health/deep", get(deep_health_handler))
+        .route("/metrics", get(system_metrics_handler))
         .route("/ws/agents", get(ws_agent_handler))
         .route("/api/chat", post(chat_handler))
         .route("/api/chat/stream", post(chat_stream_handler))
         .route("/api/models", get(models_handler))
         .route("/api/skills", get(skills_handler))
+        .route("/api/config", get(get_config_handler).put(update_config_handler))
         .route("/api/kb/index", post(kb_index_handler))
         .route("/api/kb/search", post(kb_search_handler))
-        .route("/api/kb/upload", post(kb_upload_handler))
-        .route("/api/kb/documents", get(kb_documents_handler))
+        .route("/api/agents", get(list_agents_handler).post(register_agent_handler))
+        .route("/api/agents/:id", get(get_agent_handler).delete(delete_agent_handler))
+        .route("/api/agents/:id/heartbeat", post(agent_heartbeat_handler))
+        .route("/api/agents/status", get(agent_status_handler))
         .route("/api/sessions", get(sessions_handler))
+        .route("/api/sessions/:id", delete(delete_session_handler))
+        .route("/api/sessions/:id/messages", get(get_session_messages_handler))
         .route("/api/memories", post(memory_store_handler))
         .route("/api/memories/search", post(memory_search_handler))
         .route("/api/memories/:id", get(get_memory_handler).delete(delete_memory_handler))
         .route("/api/prompts", post(prompt_create_handler))
+        .route("/api/prompts/:ref", get(get_prompt_handler))
+        .route("/api/prompts/:ref/rollback", post(rollback_prompt_handler))
+        .route("/api/sync/trigger", post(trigger_sync_handler))
+        .route("/api/sync/status", get(sync_status_handler))
         .route("/api/tasks/enqueue", post(task_enqueue_handler))
         .route("/api/tasks/stats", get(task_stats_handler))
         .route("/api/tasks/dead-letter", get(task_dead_letter_handler))
@@ -2268,17 +3048,47 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/events", get(sse_events_handler))
         .route("/api/workflows/:id", get(get_workflow_handler).put(update_workflow_handler).delete(delete_workflow_handler))
         .route("/api/workflows/:id/executions", get(get_workflow_executions_handler))
+        .route("/api/workflows/:id/stats", get(workflow_stats_handler))
+        .route("/api/executions/:id", get(get_execution_handler))
+        .route("/api/executions/:id/checkpoints", get(get_checkpoints_handler))
+        .route("/api/workspaces/:id", get(get_workspace_handler).put(update_workspace_handler).delete(delete_workspace_handler))
         .route("/api/auth/login", post(login_handler))
         .route("/api/auth/token", post(token_handler))
         .route("/api/auth/register", post(register_handler))
         .route("/api/auth/refresh", post(refresh_handler))
         .with_state(state.clone());
 
+    let cors = if config.require_auth {
+        CorsLayer::new()
+            .allow_origin([
+                "http://localhost:3000".parse().unwrap(),
+                "http://localhost:3001".parse().unwrap(),
+                "https://mapleos.dev".parse().unwrap(),
+            ])
+            .allow_methods([
+                axum::http::Method::GET,
+                axum::http::Method::POST,
+                axum::http::Method::PUT,
+                axum::http::Method::DELETE,
+                axum::http::Method::OPTIONS,
+            ])
+            .allow_headers([
+                axum::http::header::AUTHORIZATION,
+                axum::http::header::CONTENT_TYPE,
+                axum::http::header::ACCEPT,
+            ])
+            .max_age(std::time::Duration::from_secs(3600))
+    } else {
+        CorsLayer::permissive()
+    };
+
     let app = Router::new()
         .merge(rpc_router)
         .merge(state_routes)
-        .layer(middleware::from_fn_with_state(state, auth_middleware))
-        .layer(CorsLayer::permissive())
+        .layer(middleware::from_fn_with_state(state.clone(), rate_limit_middleware))
+        .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
+        .layer(middleware::from_fn(audit_log_middleware))
+        .layer(cors)
         .layer(TraceLayer::new_for_http());
 
     let bind_addr = config.bind_address();
