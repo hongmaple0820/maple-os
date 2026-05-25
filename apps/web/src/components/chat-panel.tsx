@@ -152,10 +152,7 @@ export function ChatPanel() {
         method: "POST",
         body: { query: text.trim(), top_k: 3 },
       });
-      if (kbRes.ok) {
-        const kbData = await kbRes.json() as { results: KnowledgeRef[] };
-        knowledgeRefs = kbData.results ?? [];
-      }
+      knowledgeRefs = kbRes.results ?? [];
     } catch { /* kb search optional */ }
 
     const assistantMsg: ChatMessage = { id: `msg-${Date.now() + 1}`, role: "assistant", content: "", timestamp: Date.now(), toolCalls: [], knowledgeRefs };
@@ -165,7 +162,7 @@ export function ChatPanel() {
       const res = await fetch(`/api/maple/api/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: userMsg.content, agent_id: selectedAgent, session_id }),
+        body: JSON.stringify({ message: userMsg.content, agent_id: selectedAgent, session_id: sessionId }),
       });
       if (!res.ok) throw new Error(`请求失败: ${res.status}`);
 
