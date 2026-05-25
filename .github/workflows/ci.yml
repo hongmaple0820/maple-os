@@ -57,12 +57,12 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
 
       - name: Enable corepack & install pnpm
         run: |
           corepack enable
-          corepack prepare pnpm@11.2.2 --activate
+          corepack prepare pnpm@latest --activate
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile

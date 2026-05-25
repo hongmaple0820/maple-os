@@ -86,3 +86,24 @@ Agent 在任务执行过程中发现的条目应遵循以下格式：
   - 新功能规划、缺陷修复、技术改进都应先创建 Issue 再开发
   - Issue 按模块分组打标签: [基础设施]、[能力层]、[智能层]、[协作与运维]、[产品化]、[多端]
   - 目标是让外部贡献者也能通过 Issue 参与共建 agent os
+
+[所有技术栈使用最新稳定版]
+- Date: 2026-05-25
+- Context: 用户明确指示
+- Category: 构建方法
+- Instructions:
+  - 所有技术栈（Rust、Node.js、pnpm、Docker 基础镜像等）统一使用最新稳定版，不固定小版本号
+  - CI 工作流中 Rust toolchain 使用 `stable`，Dockerfile 使用 `rust:latest-slim`
+
+[MapleOS CI/CD 和构建依赖]
+- Date: 2026-05-25
+- Context: Agent 在配置 GitHub Actions CI/CD 时发现
+- Category: 构建方法
+- Instructions:
+  - Rust edition 2024 需要工具链 1.85+，CI 和 Dockerfile 均使用 `stable` 版本（不固定小版本号），避免锁定依赖要求更新 Rust 时反复升级
+  - Dockerfile 基础镜像使用 `rust:latest-slim`，运行镜像 `debian:bookworm-slim`
+  - reqwest 已切换为 `rustls-tls` (default-features=false)，无需 OpenSSL 开发库
+  - SQLx SQLite 编译需要系统安装 `pkg-config` + `libsqlite3-dev` (Ubuntu) / `sqlite3` (macOS)
+  - apps/desktop/src-tauri 已从 workspace members 移至 exclude，CI 不再编译桌面端
+  - 前端构建需要先编译 `@mapleos/ui` 和 `@mapleos/sdk` (共享包)，再编译 `mapleos-web`
+  - Release 工作流触发条件: push tag `v*`，自动构建 4 平台二进制 + Web 静态包 + Docker 镜像推送 GHCR
