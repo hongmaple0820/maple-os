@@ -7,7 +7,7 @@ use axum::routing::{get, post};
 use std::convert::Infallible;
 use axum::middleware::{self, Next};
 
-use maple_engine::workflow::{Workflow, WorkflowNode};
+use maple_engine::workflow::Workflow;
 use maple_engine::executor::{WorkflowExecutor, NodeExecutor};
 use maple_engine::event_bus::EventBus;
 use maple_engine::checkpoint::CheckpointManager;
@@ -90,6 +90,8 @@ struct ChatResponse {
     model: Option<String>,
     tool_calls: Option<Vec<serde_json::Value>>,
     session_id: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    kb_sources: Vec<serde_json::Value>,
 }
 
 async fn chat_handler(
@@ -101,7 +103,37 @@ async fn chat_handler(
     let _ = state.session_store.save_message(&session_id, "user", &req.message, None, None).await;
 
     let route_key = if req.model != "auto" { req.model.as_str() } else { req.agent_id.as_deref().unwrap_or("default") };
-    let llm_request = maple_llm::request::LlmRequest::new(req.message.clone(), route_key);
+
+    let mut enhanced_message = req.message.clone();
+    let mut kb_sources: Vec<serde_json::Value> = Vec::new();
+    {
+        let query_embedding = match state.embedder.embed(&req.message).await {
+            Ok(emb) => emb,
+            Err(_) => maple_llm::embedding::simple_embedding(&req.message, 128),
+        };
+        let vector_results = state.vector_store.search(&query_embedding, 3).await;
+        let bm25_results = state.bm25_searcher.search(&req.message, 3);
+        let kb_results = state.hybrid_retriever.search(&req.message, 3, vector_results, bm25_results).await.unwrap_or_default();
+
+        if !kb_results.is_empty() {
+            let mut context_parts = Vec::new();
+            for r in &kb_results {
+                context_parts.push(r.content.clone());
+                let snippet = if r.content.len() > 200 { r.content[..200].to_string() + "..." } else { r.content.clone() };
+                kb_sources.push(serde_json::json!({
+                    "id": r.id,
+                    "snippet": snippet,
+                    "score": r.score,
+                    "source": r.source,
+                    "source_type": r.source_type,
+                }));
+            }
+            let kb_context = context_parts.join("\n---\n");
+            enhanced_message = format!("[Knowledge Base Context]\n{}\n---\n[User Question]\n{}", kb_context, req.message);
+        }
+    }
+
+    let llm_request = maple_llm::request::LlmRequest::new(enhanced_message, route_key);
 
     let adapter = match state.llm_router.route(&llm_request).await {
         Ok(a) => a,
@@ -112,6 +144,7 @@ async fn chat_handler(
                 model: None,
                 tool_calls: None,
                 session_id,
+                kb_sources: Vec::new(),
             }));
         }
     };
@@ -127,6 +160,7 @@ async fn chat_handler(
                     model: Some(model_name),
                     tool_calls: response.tool_calls,
                     session_id,
+                    kb_sources,
                 }))
             }
             Err(e) => {
@@ -136,6 +170,7 @@ async fn chat_handler(
                     model: Some(model_name),
                     tool_calls: None,
                     session_id,
+                    kb_sources: Vec::new(),
                 }))
             }
         }
@@ -176,6 +211,7 @@ async fn chat_handler(
                     model: Some(model_name),
                     tool_calls: None,
                     session_id,
+                    kb_sources: Vec::new(),
                 }))
             }
             Err(e) => {
@@ -185,6 +221,7 @@ async fn chat_handler(
                     model: Some(model_name),
                     tool_calls: None,
                     session_id,
+                    kb_sources: Vec::new(),
                 }))
             }
         }
@@ -418,6 +455,33 @@ async fn run_migrations(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
         "CREATE INDEX IF NOT EXISTS idx_task_queue_type
          ON task_queue(task_type, status)"
     ).execute(pool).await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            username TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            email TEXT,
+            role TEXT NOT NULL DEFAULT 'user',
+            created_at INTEGER NOT NULL
+        )"
+    ).execute(pool).await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS refresh_tokens (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            token_hash TEXT NOT NULL UNIQUE,
+            expires_at INTEGER NOT NULL,
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )"
+    ).execute(pool).await?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)")
+        .execute(pool).await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens(user_id)")
+        .execute(pool).await?;
 
     tracing::info!("Database migrations completed");
     Ok(())
@@ -973,7 +1037,8 @@ async fn auth_middleware(
 ) -> Result<axum::response::Response, axum::http::StatusCode> {
     let path = req.uri().path();
     
-    if path == "/health" || path.starts_with("/ws/") || path.starts_with("/api/events") {
+    if path == "/health" || path.starts_with("/ws/") || path.starts_with("/api/events")
+        || path == "/api/auth/login" || path == "/api/auth/register" || path == "/api/auth/refresh" {
         return Ok(next.run(req).await);
     }
 
@@ -1028,40 +1093,156 @@ async fn chat_stream_handler(
     let _ = session_store.save_message(&session_id, "user", &req.message, None, None).await;
 
     let route_key = if req.model != "auto" { &req.model } else { req.agent_id.as_deref().unwrap_or("default") };
-    let llm_request = maple_llm::request::LlmRequest::new(req.message.clone(), route_key);
-    let complete_result = match llm_router.route(&llm_request).await {
-        Ok(adapter) => {
-            let model_name = adapter.name().to_string();
-            match adapter.complete(llm_request).await {
-                Ok(response) => Some((model_name, response.content)),
-                Err(_) => None,
+
+    let mut enhanced_message = req.message.clone();
+    let kb_sources_json: Vec<serde_json::Value> = {
+        let query_embedding = match state.embedder.embed(&req.message).await {
+            Ok(emb) => emb,
+            Err(_) => maple_llm::embedding::simple_embedding(&req.message, 128),
+        };
+        let vector_results = state.vector_store.search(&query_embedding, 3).await;
+        let bm25_results = state.bm25_searcher.search(&req.message, 3);
+        let kb_results = state.hybrid_retriever.search(&req.message, 3, vector_results, bm25_results).await.unwrap_or_default();
+
+        if !kb_results.is_empty() {
+            let mut context_parts = Vec::new();
+            let mut sources = Vec::new();
+            for r in &kb_results {
+                context_parts.push(r.content.clone());
+                let snippet = if r.content.len() > 200 { r.content[..200].to_string() + "..." } else { r.content.clone() };
+                sources.push(serde_json::json!({
+                    "id": r.id,
+                    "snippet": snippet,
+                    "score": r.score,
+                    "source": r.source,
+                    "source_type": r.source_type,
+                }));
             }
+            let kb_context = context_parts.join("\n---\n");
+            enhanced_message = format!("[Knowledge Base Context]\n{}\n---\n[User Question]\n{}", kb_context, req.message);
+            sources
+        } else {
+            Vec::new()
         }
-        Err(_) => None,
     };
+
+    let llm_request = maple_llm::request::LlmRequest::new(enhanced_message, route_key);
     let sid = session_id.clone();
 
     let stream = async_stream::stream! {
-        match complete_result {
-            Some((model_name, content)) => {
+        if !kb_sources_json.is_empty() {
+            yield Ok(Event::default().event("kb_sources").data(serde_json::json!({"sources": kb_sources_json}).to_string()));
+        }
+        let stream_result = llm_router.route(&llm_request).await;
+        match stream_result {
+            Ok(adapter) => {
+                let model_name = adapter.name().to_string();
                 yield Ok(Event::default().event("meta").data(serde_json::json!({"session_id": sid, "model": model_name}).to_string()));
-                let chunk_size = 8;
-                let chars: Vec<char> = content.chars().collect();
-                for chunk in chars.chunks(chunk_size) {
-                    let token = chunk.iter().collect::<String>();
-                    yield Ok(Event::default().event("token").data(serde_json::json!({"token": token}).to_string()));
+
+                match adapter.stream(llm_request).await {
+                    Ok(mut llm_stream) => {
+                        let mut full_content = String::new();
+                        loop {
+                            match llm_stream.next_chunk().await {
+                                Ok(Some(chunk)) => {
+                                    if !chunk.delta.is_empty() {
+                                        full_content.push_str(&chunk.delta);
+                                        yield Ok(Event::default().event("token").data(serde_json::json!({"token": chunk.delta}).to_string()));
+                                    }
+                                    if chunk.finish_reason.is_some() {
+                                        break;
+                                    }
+                                }
+                                Ok(None) => break,
+                                Err(e) => {
+                                    yield Ok(Event::default().event("error").data(format!("Stream error: {}", e)));
+                                    break;
+                                }
+                            }
+                        }
+                        let _ = session_store.save_message(&sid, "assistant", &full_content, None, None).await;
+                        yield Ok(Event::default().event("done").data(serde_json::json!({"done": true}).to_string()));
+                    }
+                    Err(e) => {
+                        yield Ok(Event::default().event("error").data(format!("Stream init error: {}", e)));
+                        yield Ok(Event::default().event("done").data("{\"done\":true}"));
+                    }
                 }
-                let _ = session_store.save_message(&sid, "assistant", &content, None, None).await;
-                yield Ok(Event::default().event("done").data(serde_json::json!({"done": true}).to_string()));
             }
-            None => {
-                yield Ok(Event::default().event("error").data("LLM unavailable"));
+            Err(e) => {
+                yield Ok(Event::default().event("error").data(format!("No LLM available: {}", e)));
                 yield Ok(Event::default().event("done").data("{\"done\":true}"));
             }
         }
     };
 
     Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::new().interval(std::time::Duration::from_secs(15)).text("ping"))
+}
+
+async fn kb_upload_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    mut multipart: axum::extract::Multipart,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    let mut results = Vec::new();
+
+    while let Some(field) = multipart.next_field().await.map_err(|_| axum::http::StatusCode::BAD_REQUEST)? {
+        let field_name = field.name().unwrap_or("").to_string();
+        if field_name != "file" {
+            continue;
+        }
+
+        let filename = field.file_name().unwrap_or("untitled").to_string();
+        let bytes = field.bytes().await.map_err(|_| axum::http::StatusCode::BAD_REQUEST)?;
+        let content = String::from_utf8_lossy(&bytes).to_string();
+
+        let source_type = if filename.ends_with(".pdf") { "pdf" }
+            else if filename.ends_with(".md") { "markdown" }
+            else if filename.ends_with(".txt") { "text" }
+            else { "file" };
+
+        let doc_id = uuid::Uuid::new_v4().to_string();
+        let doc = Document {
+            id: doc_id.clone(),
+            title: filename.clone(),
+            content: content.clone(),
+            source_type: source_type.to_string(),
+            source_url: None,
+            chunks: vec![],
+        };
+
+        let chunks = state.indexer.index(&doc).unwrap_or_default();
+        for chunk in &chunks {
+            state.bm25_searcher.index_chunk(chunk);
+            let embedding = match state.embedder.embed(&chunk.content).await {
+                Ok(emb) => emb,
+                Err(_) => maple_llm::embedding::simple_embedding(&chunk.content, 128),
+            };
+            state.vector_store.upsert(&chunk.id, chunk, embedding).await;
+        }
+
+        let now = chrono::Utc::now().timestamp();
+        let chunk_count = chunks.len() as i32;
+        let _ = sqlx::query(
+            "INSERT INTO kb_documents (id, workspace_id, title, source_type, source_url, content, chunk_count, created_at) VALUES (?, 'default', ?, ?, NULL, ?, ?, ?)"
+        )
+        .bind(&doc_id)
+        .bind(&filename)
+        .bind(source_type)
+        .bind(&content)
+        .bind(chunk_count)
+        .bind(now)
+        .execute(&state.db)
+        .await;
+
+        results.push(serde_json::json!({
+            "document_id": doc_id,
+            "filename": filename,
+            "chunk_count": chunks.len(),
+            "source_type": source_type,
+        }));
+    }
+
+    Ok(axum::Json(serde_json::json!({ "uploaded": results })))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1138,6 +1319,29 @@ fn default_top_k() -> usize { 5 }
 #[derive(Debug, Serialize)]
 struct KbSearchResponse {
     results: Vec<serde_json::Value>,
+}
+
+async fn kb_documents_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::Json<serde_json::Value> {
+    let rows: Vec<(String, String, String, i32, i64)> = sqlx::query_as(
+        "SELECT id, title, source_type, chunk_count, created_at FROM kb_documents ORDER BY created_at DESC"
+    )
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+
+    axum::Json(serde_json::json!({
+        "documents": rows.into_iter().map(|(id, title, source_type, chunk_count, created_at)| {
+            serde_json::json!({
+                "id": id,
+                "title": title,
+                "source_type": source_type,
+                "chunk_count": chunk_count,
+                "created_at": created_at,
+            })
+        }).collect::<Vec<_>>()
+    }))
 }
 
 async fn kb_search_handler(
@@ -1500,6 +1704,13 @@ async fn get_workflow_executions_handler(
 }
 
 #[derive(Debug, Deserialize)]
+struct RegisterRequest {
+    username: String,
+    password: String,
+    email: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct LoginRequest {
     username: String,
     password: String,
@@ -1509,17 +1720,208 @@ async fn login_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
     Json(req): Json<LoginRequest>,
 ) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    let user_row: Option<(String, String, String)> = sqlx::query_as(
+        "SELECT id, password_hash, role FROM users WHERE username = ?"
+    )
+    .bind(&req.username)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if let Some((user_id, password_hash, role)) = user_row {
+        let valid = bcrypt::verify(&req.password, &password_hash)
+            .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+        if !valid {
+            return Err(axum::http::StatusCode::UNAUTHORIZED);
+        }
+        let access_token = state.auth_service.create_token_for_user(&user_id, &role, 3600)
+            .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+        let refresh_token = uuid::Uuid::new_v4().to_string();
+        let refresh_hash = bcrypt::hash(&refresh_token, bcrypt::DEFAULT_COST)
+            .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+        let now = chrono::Utc::now().timestamp();
+        let refresh_expires = now + 7 * 86400;
+        let _ = sqlx::query(
+            "INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)"
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(&user_id)
+        .bind(&refresh_hash)
+        .bind(refresh_expires)
+        .bind(now)
+        .execute(&state.db)
+        .await;
+
+        return Ok(axum::Json(serde_json::json!({
+            "token": access_token,
+            "refresh_token": refresh_token,
+            "user_id": user_id,
+            "username": req.username,
+            "role": role,
+            "expires_in": 3600,
+        })));
+    }
+
+    // Fallback: admin account from env
     let admin_user = &state.config.admin_username;
     let admin_pass = &state.config.admin_password;
-
     if req.username == *admin_user && req.password == *admin_pass {
-        let token = state.auth_service.create_token_for_user(&req.username, "admin", 86400)
+        let user_id = format!("admin-{}", req.username);
+        let token = state.auth_service.create_token_for_user(&user_id, "admin", 3600)
             .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
-        
+        let refresh_token = uuid::Uuid::new_v4().to_string();
+        let refresh_hash = bcrypt::hash(&refresh_token, bcrypt::DEFAULT_COST)
+            .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+        let now = chrono::Utc::now().timestamp();
+        let _ = sqlx::query(
+            "INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)"
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(&user_id)
+        .bind(&refresh_hash)
+        .bind(now + 7 * 86400)
+        .bind(now)
+        .execute(&state.db)
+        .await;
+
         Ok(axum::Json(serde_json::json!({
             "token": token,
-            "user_id": req.username,
+            "refresh_token": refresh_token,
+            "user_id": user_id,
+            "username": req.username,
             "role": "admin",
+            "expires_in": 3600,
+        })))
+    } else {
+        Err(axum::http::StatusCode::UNAUTHORIZED)
+    }
+}
+
+async fn register_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    Json(req): Json<RegisterRequest>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    if req.username.trim().is_empty() || req.password.len() < 6 {
+        return Ok(axum::Json(serde_json::json!({
+            "error": "Username required, password min 6 chars"
+        })));
+    }
+
+    let existing: Option<(String,)> = sqlx::query_as(
+        "SELECT id FROM users WHERE username = ?"
+    )
+    .bind(&req.username)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if existing.is_some() {
+        return Ok(axum::Json(serde_json::json!({
+            "error": "Username already exists"
+        })));
+    }
+
+    let user_id = uuid::Uuid::new_v4().to_string();
+    let password_hash = bcrypt::hash(&req.password, bcrypt::DEFAULT_COST)
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+    let now = chrono::Utc::now().timestamp();
+
+    sqlx::query(
+        "INSERT INTO users (id, username, password_hash, email, role, created_at) VALUES (?, ?, ?, ?, 'user', ?)"
+    )
+    .bind(&user_id)
+    .bind(&req.username)
+    .bind(&password_hash)
+    .bind(&req.email)
+    .bind(now)
+    .execute(&state.db)
+    .await
+    .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let access_token = state.auth_service.create_token_for_user(&user_id, "user", 3600)
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(axum::Json(serde_json::json!({
+        "token": access_token,
+        "user_id": user_id,
+        "username": req.username,
+        "role": "user",
+        "expires_in": 3600,
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+struct RefreshRequest {
+    refresh_token: String,
+}
+
+async fn refresh_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    Json(req): Json<RefreshRequest>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    let now = chrono::Utc::now().timestamp();
+    let rows: Vec<(String, String, String, i64)> = sqlx::query_as(
+        "SELECT id, user_id, token_hash, expires_at FROM refresh_tokens WHERE expires_at > ?"
+    )
+    .bind(now)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut matched: Option<(String, String)> = None;
+    for (_id, user_id, token_hash, _expires) in &rows {
+        if bcrypt::verify(&req.refresh_token, token_hash).unwrap_or(false) {
+            matched = Some((user_id.clone(), _id.clone()));
+            break;
+        }
+    }
+
+    if let Some((user_id, token_id)) = matched {
+        let user_row: Option<(String, String)> = sqlx::query_as(
+            "SELECT username, role FROM users WHERE id = ?"
+        )
+        .bind(&user_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        let (username, role) = match user_row {
+            Some(r) => r,
+            None => return Err(axum::http::StatusCode::UNAUTHORIZED),
+        };
+
+        let access_token = state.auth_service.create_token_for_user(&user_id, &role, 3600)
+            .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        let new_refresh = uuid::Uuid::new_v4().to_string();
+        let new_hash = bcrypt::hash(&new_refresh, bcrypt::DEFAULT_COST)
+            .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        let _ = sqlx::query(
+            "DELETE FROM refresh_tokens WHERE id = ?"
+        )
+        .bind(&token_id)
+        .execute(&state.db)
+        .await;
+
+        let _ = sqlx::query(
+            "INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)"
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(&user_id)
+        .bind(&new_hash)
+        .bind(now + 7 * 86400)
+        .bind(now)
+        .execute(&state.db)
+        .await;
+
+        Ok(axum::Json(serde_json::json!({
+            "token": access_token,
+            "refresh_token": new_refresh,
+            "user_id": user_id,
+            "username": username,
+            "role": role,
+            "expires_in": 3600,
         })))
     } else {
         Err(axum::http::StatusCode::UNAUTHORIZED)
@@ -1608,7 +2010,7 @@ impl ServerConfig {
             jwt_secret: std::env::var("JWT_SECRET")
                 .unwrap_or_else(|_| "mapleos-dev-secret-change-me".to_string()),
             require_auth: std::env::var("REQUIRE_AUTH")
-                .unwrap_or_default() == "true",
+                .unwrap_or_else(|_| "true".to_string()) == "true",
             admin_username: std::env::var("ADMIN_USERNAME")
                 .unwrap_or_else(|_| "admin".to_string()),
             admin_password: std::env::var("ADMIN_PASSWORD")
@@ -1650,6 +2052,24 @@ async fn main() -> anyhow::Result<()> {
     let hook_runner = Arc::new(HookRunner::new());
     let checkpoint_mgr = Arc::new(CheckpointManager::new(pool.clone()));
     let agent_registry = Arc::new(AgentRegistry::new());
+    {
+        let rows: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT id, name, status FROM agents"
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap_or_default();
+
+        for (id, name, status) in &rows {
+            let agent_status = if status == "Online" || status == "Idle" {
+                maple_agent::registry::AgentStatus::Online
+            } else {
+                maple_agent::registry::AgentStatus::Offline
+            };
+            agent_registry.register_agent(id, name, agent_status).await;
+        }
+        tracing::info!("Restored {} agents from DB", rows.len());
+    }
     let auth_service = Arc::new(AuthService::new(config.jwt_secret.clone()));
     let workspace_manager = Arc::new(tokio::sync::Mutex::new(WorkspaceManager::new(pool.clone())));
     {
@@ -1811,8 +2231,9 @@ async fn main() -> anyhow::Result<()> {
                 "SELECT yaml_content FROM workflows WHERE id = ?"
             ).bind(&job.workflow_id).fetch_optional(&db).await.ok().flatten();
             if let Some(yaml) = yaml_str {
-                let nodes: Vec<WorkflowNode> = serde_json::from_str(&yaml).unwrap_or_default();
-                let _ = wf.execute(&nodes, &job.workflow_id, 1, serde_json::Value::Null).await;
+                if let Ok(parsed) = Workflow::parse_definition(&yaml) {
+                    let _ = wf.execute(&parsed.nodes, &job.workflow_id, parsed.version, serde_json::Value::Null).await;
+                }
             }
             Ok(())
         }
@@ -1833,6 +2254,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/skills", get(skills_handler))
         .route("/api/kb/index", post(kb_index_handler))
         .route("/api/kb/search", post(kb_search_handler))
+        .route("/api/kb/upload", post(kb_upload_handler))
+        .route("/api/kb/documents", get(kb_documents_handler))
         .route("/api/sessions", get(sessions_handler))
         .route("/api/memories", post(memory_store_handler))
         .route("/api/memories/search", post(memory_search_handler))
@@ -1847,6 +2270,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/workflows/:id/executions", get(get_workflow_executions_handler))
         .route("/api/auth/login", post(login_handler))
         .route("/api/auth/token", post(token_handler))
+        .route("/api/auth/register", post(register_handler))
+        .route("/api/auth/refresh", post(refresh_handler))
         .with_state(state.clone());
 
     let app = Router::new()
@@ -1972,9 +2397,9 @@ async fn register_business_handlers(dispatcher: &Arc<RpcDispatcher>, state: Arc<
                 None => return Ok(serde_json::json!({"error": "workflow not found"})),
             };
 
-            let workflow = match Workflow::parse_yaml(&yaml) {
+            let workflow = match Workflow::parse_definition(&yaml) {
                 Ok(w) => w,
-                Err(e) => return Ok(serde_json::json!({"error": format!("YAML parse error: {}", e)})),
+                Err(e) => return Ok(serde_json::json!({"error": format!("Parse error: {}", e)})),
             };
 
             let exec_id = uuid::Uuid::new_v4().to_string();
@@ -2034,14 +2459,30 @@ async fn register_business_handlers(dispatcher: &Arc<RpcDispatcher>, state: Arc<
 
     let s = state.clone();
     dispatcher.register("agent.list", move |_: Option<serde_json::Value>| {
+        let db = s.db.clone();
         let registry = s.agent_registry.clone();
         async move {
-            let agents = registry.list_agents().await;
+            let rows: Vec<(String, String, String)> = sqlx::query_as(
+                "SELECT id, name, status FROM agents ORDER BY created_at DESC"
+            )
+            .fetch_all(&db)
+            .await
+            .unwrap_or_default();
+
+            for (id, name, status) in &rows {
+                let agent_status = if status == "Online" || status == "Idle" {
+                    maple_agent::registry::AgentStatus::Online
+                } else {
+                    maple_agent::registry::AgentStatus::Offline
+                };
+                registry.register_agent(id, name, agent_status).await;
+            }
+
             Ok(serde_json::json!({
-                "agents": agents.into_iter().map(|(id, name, status)| serde_json::json!({
+                "agents": rows.into_iter().map(|(id, name, status)| serde_json::json!({
                     "id": id,
                     "name": name,
-                    "status": format!("{:?}", status),
+                    "status": status,
                 })).collect::<Vec<_>>(),
             }))
         }
@@ -2134,12 +2575,15 @@ async fn register_business_handlers(dispatcher: &Arc<RpcDispatcher>, state: Arc<
         async move {
             let p = match params {
                 Some(v) => v,
-                None => return Ok(serde_json::json!({"error": "missing params: agent_id + prompt"})),
+                None => return Ok(serde_json::json!({"error": "missing params: agent_id + message"})),
             };
             let agent_id = p["agent_id"].as_str().unwrap_or("default").to_string();
-            let prompt = p["prompt"].as_str().unwrap_or("").to_string();
+            let prompt = p["message"].as_str()
+                .or_else(|| p["prompt"].as_str())
+                .unwrap_or("")
+                .to_string();
             if prompt.is_empty() {
-                return Ok(serde_json::json!({"error": "prompt is required"}));
+                return Ok(serde_json::json!({"error": "message is required"}));
             }
 
             let session_id = format!("agent-chat-{}", agent_id);
@@ -2155,12 +2599,14 @@ async fn register_business_handlers(dispatcher: &Arc<RpcDispatcher>, state: Arc<
                 Ok(response) => {
                     let _ = session_store.save_message(&session_id, "assistant", &response.content, None, response.tool_calls.as_deref()).await;
                     Ok(serde_json::json!({
+                        "reply": response.content,
                         "response": response.content,
                         "agent_id": agent_id,
                         "model": adapter.name().to_string(),
                     }))
                 }
                 Err(e) => Ok(serde_json::json!({
+                    "reply": format!("LLM error: {}", e),
                     "response": format!("LLM error: {}", e),
                     "agent_id": agent_id,
                 }))
@@ -2201,6 +2647,28 @@ async fn register_business_handlers(dispatcher: &Arc<RpcDispatcher>, state: Arc<
     }).await;
 
     let s = state.clone();
+    dispatcher.register("agent.deregister", move |params: Option<serde_json::Value>| {
+        let registry = s.agent_registry.clone();
+        let db = s.db.clone();
+        async move {
+            let p = match params {
+                Some(v) => v,
+                None => return Ok(serde_json::json!({"error": "missing params: id"})),
+            };
+            let id = p["id"].as_str().unwrap_or("").to_string();
+            if id.is_empty() {
+                return Ok(serde_json::json!({"error": "id is required"}));
+            }
+            registry.deregister_agent(&id).await;
+            let _ = sqlx::query("DELETE FROM agents WHERE id = ?")
+                .bind(&id)
+                .execute(&db)
+                .await;
+            Ok(serde_json::json!({"id": id, "status": "deregistered"}))
+        }
+    }).await;
+
+    let s = state.clone();
     dispatcher.register("task.create", move |params: Option<serde_json::Value>| {
         let task_queue = s.task_queue.clone();
         async move {
@@ -2209,9 +2677,17 @@ async fn register_business_handlers(dispatcher: &Arc<RpcDispatcher>, state: Arc<
                 None => return Ok(serde_json::json!({"error": "missing params"})),
             };
             let task_type = p["task_type"].as_str().unwrap_or("generic").to_string();
-            let agent_id = p["agent_id"].as_str().unwrap_or("").to_string();
-            let prompt = p["prompt"].as_str().unwrap_or("").to_string();
             let priority = p["priority"].as_i64().unwrap_or(0) as i32;
+
+            let (agent_id, prompt) = if let Some(payload) = p.get("payload").and_then(|v| v.as_object()) {
+                let aid = payload.get("agent_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let pr = payload.get("prompt").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                (aid, pr)
+            } else {
+                let aid = p["agent_id"].as_str().unwrap_or("").to_string();
+                let pr = p["prompt"].as_str().unwrap_or("").to_string();
+                (aid, pr)
+            };
 
             let payload = serde_json::json!({
                 "agent_id": agent_id,

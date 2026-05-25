@@ -104,6 +104,6 @@ Agent 在任务执行过程中发现的条目应遵循以下格式：
   - Dockerfile 基础镜像使用 `rust:latest-slim`，运行镜像 `debian:bookworm-slim`
   - reqwest 已切换为 `rustls-tls` (default-features=false)，无需 OpenSSL 开发库
   - SQLx SQLite 编译需要系统安装 `pkg-config` + `libsqlite3-dev` (Ubuntu) / `sqlite3` (macOS)
-  - apps/desktop/src-tauri 已从 workspace members 移至 exclude，CI 不再编译桌面端
+  - EXPO_TOKEN secret 需要用户在 GitHub repo settings 中配置，mobile 构建在 secret 不存在时自动跳过
   - 前端构建需要先编译 `@mapleos/ui` 和 `@mapleos/sdk` (共享包)，再编译 `mapleos-web`
   - Release 工作流触发条件: push tag `v*`，自动构建 4 平台二进制 + Web 静态包 + Docker 镜像推送 GHCR

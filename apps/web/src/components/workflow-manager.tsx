@@ -175,13 +175,11 @@ export function WorkflowManager() {
     if (!createName.trim()) return;
     try {
       const yamlNodes = canvasNodes.map((n) => ({
-        id: n.id, type: n.type, label: n.label,
-        ...(n.type === "llm" && { model_route: n.model ?? "auto" }),
-        ...(n.type === "tool" && { skill_id: n.skillId ?? "" }),
+        id: n.id, name: n.label, node_type: { type: n.type, ...(n.type === "llm" && { model_route: n.model ?? "auto", prompt_ref: "" }), ...(n.type === "tool" && { skill_id: n.skillId ?? "", config: {} }) },
         depends_on: edges.filter((e) => e.to === n.id).map((e) => e.from),
       }));
-      const yaml = JSON.stringify({ name: createName.trim(), nodes: yamlNodes, trigger: { type: "webhook", path: `/hook/${createName}` } });
-      await rpcCall("workflow.create", { name: createName.trim(), yaml_content: yaml });
+      const definition = JSON.stringify({ id: createName.trim().replace(/\s+/g, "-").toLowerCase(), name: createName.trim(), version: 1, description: "", trigger: { type: "webhook", path: `/hook/${createName}`, method: "POST" }, variables: {}, nodes: yamlNodes, hooks: {} });
+      await rpcCall("workflow.create", { name: createName.trim(), yaml_content: definition });
       setShowCreate(false); setCreateName(""); setCanvasNodes([]); setEdges([]); setConsoleLogs([]);
       await loadWorkflows();
     } catch (err) { alert(`创建失败: ${(err as Error).message}`); }
@@ -433,16 +431,45 @@ export function WorkflowManager() {
               <div className="text-[13px] font-medium">{selectedNode.label}</div>
               <Badge variant="outline" className="text-[10px] mt-1">{nodeTypeLabel[selectedNode.type]}</Badge>
               <div className="text-[11px] text-muted-foreground mt-1 font-mono">pos: ({Math.round(selectedNode.x)}, {Math.round(selectedNode.y)})</div>
+              <div className="mt-2 space-y-1">
+                <label className="text-[11px] text-muted-foreground">节点名称</label>
+                <Input
+                  value={selectedNode.label}
+                  onChange={(e) => {
+                    const newLabel = e.target.value;
+                    setCanvasNodes((prev) => prev.map((n) => n.id === selectedNode.id ? { ...n, label: newLabel } : n));
+                    setSelectedNode((prev) => prev ? { ...prev, label: newLabel } : prev);
+                  }}
+                  className="h-7 text-xs"
+                />
+              </div>
               {selectedNode.type === "llm" && (
                 <div className="mt-2 space-y-1">
                   <label className="text-[11px] text-muted-foreground">模型路由</label>
-                  <Input defaultValue={selectedNode.model ?? "auto"} className="h-7 text-xs" />
+                  <Input
+                    value={selectedNode.model ?? "auto"}
+                    onChange={(e) => {
+                      const newModel = e.target.value;
+                      setCanvasNodes((prev) => prev.map((n) => n.id === selectedNode.id ? { ...n, model: newModel } : n));
+                      setSelectedNode((prev) => prev ? { ...prev, model: newModel } : prev);
+                    }}
+                    className="h-7 text-xs"
+                  />
                 </div>
               )}
               {selectedNode.type === "tool" && (
                 <div className="mt-2 space-y-1">
                   <label className="text-[11px] text-muted-foreground">技能 ID</label>
-                  <Input defaultValue={selectedNode.skillId ?? ""} className="h-7 text-xs" placeholder="skill_id" />
+                  <Input
+                    value={selectedNode.skillId ?? ""}
+                    onChange={(e) => {
+                      const newSkillId = e.target.value;
+                      setCanvasNodes((prev) => prev.map((n) => n.id === selectedNode.id ? { ...n, skillId: newSkillId } : n));
+                      setSelectedNode((prev) => prev ? { ...prev, skillId: newSkillId } : prev);
+                    }}
+                    className="h-7 text-xs"
+                    placeholder="skill_id"
+                  />
                 </div>
               )}
               {selectedNode.type === "condition" && (

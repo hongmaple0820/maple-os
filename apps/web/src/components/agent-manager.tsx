@@ -84,6 +84,16 @@ export function AgentManager() {
     } catch { setMemories([]); }
   };
 
+  const handleDeregister = async (agentId: string) => {
+    try {
+      await rpcCall("agent.deregister", { id: agentId });
+      setCollabMessages((prev) => [...prev, { role: "system", content: `Agent "${agentId}" 已注销`, timestamp: Date.now() }]);
+      await loadAll();
+    } catch (err) {
+      setCollabMessages((prev) => [...prev, { role: "system", content: `注销失败: ${(err as Error).message}`, timestamp: Date.now() }]);
+    }
+  };
+
   const handleRegister = async () => {
     if (!registerName.trim()) return;
     try {
@@ -175,8 +185,16 @@ export function AgentManager() {
                     <Badge variant={agentStatusVariant[a.status] ?? "outline"} className="text-[10px]">{agentStatusLabel[a.status] ?? a.status}</Badge>
                   </div>
                 </div>
-                <div className="text-[11px] text-muted-foreground font-mono mt-0.5">{a.id}</div>
+                 <div className="text-[11px] text-muted-foreground font-mono mt-0.5">{a.id}</div>
                 {a.model && <div className="text-[11px] text-muted-foreground mt-0.5">模型: {a.model}</div>}
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  className="w-full mt-1.5 h-6 text-[10px]"
+                  onClick={(e) => { e.stopPropagation(); handleDeregister(a.id); }}
+                >
+                  删除
+                </Button>
               </button>
             ))}
           </div>

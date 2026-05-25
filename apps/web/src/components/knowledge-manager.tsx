@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Card, CardContent, Badge, Button, Input, Spinner } from "@mapleos/ui";
 import { mapleApi } from "@/lib/api";
 
@@ -27,8 +27,18 @@ export function KnowledgeManager() {
   const [uploadText, setUploadText] = useState("");
   const [uploadSource, setUploadSource] = useState("document");
   const [showUpload, setShowUpload] = useState(false);
+  const [fileUploading, setFileUploading] = useState(false);
   const [indexLogs, setIndexLogs] = useState<IndexLog[]>([]);
   const [activeTab, setActiveTab] = useState<"search" | "index" | "recent">("search");
+
+  const loadDocuments = async () => {
+    try {
+      const data = await mapleApi<{ documents: Array<{ id: string; title: string; source_type: string; chunk_count: number; created_at: number }> }>("/api/kb/documents");
+      setIndexLogs(data.documents.map(d => ({ id: d.id, title: d.title, source_type: d.source_type, timestamp: d.created_at * 1000 })));
+    } catch {}
+  };
+
+  useEffect(() => { loadDocuments(); }, []);
 
   const handleSearch = async () => {
     if (!searchQuery.trim()) return;
@@ -53,6 +63,33 @@ export function KnowledgeManager() {
       setShowUpload(false); setUploadTitle(""); setUploadText(""); setUploadSource("document");
     } catch (err) { alert(`索引失败: ${(err as Error).message}`); }
     finally { setUploading(false); }
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    setFileUploading(true);
+    try {
+      const formData = new FormData();
+      for (let i = 0; i < files.length; i++) {
+        formData.append("file", files[i]);
+      }
+      const { token } = await import("@/lib/api").then((m) => m.getAuthState());
+      const res = await fetch("/api/maple/api/kb/upload", {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: formData,
+      });
+      if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
+      const data = await res.json();
+      if (data.uploaded) {
+        for (const doc of data.uploaded) {
+          const log: IndexLog = { id: doc.document_id, title: doc.filename, source_type: doc.source_type, timestamp: Date.now() };
+          setIndexLogs((prev) => [log, ...prev]);
+        }
+      }
+    } catch (err) { alert(`File upload failed: ${(err as Error).message}`); }
+    finally { setFileUploading(false); e.target.value = ""; }
   };
 
   const scoreColor = (score: number) => {
@@ -89,6 +126,10 @@ export function KnowledgeManager() {
           <textarea value={uploadText} onChange={(e) => setUploadText(e.target.value)} placeholder="输入要索引的文本内容..." className="w-full h-20 rounded-md border bg-transparent px-3 py-2 text-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
           <div className="flex gap-2">
             <Button size="sm" onClick={handleIndex} disabled={uploading || !uploadText.trim()}>{uploading ? "索引中..." : "提交索引"}</Button>
+            <label className="inline-flex items-center px-3 py-1.5 rounded-md text-xs font-medium bg-secondary text-secondary-foreground hover:bg-secondary/80 cursor-pointer">
+              {fileUploading ? "上传中..." : "上传文件"}
+              <input type="file" className="hidden" accept=".txt,.md,.pdf" multiple onChange={handleFileUpload} disabled={fileUploading} />
+            </label>
             <Button size="sm" variant="ghost" onClick={() => { setShowUpload(false); setUploadTitle(""); setUploadText(""); }}>取消</Button>
           </div>
         </div>
@@ -98,7 +139,7 @@ export function KnowledgeManager() {
         {(["search", "index", "recent"] as const).map((tab) => (
           <button
             key={tab}
-            onClick={() => setActiveTab(tab)}
+            onClick={() => { setActiveTab(tab); if (tab === "recent") loadDocuments(); }}
             className={`px-2 py-1 rounded text-[11px] transition-colors ${
               activeTab === tab ? "bg-primary text-primary-foreground font-medium" : "text-muted-foreground hover:bg-accent"
             }`}

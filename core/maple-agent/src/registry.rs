@@ -124,7 +124,12 @@ impl AgentRegistry {
         Ok(())
     }
 
-pub async fn register_agent(&self, id: &str, name: &str, status: AgentStatus) {
+    pub async fn deregister_agent(&self, id: &str) {
+        self.agents.remove(id);
+        self.task_channels.remove(id);
+    }
+
+    pub async fn register_agent(&self, id: &str, name: &str, status: AgentStatus) {
         let schema = AgentSchema {
             id: id.to_string(),
             name: name.to_string(),

@@ -10,7 +10,8 @@ import { CommandPalette } from "@/components/command-palette";
 import { SettingsPage } from "@/components/settings-page";
 import { PluginsPage } from "@/components/plugins-page";
 import { Badge, Button } from "@mapleos/ui";
-import { rpcCall, mapleApi } from "@/lib/api";
+import { rpcCall, mapleApi, isAuthenticated, getAuthState, clearAuthState } from "@/lib/api";
+import { AuthPage } from "@/components/auth-page";
 
 const NAV_ITEMS = [
   { id: "dashboard", label: "工作台", icon: "layout-dashboard" },
@@ -59,6 +60,18 @@ export default function Home() {
   const [taskStats, setTaskStats] = useState<TaskStats | null>(null);
   const [serverOnline, setServerOnline] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [authenticated, setAuthenticated] = useState(false);
+
+  useEffect(() => {
+    setAuthenticated(isAuthenticated());
+    const handleLogout = () => setAuthenticated(false);
+    window.addEventListener("auth:logout", handleLogout);
+    return () => window.removeEventListener("auth:logout", handleLogout);
+  }, []);
+
+  if (!authenticated) {
+    return <AuthPage onAuth={() => setAuthenticated(true)} />;
+  }
 
   const pollData = async () => {
     try {
@@ -103,6 +116,10 @@ export default function Home() {
           <Badge variant={serverOnline ? "default" : "destructive"} className="text-xs">
             {serverOnline ? "已连接" : "离线"}
           </Badge>
+          {(() => { const u = getAuthState().user; return u ? <Badge variant="outline" className="text-[10px]">{u.username} ({u.role})</Badge> : null; })()}
+          <Button variant="ghost" size="sm" onClick={() => { clearAuthState(); setAuthenticated(false); }} className="text-xs">
+            Logout
+          </Button>
           <Button variant="ghost" size="sm" onClick={() => setPaletteOpen(true)} className="text-xs font-mono">
             &#8984;K 命令
           </Button>

@@ -77,3 +77,126 @@ impl LlmStream for OpenAiStream {
         }
     }
 }
+
+pub struct LiveSseStream {
+    receiver: tokio::sync::mpsc::Receiver<Result<StreamChunk>>,
+}
+
+impl LiveSseStream {
+    pub fn new(resp: reqwest::Response, format: SseFormat) -> Self {
+        let (tx, rx) = tokio::sync::mpsc::channel(32);
+        tokio::spawn(async move {
+            let mut buffer = String::new();
+            let mut stream = resp.bytes_stream();
+            use futures::StreamExt;
+
+            while let Some(chunk_result) = stream.next().await {
+                let chunk = match chunk_result {
+                    Ok(c) => c,
+                    Err(e) => {
+                        let _ = tx.send(Err(anyhow::anyhow!("Stream error: {}", e))).await;
+                        break;
+                    }
+                };
+
+                buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+                while let Some(pos) = buffer.find('\n') {
+                    let line = buffer[..pos].trim().to_string();
+                    buffer = buffer[pos + 1..].to_string();
+
+                    if line.is_empty() {
+                        continue;
+                    }
+
+                    let parsed = match format {
+                        SseFormat::OpenAi => Self::parse_openai_line(&line),
+                        SseFormat::Anthropic => Self::parse_anthropic_line(&line),
+                    };
+
+                    if let Some(result) = parsed {
+                        if tx.send(result).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+
+        Self { receiver: rx }
+    }
+
+    fn parse_openai_line(line: &str) -> Option<Result<StreamChunk>> {
+        let data = line.strip_prefix("data: ")?;
+        if data == "[DONE]" {
+            return Some(Ok(StreamChunk {
+                delta: String::new(),
+                finish_reason: Some("stop".to_string()),
+            }));
+        }
+        let json: serde_json::Value = serde_json::from_str(data).ok()?;
+        if let Some(delta) = json["choices"][0]["delta"]["content"].as_str() {
+            if !delta.is_empty() {
+                return Some(Ok(StreamChunk {
+                    delta: delta.to_string(),
+                    finish_reason: None,
+                }));
+            }
+        }
+        if let Some(fr) = json["choices"][0]["finish_reason"].as_str() {
+            return Some(Ok(StreamChunk {
+                delta: String::new(),
+                finish_reason: Some(fr.to_string()),
+            }));
+        }
+        None
+    }
+
+    fn parse_anthropic_line(line: &str) -> Option<Result<StreamChunk>> {
+        if let Some(_event) = line.strip_prefix("event: ") {
+            return None;
+        }
+        let data = line.strip_prefix("data: ")?;
+        let json: serde_json::Value = serde_json::from_str(data).ok()?;
+
+        match json["type"].as_str() {
+            Some("content_block_delta") => {
+                if let Some(text) = json["delta"]["text"].as_str() {
+                    if !text.is_empty() {
+                        return Some(Ok(StreamChunk {
+                            delta: text.to_string(),
+                            finish_reason: None,
+                        }));
+                    }
+                }
+            }
+            Some("message_delta") => {
+                if let Some(fr) = json["delta"]["stop_reason"].as_str() {
+                    return Some(Ok(StreamChunk {
+                        delta: String::new(),
+                        finish_reason: Some(fr.to_string()),
+                    }));
+                }
+            }
+            _ => {}
+        }
+        None
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum SseFormat {
+    OpenAi,
+    Anthropic,
+}
+
+#[async_trait]
+impl LlmStream for LiveSseStream {
+    async fn next_chunk(&mut self) -> Result<Option<StreamChunk>> {
+        match self.receiver.recv().await {
+            Some(Ok(chunk)) => Ok(Some(chunk)),
+            Some(Err(e)) => Err(e),
+            None => Ok(None),
+        }
+    }
+}

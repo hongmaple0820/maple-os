@@ -147,10 +147,7 @@ impl LlmAdapter for AnthropicAdapter {
             anyhow::bail!("Anthropic stream API error ({}): {}", status, text);
         }
 
-        let bytes = resp.bytes().await?;
-        let stream = AnthropicSseStream::from_response_body(&bytes);
-
-        Ok(Box::new(stream))
+        Ok(Box::new(crate::stream::LiveSseStream::new(resp, crate::stream::SseFormat::Anthropic)))
     }
 
     fn count_tokens(&self, text: &str) -> usize {

@@ -180,6 +180,20 @@ impl Workflow {
     pub fn parse_yaml(yaml: &str) -> Result<Self, serde_yaml::Error> {
         serde_yaml::from_str(yaml)
     }
+
+    pub fn parse_json(json: &str) -> Result<Self, serde_json::Error> {
+        serde_json::from_str(json)
+    }
+
+    pub fn parse_definition(content: &str) -> Result<Self, String> {
+        if let Ok(wf) = Self::parse_json(content) {
+            return Ok(wf);
+        }
+        if let Ok(wf) = Self::parse_yaml(content) {
+            return Ok(wf);
+        }
+        Err("Failed to parse as JSON or YAML".to_string())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -178,7 +178,7 @@ impl LlmAdapter for OpenAiCompatAdapter {
             anyhow::bail!("OpenAI-compat stream error ({}): {}", status, text);
         }
 
-        Ok(Box::new(OpenAiSseStream::from_response(resp)))
+        Ok(Box::new(crate::stream::LiveSseStream::new(resp, crate::stream::SseFormat::OpenAi)))
     }
 
     fn count_tokens(&self, text: &str) -> usize {
