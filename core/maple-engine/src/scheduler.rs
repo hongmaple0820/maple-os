@@ -19,6 +19,12 @@ pub struct Scheduler {
     jobs: Arc<Mutex<Vec<ScheduledJob>>>,
 }
 
+impl Default for Scheduler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Scheduler {
     pub fn new() -> Self {
         Self {
@@ -84,10 +90,10 @@ impl Scheduler {
                         let mut guard = jobs.lock().await;
                         if let Some(j) = guard.iter_mut().find(|j| j.id == job_id) {
                             j.last_run_at = Some(now);
-                            if let Ok(cron) = parse_cron(&j.cron_expr) {
-                                if let Ok(next) = next_timestamp(&cron, now) {
-                                    j.next_run_at = next;
-                                }
+                            if let Ok(cron) = parse_cron(&j.cron_expr)
+                                && let Ok(next) = next_timestamp(&cron, now)
+                            {
+                                j.next_run_at = next;
                             }
                         }
                     }
@@ -141,7 +147,7 @@ fn parse_field(input: &str, min: i64, max: i64) -> Result<CronField> {
 }
 
 fn parse_cron(expr: &str) -> Result<CronExpr> {
-    let parts: Vec<&str> = expr.trim().split_whitespace().collect();
+    let parts: Vec<&str> = expr.split_whitespace().collect();
     if parts.len() != 5 {
         return Err(anyhow::anyhow!("Cron expression must have 5 fields: min hour day month weekday"));
     }
@@ -167,7 +173,59 @@ fn next_timestamp(cron: &CronExpr, from: i64) -> Result<i64> {
         {
             return Ok(dt.timestamp());
         }
-        dt = dt + chrono::Duration::minutes(1);
+        dt += chrono::Duration::minutes(1);
     }
     Err(anyhow::anyhow!("No matching time found within 1 year"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_add_and_remove_job() {
+        let scheduler = Scheduler::new();
+        let job = ScheduledJob {
+            id: "job-1".to_string(),
+            workflow_id: "wf-1".to_string(),
+            cron_expr: "0 * * * *".to_string(),
+            timezone: "UTC".to_string(),
+            last_run_at: None,
+            next_run_at: 0,
+            enabled: true,
+        };
+        scheduler.add_job(job.clone()).await.unwrap();
+        let due = scheduler.get_due_jobs(0).await;
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].id, "job-1");
+
+        scheduler.remove_job("job-1").await.unwrap();
+        let due = scheduler.get_due_jobs(0).await;
+        assert_eq!(due.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_cron_wildcard() {
+        let cron = parse_cron("* * * * *").unwrap();
+        assert_eq!(cron.minute.values.len(), 60);
+        assert_eq!(cron.hour.values.len(), 24);
+    }
+
+    #[test]
+    fn test_parse_cron_specific() {
+        let cron = parse_cron("30 9 * * 1").unwrap();
+        assert_eq!(cron.minute.values, vec![30]);
+        assert_eq!(cron.hour.values, vec![9]);
+        assert_eq!(cron.weekday.values, vec![1]);
+    }
+
+    #[test]
+    fn test_next_timestamp() {
+        let cron = parse_cron("0 12 * * *").unwrap();
+        let from = chrono::Utc::now().timestamp();
+        let next = next_timestamp(&cron, from).unwrap();
+        let next_dt = chrono::DateTime::from_timestamp(next, 0).unwrap();
+        assert_eq!(next_dt.hour(), 12);
+        assert_eq!(next_dt.minute(), 0);
+    }
 }

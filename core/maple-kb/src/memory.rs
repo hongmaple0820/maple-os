@@ -19,12 +19,17 @@ impl MemoryType {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
-        match s {
+}
+
+impl std::str::FromStr for MemoryType {
+    type Err = ();
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(match s {
             "episodic" => MemoryType::Episodic,
             "semantic" => MemoryType::Semantic,
             _ => MemoryType::Working,
-        }
+        })
     }
 }
 
@@ -86,31 +91,43 @@ impl MemoryStore {
         }
     }
 
-    pub async fn search_by_type(&self, memory_type: &MemoryType, keyword: &str, limit: usize) -> Result<Vec<MemoryEntry>> {
-        let type_str = memory_type.as_str();
-        let pattern = format!("%{}%", keyword);
+pub async fn search_by_type(&self, memory_type: &MemoryType, keyword: &str, limit: usize) -> Result<Vec<MemoryEntry>> {
         let rows = sqlx::query_as::<_, (String, String, String, String, i64, i32)>(
             "SELECT id, memory_type, content, metadata, created_at, access_count FROM memories WHERE memory_type = ? AND content LIKE ? ORDER BY created_at DESC LIMIT ?"
         )
-        .bind(type_str)
-        .bind(&pattern)
+        .bind(memory_type.as_str())
+        .bind(format!("%{}%", keyword))
         .bind(limit as i64)
         .fetch_all(&self.db)
         .await?;
 
         let entries: Vec<MemoryEntry> = rows.into_iter().map(|(id, mt, content, metadata, created_at, access_count)| {
             let metadata_map: HashMap<String, String> = serde_json::from_str(&metadata).unwrap_or_default();
-            MemoryEntry {
-                id,
-                memory_type: MemoryType::from_str(&mt),
-                content,
-                metadata: metadata_map,
-                created_at,
-                access_count: access_count as u32,
-            }
+            MemoryEntry { id, memory_type: mt.parse::<MemoryType>().unwrap_or(MemoryType::Working), content, metadata: metadata_map, created_at, access_count: access_count as u32 }
         }).collect();
-
         Ok(entries)
+    }
+
+    pub async fn get(&self, id: &str) -> Result<Option<MemoryEntry>> {
+        let row = sqlx::query_as::<_, (String, String, String, String, i64, i32)>(
+            "SELECT id, memory_type, content, metadata, created_at, access_count FROM memories WHERE id = ?"
+        )
+        .bind(id)
+        .fetch_optional(&self.db)
+        .await?;
+
+        Ok(row.map(|(id, mt, content, metadata, created_at, access_count)| {
+            let metadata_map: HashMap<String, String> = serde_json::from_str(&metadata).unwrap_or_default();
+            MemoryEntry { id, memory_type: mt.parse::<MemoryType>().unwrap_or(MemoryType::Working), content, metadata: metadata_map, created_at, access_count: access_count as u32 }
+        }))
+    }
+
+    pub async fn delete(&mut self, id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM memories WHERE id = ?")
+            .bind(id)
+            .execute(&self.db)
+            .await?;
+        Ok(())
     }
 
     pub async fn load_all(&mut self) -> Result<()> {
@@ -124,7 +141,7 @@ impl MemoryStore {
             let metadata_map: HashMap<String, String> = serde_json::from_str(&metadata).unwrap_or_default();
             let entry = MemoryEntry {
                 id,
-                memory_type: MemoryType::from_str(&mt),
+                memory_type: mt.parse::<MemoryType>().unwrap_or(MemoryType::Working),
                 content,
                 metadata: metadata_map,
                 created_at,

@@ -178,7 +178,7 @@ impl LlmAdapter for OpenAiCompatAdapter {
             anyhow::bail!("OpenAI-compat stream error ({}): {}", status, text);
         }
 
-        Ok(Box::new(OpenAiSseStream::from_response(resp)))
+        Ok(Box::new(crate::stream::LiveSseStream::new(resp, crate::stream::SseFormat::OpenAi)))
     }
 
     fn count_tokens(&self, text: &str) -> usize {
@@ -238,13 +238,13 @@ impl OpenAiSseStream {
                 break;
             }
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
-                if let Some(delta) = json["choices"][0]["delta"]["content"].as_str() {
-                    if !delta.is_empty() {
-                        chunks.push(StreamChunk {
-                            delta: delta.to_string(),
-                            finish_reason: None,
-                        });
-                    }
+                if let Some(delta) = json["choices"][0]["delta"]["content"].as_str()
+                    && !delta.is_empty()
+                {
+                    chunks.push(StreamChunk {
+                        delta: delta.to_string(),
+                        finish_reason: None,
+                    });
                 }
                 if let Some(fr) = json["choices"][0]["finish_reason"].as_str() {
                     finish_reason = Some(fr.to_string());

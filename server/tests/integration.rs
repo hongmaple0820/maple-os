@@ -7,7 +7,7 @@ fn cargo() -> String {
 #[tokio::test]
 async fn test_server_builds() {
     let output = Command::new(cargo())
-        .args(&["check", "-p", "mapleos-server"])
+        .args(["check", "-p", "mapleos-server"])
         .current_dir("/workspace")
         .output()
         .expect("Failed to run cargo check");
@@ -18,7 +18,7 @@ async fn test_server_builds() {
 #[tokio::test]
 async fn test_all_crates_build() {
     let output = Command::new(cargo())
-        .args(&["check"])
+        .args(["check"])
         .current_dir("/workspace")
         .output()
         .expect("Failed to run cargo check");
@@ -29,7 +29,7 @@ async fn test_all_crates_build() {
 #[tokio::test]
 async fn test_all_tests_pass() {
     let output = Command::new(cargo())
-        .args(&["test"])
+        .args(["test"])
         .current_dir("/workspace")
         .output()
         .expect("Failed to run cargo test");

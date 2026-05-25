@@ -16,6 +16,12 @@ pub struct RealtimeSync {
     sender: broadcast::Sender<BroadcastEvent>,
 }
 
+impl Default for RealtimeSync {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RealtimeSync {
     pub fn new() -> Self {
         let (sender, _) = broadcast::channel(DEFAULT_CHANNEL_CAPACITY);

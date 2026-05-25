@@ -139,7 +139,7 @@ impl Orchestrator {
                 });
             }
         } else {
-            let chunk_size = (tool_count + self.max_sub_tasks - 1) / self.max_sub_tasks;
+            let chunk_size = tool_count.div_ceil(self.max_sub_tasks);
             for (i, chunk) in tools.chunks(chunk_size).enumerate() {
                 steps.push(PlanStep {
                     step_id: format!("step_{}", i + 1),
@@ -255,10 +255,10 @@ impl Orchestrator {
         }
 
         let aggregate_step = plan.steps.iter().find(|s| s.step_id == "step_aggregate");
-        if let Some(agg) = aggregate_step {
-            if let Some(agg_result) = results.get(&agg.step_id) {
-                return Ok(agg_result.clone());
-            }
+        if let Some(agg) = aggregate_step
+            && let Some(agg_result) = results.get(&agg.step_id)
+        {
+            return Ok(agg_result.clone());
         }
 
         let final_results: Vec<String> = plan.steps.iter()

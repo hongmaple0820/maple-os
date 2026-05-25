@@ -1,7 +1,7 @@
 use crate::router::LlmAdapter;
 use crate::request::LlmRequest;
 use crate::response::LlmResponse;
-use crate::stream::{LlmStream, OpenAiStream};
+use crate::stream::LlmStream;
 use async_trait::async_trait;
 use anyhow::Result;
 
@@ -140,8 +140,7 @@ impl LlmAdapter for OllamaAdapter {
             anyhow::bail!("Ollama stream error ({}): {}", status, text);
         }
 
-        let bytes = resp.bytes().await?;
-        Ok(Box::new(OpenAiStream::from_response_body(&bytes)))
+        Ok(Box::new(crate::stream::LiveSseStream::new(resp, crate::stream::SseFormat::OpenAi)))
     }
 
     fn count_tokens(&self, text: &str) -> usize {

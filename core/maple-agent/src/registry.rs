@@ -46,23 +46,12 @@ impl Default for AgentCapabilities {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AgentTriggers {
     pub events: Vec<String>,
     pub keywords: Vec<String>,
     pub cron: Option<String>,
     pub workflow_ids: Vec<String>,
-}
-
-impl Default for AgentTriggers {
-    fn default() -> Self {
-        Self {
-            events: Vec::new(),
-            keywords: Vec::new(),
-            cron: None,
-            workflow_ids: Vec::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,6 +98,12 @@ pub struct AgentRegistry {
     result_channels: DashMap<String, oneshot::Sender<String>>,
 }
 
+impl Default for AgentRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AgentRegistry {
     pub fn new() -> Self {
         Self {
@@ -129,7 +124,12 @@ impl AgentRegistry {
         Ok(())
     }
 
-pub async fn register_agent(&self, id: &str, name: &str, status: AgentStatus) {
+    pub async fn deregister_agent(&self, id: &str) {
+        self.agents.remove(id);
+        self.task_channels.remove(id);
+    }
+
+    pub async fn register_agent(&self, id: &str, name: &str, status: AgentStatus) {
         let schema = AgentSchema {
             id: id.to_string(),
             name: name.to_string(),

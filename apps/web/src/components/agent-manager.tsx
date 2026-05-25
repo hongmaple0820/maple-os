@@ -8,7 +8,7 @@ interface AgentListItem { id: string; name: string; status: string; model?: stri
 interface ModelInfo { id: string; name: string; provider: string }
 interface SkillInfo { id: string; description: string }
 interface TaskStats { total: number; pending: number; running: number; completed: number; failed: number; dead_letter: number }
-interface MemoryEntry { id: string; key: string; value: string; type: string; created_at: number }
+interface MemoryEntry { id: string; content: string; type: string; metadata: Record<string, string>; created_at: number; access_count: number }
 interface CollabMessage { role: "user" | "agent" | "system"; agentId?: string; content: string; timestamp: number }
 
 const agentStatusLabel: Record<string, string> = { Idle: "空闲", Busy: "忙碌", Offline: "离线", idle: "空闲", busy: "忙碌", offline: "离线" };
@@ -44,7 +44,7 @@ export function AgentManager() {
     try { const r = await rpcCall<{ models: ModelInfo[] }>("llm.models"); setModels(r.models ?? []); } catch { setModels([]); }
     try { const r = await rpcCall<{ skills: SkillInfo[] }>("skill.list"); setSkills(r.skills ?? []); } catch { setSkills([]); }
     try { const s = await mapleApi<TaskStats>("/api/tasks/stats"); setTaskStats(s); } catch { setTaskStats(null); }
-    try { const m = await mapleApi<MemoryEntry[]>("/api/memories/search?query=&limit=10"); setMemories(m ?? []); } catch { setMemories([]); }
+    try { const m = await mapleApi<{ results: MemoryEntry[] }>("/api/memories/search", { method: "POST", body: { keyword: "", memory_type: "working", limit: 10 } }); setMemories((m.results ?? [])); } catch { setMemories([]); }
     setLoading(false);
   };
 
@@ -79,9 +79,19 @@ export function AgentManager() {
 
   const handleMemorySearch = async () => {
     try {
-      const m = await mapleApi<MemoryEntry[]>(`/api/memories/search?query=${encodeURIComponent(memoryQuery)}&limit=10`);
-      setMemories(m ?? []);
+      const m = await mapleApi<{ results: MemoryEntry[] }>("/api/memories/search", { method: "POST", body: { keyword: memoryQuery, memory_type: "working", limit: 10 } });
+      setMemories(m.results ?? []);
     } catch { setMemories([]); }
+  };
+
+  const handleDeregister = async (agentId: string) => {
+    try {
+      await rpcCall("agent.deregister", { id: agentId });
+      setCollabMessages((prev) => [...prev, { role: "system", content: `Agent "${agentId}" 已注销`, timestamp: Date.now() }]);
+      await loadAll();
+    } catch (err) {
+      setCollabMessages((prev) => [...prev, { role: "system", content: `注销失败: ${(err as Error).message}`, timestamp: Date.now() }]);
+    }
   };
 
   const handleRegister = async () => {
@@ -111,7 +121,7 @@ export function AgentManager() {
   const handleWriteMemory = async () => {
     try {
       const key = `user-note-${Date.now()}`;
-      await mapleApi("/api/memories/store", { method: "POST", body: JSON.stringify({ key, value: memoryQuery, type: "note" }) });
+      await mapleApi("/api/memories", { method: "POST", body: { content: memoryQuery, memory_type: "note" } });
       setMemoryQuery("");
       setCollabMessages((prev) => [...prev, { role: "system", content: `记忆已写入: ${key}`, timestamp: Date.now() }]);
       await loadAll();
@@ -175,8 +185,16 @@ export function AgentManager() {
                     <Badge variant={agentStatusVariant[a.status] ?? "outline"} className="text-[10px]">{agentStatusLabel[a.status] ?? a.status}</Badge>
                   </div>
                 </div>
-                <div className="text-[11px] text-muted-foreground font-mono mt-0.5">{a.id}</div>
+                 <div className="text-[11px] text-muted-foreground font-mono mt-0.5">{a.id}</div>
                 {a.model && <div className="text-[11px] text-muted-foreground mt-0.5">模型: {a.model}</div>}
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  className="w-full mt-1.5 h-6 text-[10px]"
+                  onClick={(e) => { e.stopPropagation(); handleDeregister(a.id); }}
+                >
+                  删除
+                </Button>
               </button>
             ))}
           </div>
@@ -258,10 +276,10 @@ export function AgentManager() {
               {memories.map((m) => (
                 <div key={m.id} className="rounded border p-1.5 bg-card">
                   <div className="flex items-center justify-between">
-                    <span className="text-[12px]">{m.key}</span>
                     <Badge variant="outline" className="text-[10px]">{m.type}</Badge>
+                    <span className="text-[10px] text-muted-foreground font-mono">{m.id.slice(0, 8)}</span>
                   </div>
-                  <div className="text-[11px] text-muted-foreground line-clamp-1">{m.value}</div>
+                  <div className="text-[11px] text-muted-foreground line-clamp-1">{m.content}</div>
                 </div>
               ))}
               {memories.length === 0 && <div className="text-[11px] text-muted-foreground">暂无记忆</div>}

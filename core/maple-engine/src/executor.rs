@@ -65,10 +65,10 @@ impl NodeExecutor {
         ctx: &'a mut WorkflowExecution,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value>> + Send + 'a>> {
         Box::pin(async move {
-            if let Some(cond) = &node.condition {
-                if !eval_condition(cond, &ctx.context) {
-                    return Ok(Value::Null);
-                }
+            if let Some(cond) = &node.condition
+                && !eval_condition(cond, &ctx.context)
+            {
+                return Ok(Value::Null);
             }
 
             let result = match &node.node_type {
@@ -145,10 +145,10 @@ impl NodeExecutor {
         context: &HashMap<String, Value>,
     ) -> Result<Value> {
         for branch in branches {
-            if let Some(expr) = &branch.expression {
-                if eval_condition(expr, context) {
-                    return Ok(Value::String(branch.target_node.clone()));
-                }
+            if let Some(expr) = &branch.expression
+                && eval_condition(expr, context)
+            {
+                return Ok(Value::String(branch.target_node.clone()));
             }
         }
         Ok(Value::String("default".to_string()))
@@ -212,30 +212,16 @@ impl NodeExecutor {
                 }
             }
             crate::workflow::WaitStrategy::WaitAny => {
-                let (first_result, remaining) = futures::future::select_all(handles);
-                
-                match first_result {
-                    Ok((node_id, Ok(result), _)) => {
-                        results.insert(node_id.clone(), result.clone());
-                        ctx.context.insert(node_id.clone(), result.clone());
-                        completed_count += 1;
-                        first_completed_id = node_id;
-                        first_completed_result = result;
-                    }
-                    Ok((node_id, Err(e), _)) => {
-                        tracing::warn!(node_id, error = %e, "First parallel node failed");
-                        results.insert(node_id, Value::Null);
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "First parallel task join error");
-                    }
-                }
-
-                for handle in remaining {
-                    match handle.await {
-                        Ok((node_id, Ok(result), _)) => {
-                            results.insert(node_id.clone(), result.clone());
-                            ctx.context.insert(node_id, result);
+                let all_results = futures::future::join_all(handles).await;
+                for result in all_results {
+                    match result {
+                        Ok((node_id, Ok(val), _)) => {
+                            if first_completed_id.is_empty() {
+                                first_completed_id = node_id.clone();
+                                first_completed_result = val.clone();
+                            }
+                            results.insert(node_id.clone(), val.clone());
+                            ctx.context.insert(node_id, val);
                             completed_count += 1;
                         }
                         Ok((node_id, Err(e), _)) => {
@@ -457,9 +443,11 @@ impl NodeExecutor {
             }
         }
 
-        let output = sub_exec.context.get("output").cloned().unwrap_or_else(|| {
-            Value::Object(sub_input)
-        });
+        let output = sub_exec
+            .context
+            .get("output")
+            .cloned()
+            .unwrap_or(Value::Object(sub_input));
 
         ctx.context.insert(format!("sub_workflow_{}_result", workflow_id), output.clone());
 
@@ -570,6 +558,12 @@ impl WorkflowExecutor {
                 }
             };
 
+            self.event_bus.publish(Event::NodeStarted {
+                workflow_id: workflow_id.to_string(),
+                exec_id: exec.exec_id,
+                node_id: node_id.clone(),
+            }).await;
+
             let node_executor = self.node_executor.read().await;
             match self.execute_with_retry(&node_executor, &node, &mut exec).await {
                 Ok(result) => {
@@ -601,12 +595,17 @@ impl WorkflowExecutor {
 
         if exec.status == ExecStatus::Running {
             exec.set_completed();
+            self.event_bus.publish(Event::WorkflowCompleted {
+                workflow_id: workflow_id.to_string(),
+                exec_id: exec.exec_id,
+            }).await;
+        } else {
+            self.event_bus.publish(Event::WorkflowFailed {
+                workflow_id: workflow_id.to_string(),
+                exec_id: exec.exec_id,
+                error: exec.error.clone().unwrap_or_default(),
+            }).await;
         }
-
-        self.event_bus.publish(Event::WorkflowCompleted {
-            workflow_id: workflow_id.to_string(),
-            exec_id: exec.exec_id,
-        }).await;
 
         Ok(ExecResult::from_execution(&exec))
     }
@@ -671,7 +670,7 @@ fn eval_condition(expression: &str, context: &HashMap<String, Value>) -> bool {
 
     if expr.starts_with("{{") && expr.ends_with("}}") {
         let path = &expr[2..expr.len()-2].trim();
-        return context.get(path as &str).map_or(false, |v| !v.is_null());
+        return context.get(path as &str).is_some_and(|v| !v.is_null());
     }
 
     if let Some(idx) = expr.find("&&") {
@@ -742,7 +741,7 @@ fn eval_condition(expression: &str, context: &HashMap<String, Value>) -> bool {
     match resolved.as_str() {
         "true" | "1" | "yes" => true,
         "false" | "0" | "no" | "" => false,
-        _ => context.get(expr).map_or(false, |v| !v.is_null()),
+        _ => context.get(expr).is_some_and(|v| !v.is_null()),
     }
 }
 

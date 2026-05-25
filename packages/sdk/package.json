@@ -8,12 +8,8 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": {
-    "isomorphic-ws": "^5.0.0",
-    "ws": "^8.18.0"
-  },
+  "dependencies": {},
   "devDependencies": {
-    "@types/ws": "^8.5.0",
     "typescript": "^5.7.0"
   }
 }

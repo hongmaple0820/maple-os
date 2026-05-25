@@ -11,6 +11,12 @@ pub struct RpcDispatcher {
     handlers: Arc<RwLock<HashMap<String, AsyncRpcHandler>>>,
 }
 
+impl Default for RpcDispatcher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RpcDispatcher {
     pub fn new() -> Self {
         Self {

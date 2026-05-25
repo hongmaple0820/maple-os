@@ -73,20 +73,20 @@ impl LlmRouter {
         for rule in &self.routing_rules {
             if rule.matches(req) {
                 for model_id in &rule.preferred {
-                    if let Some(adapter) = self.adapters.get(model_id) {
-                        if self.is_available(model_id).await {
-                            return Ok(adapter.as_ref());
-                        }
+                    if let Some(adapter) = self.adapters.get(model_id)
+                        && self.is_available(model_id).await
+                    {
+                        return Ok(adapter.as_ref());
                     }
                 }
             }
         }
 
         for model_id in &self.fallback_chain {
-            if let Some(adapter) = self.adapters.get(model_id) {
-                if self.is_available(model_id).await {
-                    return Ok(adapter.as_ref());
-                }
+            if let Some(adapter) = self.adapters.get(model_id)
+                && self.is_available(model_id).await
+            {
+                return Ok(adapter.as_ref());
             }
         }
 

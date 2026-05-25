@@ -20,6 +20,12 @@ pub struct HookRunner {
     hooks: Vec<Box<dyn Hook + Send + Sync>>,
 }
 
+impl Default for HookRunner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub trait Hook: Send + Sync {
     fn name(&self) -> &str;
     fn on_pre_tool_use(&self, _tool_name: &str, _input: &Value) -> HookDecision {

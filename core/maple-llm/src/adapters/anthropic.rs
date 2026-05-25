@@ -147,10 +147,7 @@ impl LlmAdapter for AnthropicAdapter {
             anyhow::bail!("Anthropic stream API error ({}): {}", status, text);
         }
 
-        let bytes = resp.bytes().await?;
-        let stream = AnthropicSseStream::from_response_body(&bytes);
-
-        Ok(Box::new(stream))
+        Ok(Box::new(crate::stream::LiveSseStream::new(resp, crate::stream::SseFormat::Anthropic)))
     }
 
     fn count_tokens(&self, text: &str) -> usize {
@@ -192,23 +189,22 @@ impl AnthropicSseStream {
 
         for line in text.lines() {
             let line = line.trim();
-            if line.starts_with("event: ") {
-                current_event = line[7..].to_string();
+            if let Some(event) = line.strip_prefix("event: ") {
+                current_event = event.to_string();
                 continue;
             }
 
-            if line.starts_with("data: ") {
-                let data = &line[6..];
+            if let Some(data) = line.strip_prefix("data: ") {
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
                     match current_event.as_str() {
                         "content_block_delta" => {
-                            if let Some(delta_text) = json["delta"]["text"].as_str() {
-                                if !delta_text.is_empty() {
-                                    chunks.push(StreamChunk {
-                                        delta: delta_text.to_string(),
-                                        finish_reason: None,
-                                    });
-                                }
+                            if let Some(delta_text) = json["delta"]["text"].as_str()
+                                && !delta_text.is_empty()
+                            {
+                                chunks.push(StreamChunk {
+                                    delta: delta_text.to_string(),
+                                    finish_reason: None,
+                                });
                             }
                         }
                         "message_delta" => {
@@ -219,13 +215,11 @@ impl AnthropicSseStream {
                                 });
                             }
                         }
-                        "message_stop" => {
-                            if chunks.last().map_or(true, |c| c.finish_reason.is_none()) {
-                                chunks.push(StreamChunk {
-                                    delta: String::new(),
-                                    finish_reason: Some("end_turn".to_string()),
-                                });
-                            }
+                        "message_stop" if chunks.last().is_none_or(|c| c.finish_reason.is_none()) => {
+                            chunks.push(StreamChunk {
+                                delta: String::new(),
+                                finish_reason: Some("end_turn".to_string()),
+                            });
                         }
                         _ => {}
                     }

@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev -p 3000",
     "build": "next build",
+    "build:static": "cross-env NEXT_STATIC_EXPORT=1 next build",
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit"
@@ -22,9 +23,10 @@
   "devDependencies": {
     "@tailwindcss/typography": "^0.5.19",
     "@types/node": "^22.0.0",
-    "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.0.0",
+    "@types/react": "^18.3.29",
+    "@types/react-dom": "^18.3.7",
     "autoprefixer": "^10.5.0",
+    "cross-env": "^10.1.0",
     "postcss": "^8.5.15",
     "tailwindcss": "^3.4.19",
     "tsconfig-paths": "^4.2.0",

@@ -14,6 +14,12 @@ pub struct WebhookConfig {
 
 pub struct WebhookHandler;
 
+impl Default for WebhookHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WebhookHandler {
     pub fn new() -> Self {
         Self

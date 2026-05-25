@@ -40,16 +40,20 @@ impl TaskStatus {
             TaskStatus::DeadLetter => "dead_letter",
         }
     }
+}
 
-    pub fn from_str(s: &str) -> Self {
-        match s {
+impl std::str::FromStr for TaskStatus {
+    type Err = ();
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(match s {
             "pending" => TaskStatus::Pending,
             "running" => TaskStatus::Running,
             "completed" => TaskStatus::Completed,
             "failed" => TaskStatus::Failed,
             "dead_letter" => TaskStatus::DeadLetter,
             _ => TaskStatus::Pending,
-        }
+        })
     }
 }
 
@@ -266,7 +270,7 @@ impl TaskQueueService {
             task_type: r.1,
             priority: r.2,
             payload: serde_json::from_str(&r.3).unwrap_or(serde_json::Value::Null),
-            status: TaskStatus::from_str(&r.4),
+            status: r.4.parse::<TaskStatus>().unwrap_or(TaskStatus::Pending),
             retry_count: r.5,
             max_retries: r.6,
             next_run_at: r.7,

@@ -1,6 +1,6 @@
-FROM rust:1.95-slim AS builder
+FROM rust:slim AS builder
 
-RUN apt-get update && apt-get install -y libssl-dev pkg-config && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y pkg-config libsqlite3-dev && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -33,7 +33,7 @@ RUN cargo build --release -p mapleos-server
 
 FROM debian:bookworm-slim
 
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y ca-certificates libsqlite3-0 && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/target/release/mapleos-server /usr/local/bin/mapleos-server
 COPY migrations/ /app/migrations/

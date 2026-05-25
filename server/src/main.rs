@@ -2,7 +2,9 @@ use axum::Json;
 use axum::Router;
 use axum::extract::ws::WebSocketUpgrade;
 use axum::response::IntoResponse;
+use axum::response::sse::{Event, Sse};
 use axum::routing::{get, post};
+use std::convert::Infallible;
 use axum::middleware::{self, Next};
 
 use maple_engine::workflow::Workflow;
@@ -31,10 +33,12 @@ use maple_kb::retriever::HybridRetriever;
 use maple_kb::memory::{MemoryStore, MemoryEntry, MemoryType};
 use maple_kb::prompt_version::PromptVersionManager;
 use maple_engine::task_queue::TaskQueueService;
+use maple_engine::scheduler::{Scheduler, ScheduledJob};
+use maple_gateway::mcp_host::McpHostManager;
 use maple_llm::embedding::{Embedder, OllamaEmbedder, FallbackEmbedder};
 use maple_collab::workspace::WorkspaceManager;
 use serde::{Deserialize, Serialize};
-use std::sync:: Arc;
+use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
@@ -117,6 +121,8 @@ struct ChatRequest {
     tools: Vec<maple_llm::request::ToolDefinition>,
     #[serde(default)]
     session_id: Option<String>,
+    #[serde(default)]
+    agent_id: Option<String>,
 }
 
 fn default_model() -> String {
@@ -129,6 +135,8 @@ struct ChatResponse {
     model: Option<String>,
     tool_calls: Option<Vec<serde_json::Value>>,
     session_id: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    kb_sources: Vec<serde_json::Value>,
 }
 
 async fn chat_handler(
@@ -139,7 +147,38 @@ async fn chat_handler(
 
     let _ = state.session_store.save_message(&session_id, "user", &req.message, None, None).await;
 
-    let llm_request = maple_llm::request::LlmRequest::new(req.message.clone(), "default");
+    let route_key = if req.model != "auto" { req.model.as_str() } else { req.agent_id.as_deref().unwrap_or("default") };
+
+    let mut enhanced_message = req.message.clone();
+    let mut kb_sources: Vec<serde_json::Value> = Vec::new();
+    {
+        let query_embedding = match state.embedder.embed(&req.message).await {
+            Ok(emb) => emb,
+            Err(_) => maple_llm::embedding::simple_embedding(&req.message, 128),
+        };
+        let vector_results = state.vector_store.search(&query_embedding, 3).await;
+        let bm25_results = state.bm25_searcher.search(&req.message, 3);
+        let kb_results = state.hybrid_retriever.search(&req.message, 3, vector_results, bm25_results).await.unwrap_or_default();
+
+        if !kb_results.is_empty() {
+            let mut context_parts = Vec::new();
+            for r in &kb_results {
+                context_parts.push(r.content.clone());
+                let snippet = if r.content.len() > 200 { r.content[..200].to_string() + "..." } else { r.content.clone() };
+                kb_sources.push(serde_json::json!({
+                    "id": r.id,
+                    "snippet": snippet,
+                    "score": r.score,
+                    "source": r.source,
+                    "source_type": r.source_type,
+                }));
+            }
+            let kb_context = context_parts.join("\n---\n");
+            enhanced_message = format!("[Knowledge Base Context]\n{}\n---\n[User Question]\n{}", kb_context, req.message);
+        }
+    }
+
+    let llm_request = maple_llm::request::LlmRequest::new(enhanced_message, route_key);
 
     let adapter = match state.llm_router.route(&llm_request).await {
         Ok(a) => a,
@@ -150,6 +189,7 @@ async fn chat_handler(
                 model: None,
                 tool_calls: None,
                 session_id,
+                kb_sources: Vec::new(),
             }));
         }
     };
@@ -165,6 +205,7 @@ async fn chat_handler(
                     model: Some(model_name),
                     tool_calls: response.tool_calls,
                     session_id,
+                    kb_sources,
                 }))
             }
             Err(e) => {
@@ -174,6 +215,7 @@ async fn chat_handler(
                     model: Some(model_name),
                     tool_calls: None,
                     session_id,
+                    kb_sources: Vec::new(),
                 }))
             }
         }
@@ -214,6 +256,7 @@ async fn chat_handler(
                     model: Some(model_name),
                     tool_calls: None,
                     session_id,
+                    kb_sources: Vec::new(),
                 }))
             }
             Err(e) => {
@@ -223,6 +266,7 @@ async fn chat_handler(
                     model: Some(model_name),
                     tool_calls: None,
                     session_id,
+                    kb_sources: Vec::new(),
                 }))
             }
         }
@@ -457,6 +501,33 @@ async fn run_migrations(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
          ON task_queue(task_type, status)"
     ).execute(pool).await?;
 
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            username TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            email TEXT,
+            role TEXT NOT NULL DEFAULT 'user',
+            created_at INTEGER NOT NULL
+        )"
+    ).execute(pool).await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS refresh_tokens (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            token_hash TEXT NOT NULL UNIQUE,
+            expires_at INTEGER NOT NULL,
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )"
+    ).execute(pool).await?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)")
+        .execute(pool).await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens(user_id)")
+        .execute(pool).await?;
+
     tracing::info!("Database migrations completed");
     Ok(())
 }
@@ -513,6 +584,30 @@ fn build_llm_router(config: &ServerConfig) -> Arc<LlmRouter> {
     }
     router.set_fallback_chain(fallback);
 
+    let rules_path = std::env::var("ROUTING_RULES_PATH")
+        .unwrap_or_else(|_| "infra/routing_rules.yaml".to_string());
+    if let Ok(content) = std::fs::read_to_string(&rules_path) {
+        if let Ok(yaml) = serde_yaml::from_str::<serde_json::Value>(&content) {
+            if let Some(rules_arr) = yaml.get("rules").and_then(|r| r.as_array()) {
+                let rules: Vec<maple_llm::router::RoutingRule> = rules_arr.iter()
+                    .filter_map(|r| serde_json::from_value(r.clone()).ok())
+                    .collect();
+                let rules_count = rules.len();
+                router.set_routing_rules(rules);
+                tracing::info!("Loaded {} routing rules from {}", rules_count, rules_path);
+            }
+            if let Some(chain) = yaml.get("fallback_chain").and_then(|c| c.as_array()) {
+                let chain: Vec<String> = chain.iter()
+                    .filter_map(|c| c.as_str().map(|s| s.to_string()))
+                    .collect();
+                router.set_fallback_chain(chain);
+                tracing::info!("Loaded fallback chain from {}", rules_path);
+            }
+        }
+    } else {
+        tracing::info!("No routing_rules.yaml found, using default rules");
+    }
+
     Arc::new(router)
 }
 
@@ -535,8 +630,8 @@ async fn register_builtin_skills(skill_registry: &SkillRegistry) {
         fn description(&self) -> &str { "Search the web for information" }
         fn execute(&self, config: &Value) -> anyhow::Result<Value> {
             let query = config["query"].as_str().unwrap_or("");
-            let num_results = config["num_results"].as_u64().unwrap_or(5);
-            
+            let num_results = config["num_results"].as_u64().unwrap_or(5) as usize;
+
             if query.is_empty() {
                 return Ok(serde_json::json!({"error": "query is required"}));
             }
@@ -568,8 +663,9 @@ async fn register_builtin_skills(skill_registry: &SkillRegistry) {
                         });
                         
                         if let Ok(json) = serde_json::from_str::<Value>(&body) {
-                            let items = json["items"].as_array().unwrap_or(&vec![]);
-                            let results: Vec<Value> = items.iter().map(|item| {
+                            let empty: Vec<Value> = vec![];
+                            let items = json["items"].as_array().unwrap_or(&empty);
+                            let results: Vec<Value> = items.iter().take(num_results).map(|item| {
                                 serde_json::json!({
                                     "title": item["title"].as_str().unwrap_or(""),
                                     "url": item["link"].as_str().unwrap_or(""),
@@ -590,13 +686,92 @@ async fn register_builtin_skills(skill_registry: &SkillRegistry) {
                 }
             }
 
-            Ok(serde_json::json!({
-                "query": query,
-                "results": [],
-                "source": "none",
-                "message": "Web search requires SEARCH_API_KEY and SEARCH_ENGINE_ID environment variables",
-            }))
+            let rt = tokio::runtime::Handle::current();
+            let _guard = rt.enter();
+            let ddg_url = format!("https://lite.duckduckgo.com/lite/?q={}", urlencoding::encode(query));
+
+            let client = reqwest::Client::new();
+            let resp = tokio::task::block_in_place(|| {
+                rt.block_on(async {
+                    client.get(&ddg_url)
+                        .header("User-Agent", "Mozilla/5.0 (compatible; MapleOS/1.0)")
+                        .timeout(std::time::Duration::from_secs(10))
+                        .send()
+                        .await
+                })
+            });
+
+            match resp {
+                Ok(response) => {
+                    let html = tokio::task::block_in_place(|| {
+                        rt.block_on(async { response.text().await.unwrap_or_default() })
+                    });
+                    let results = parse_ddg_lite(&html, num_results);
+                    Ok(serde_json::json!({
+                        "query": query,
+                        "results": results,
+                        "source": "duckduckgo_lite",
+                    }))
+                }
+                Err(e) => {
+                    tracing::warn!("DuckDuckGo search error: {}", e);
+                    Ok(serde_json::json!({
+                        "query": query,
+                        "results": [],
+                        "source": "none",
+                        "message": format!("Search unavailable: {}", e),
+                    }))
+                }
+            }
         }
+    }
+
+    fn parse_ddg_lite(html: &str, max: usize) -> Vec<Value> {
+        let mut results: Vec<Value> = Vec::new();
+        let mut title = String::new();
+        let mut url = String::new();
+        let mut snippet = String::new();
+        let mut in_link = false;
+
+        for line in html.lines() {
+            let trimmed = line.trim();
+            if trimmed.contains("class=\"result__a\"") {
+                in_link = true;
+                if let Some(start) = trimmed.find(">")
+                    && let Some(end) = trimmed.find("</a>")
+                {
+                    title = trimmed[start + 1..end].trim().to_string();
+                }
+                if let Some(href_start) = trimmed.find("href=\"") {
+                    let rest = &trimmed[href_start+6..];
+                    if let Some(href_end) = rest.find("\"") {
+                        url = rest[..href_end].to_string();
+                        if url.starts_with("//") {
+                            url = format!("https:{}", url);
+                        }
+                    }
+                }
+            } else if in_link && trimmed.contains("class=\"result__snippet\"") {
+                if let Some(start) = trimmed.find(">") {
+                    if let Some(end) = trimmed.find("</td>") {
+                        snippet = trimmed[start+1..end].trim().to_string();
+                    } else {
+                        snippet = trimmed[start+1..].trim().to_string();
+                    }
+                }
+                in_link = false;
+                if !title.is_empty() {
+                    results.push(serde_json::json!({
+                        "title": title,
+                        "url": url,
+                        "snippet": snippet,
+                    }));
+                    title.clear(); url.clear(); snippet.clear();
+                }
+                if results.len() >= max { break; }
+            }
+        }
+        results
     }
 
     struct CodeExecSkill;
@@ -606,72 +781,117 @@ async fn register_builtin_skills(skill_registry: &SkillRegistry) {
         fn execute(&self, config: &Value) -> anyhow::Result<Value> {
             let language = config["language"].as_str().unwrap_or("unknown");
             let code = config["code"].as_str().unwrap_or("");
-            let timeout_secs = config["timeout"].as_u64().unwrap_or(30);
+            let timeout_secs = config["timeout"].as_u64().unwrap_or(10).min(30);
+            let max_output_bytes = 8192;
 
             if code.is_empty() {
                 return Ok(serde_json::json!({"error": "code is required"}));
             }
 
-            let (interpreter, extension) = match language.to_lowercase().as_str() {
-                "python" | "py" => ("python3", ".py"),
-                "javascript" | "js" => ("node", ".js"),
-                "bash" | "sh" => ("bash", ".sh"),
-                "ruby" | "rb" => ("ruby", ".rb"),
-                "perl" | "pl" => ("perl", ".pl"),
-                _ => return Ok(serde_json::json!({
+            match language.to_lowercase().as_str() {
+                "javascript" | "js" => {
+                    let rt = tokio::runtime::Handle::current();
+                    let _guard = rt.enter();
+                    tokio::task::block_in_place(|| {
+                        rt.block_on(async {
+                            let child = tokio::process::Command::new("node")
+                                .arg("-e")
+                                .arg(code)
+                                .stdout(std::process::Stdio::piped())
+                                .stderr(std::process::Stdio::piped())
+                                .spawn()?;
+                            let output = tokio::time::timeout(
+                                std::time::Duration::from_secs(timeout_secs),
+                                child.wait_with_output()
+                            ).await;
+                            match output {
+                                Ok(Ok(out)) => Ok(serde_json::json!({
+                                    "language": "javascript",
+                                    "stdout": truncate_str(&String::from_utf8_lossy(&out.stdout), max_output_bytes),
+                                    "stderr": truncate_str(&String::from_utf8_lossy(&out.stderr), max_output_bytes),
+                                    "exit_code": out.status.code().unwrap_or(-1),
+                                })),
+                                Ok(Err(e)) => Ok(serde_json::json!({"language": "javascript", "error": e.to_string()})),
+                                Err(_) => Ok(serde_json::json!({"language": "javascript", "error": "timeout exceeded", "exit_code": -1})),
+                            }
+                        })
+                    })
+                }
+                "python" | "py" => {
+                    let rt = tokio::runtime::Handle::current();
+                    let _guard = rt.enter();
+                    tokio::task::block_in_place(|| {
+                        rt.block_on(async {
+                            let temp_dir = std::env::temp_dir();
+                            let file_path = temp_dir.join(format!("mapleos_exec_{}.py", uuid::Uuid::new_v4()));
+                            std::fs::write(&file_path, code)?;
+                            let child = tokio::process::Command::new("python3")
+                                .arg(&file_path)
+                                .stdout(std::process::Stdio::piped())
+                                .stderr(std::process::Stdio::piped())
+                                .spawn()?;
+                            let output = tokio::time::timeout(
+                                std::time::Duration::from_secs(timeout_secs),
+                                child.wait_with_output()
+                            ).await;
+                            let _ = std::fs::remove_file(&file_path);
+                            match output {
+                                Ok(Ok(out)) => Ok(serde_json::json!({
+                                    "language": "python",
+                                    "stdout": truncate_str(&String::from_utf8_lossy(&out.stdout), max_output_bytes),
+                                    "stderr": truncate_str(&String::from_utf8_lossy(&out.stderr), max_output_bytes),
+                                    "exit_code": out.status.code().unwrap_or(-1),
+                                })),
+                                Ok(Err(e)) => Ok(serde_json::json!({"language": "python", "error": e.to_string()})),
+                                Err(_) => Ok(serde_json::json!({"language": "python", "error": "timeout exceeded", "exit_code": -1})),
+                            }
+                        })
+                    })
+                }
+                _ => Ok(serde_json::json!({
                     "error": format!("Unsupported language: {}", language),
-                    "supported": ["python", "javascript", "bash", "ruby", "perl"],
-                })),
-            };
-
-            let temp_dir = std::env::temp_dir();
-            let filename = format!("mapleos_exec_{}{}", uuid::Uuid::new_v4(), extension);
-            let file_path = temp_dir.join(&filename);
-
-            if let Err(e) = std::fs::write(&file_path, code) {
-                return Ok(serde_json::json!({"error": format!("Failed to write temp file: {}", e)}));
-            }
-
-            let result = std::process::Command::new(interpreter)
-                .arg(&file_path)
-                .timeout(std::time::Duration::from_secs(timeout_secs))
-                .output();
-
-            let _ = std::fs::remove_file(&file_path);
-
-            match result {
-                Ok(output) => Ok(serde_json::json!({
-                    "language": language,
-                    "stdout": String::from_utf8_lossy(&output.stdout).to_string(),
-                    "stderr": String::from_utf8_lossy(&output.stderr).to_string(),
-                    "exit_code": output.status.code().unwrap_or(-1),
-                })),
-                Err(e) => Ok(serde_json::json!({
-                    "language": language,
-                    "error": e.to_string(),
+                    "supported": ["javascript", "python"],
+                    "hint": "WASM runtime coming in Phase 3",
                 })),
             }
         }
     }
 
+    fn truncate_str(s: &str, max: usize) -> String {
+        if s.len() <= max { s.to_string() } else { s[..max].to_string() + "...[truncated]" }
+    }
+
     struct FileOpsSkill;
     impl Skill for FileOpsSkill {
         fn id(&self) -> &str { "file_ops" }
-        fn description(&self) -> &str { "Read, write, and list files" }
+        fn description(&self) -> &str { "Read, write, and list files within workspace" }
         fn execute(&self, config: &Value) -> anyhow::Result<Value> {
             let operation = config["operation"].as_str().unwrap_or("list");
             let path = config["path"].as_str().unwrap_or(".");
             let content = config["content"].as_str();
+            let max_read_bytes = 65536;
+
+            let workspace_dir = std::env::var("MAPLEOS_WORKSPACE_DIR")
+                .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default().to_string_lossy().to_string());
+            let resolved = std::path::Path::new(path);
+            if resolved.is_absolute() && !resolved.starts_with(&workspace_dir) {
+                return Ok(serde_json::json!({"error": "path outside workspace", "workspace": workspace_dir}));
+            }
+            let safe_path = if resolved.is_absolute() { resolved.to_path_buf() } else { std::path::Path::new(&workspace_dir).join(resolved) };
 
             match operation {
                 "read" => {
-                    match std::fs::read_to_string(path) {
-                        Ok(data) => Ok(serde_json::json!({
-                            "operation": "read",
-                            "path": path,
-                            "content": data,
-                            "size": data.len(),
-                        })),
+                    match std::fs::read_to_string(&safe_path) {
+                        Ok(data) => {
+                            let size = data.len();
+                            let truncated = if size > max_read_bytes { data[..max_read_bytes].to_string() + "...[truncated]" } else { data };
+                            Ok(serde_json::json!({
+                                "operation": "read",
+                                "path": path,
+                                "content": truncated,
+                                "size": size,
+                            }))
+                        }
                         Err(e) => Ok(serde_json::json!({
                             "operation": "read",
                             "path": path,
@@ -681,7 +901,7 @@ async fn register_builtin_skills(skill_registry: &SkillRegistry) {
                 }
                 "write" => {
                     let data = content.unwrap_or("");
-                    match std::fs::write(path, data) {
+                    match std::fs::write(&safe_path, data) {
                         Ok(_) => Ok(serde_json::json!({
                             "operation": "write",
                             "path": path,
@@ -696,7 +916,7 @@ async fn register_builtin_skills(skill_registry: &SkillRegistry) {
                     }
                 }
                 "list" => {
-                    match std::fs::read_dir(path) {
+                    match std::fs::read_dir(&safe_path) {
                         Ok(entries) => {
                             let files: Vec<serde_json::Value> = entries
                                 .filter_map(|e| e.ok())
@@ -742,12 +962,13 @@ async fn register_builtin_skills(skill_registry: &SkillRegistry) {
     struct HttpRequestSkill;
     impl Skill for HttpRequestSkill {
         fn id(&self) -> &str { "http_request" }
-        fn description(&self) -> &str { "Make HTTP requests" }
+        fn description(&self) -> &str { "Make HTTP requests with timeout and size limits" }
         fn execute(&self, config: &Value) -> anyhow::Result<Value> {
             let url = config["url"].as_str().unwrap_or("");
             let method = config["method"].as_str().unwrap_or("GET");
             let headers = config["headers"].as_object();
             let body = config["body"].as_str();
+            let max_response_bytes = 32768;
             
             if url.is_empty() {
                 return Ok(serde_json::json!({"error": "url is required"}));
@@ -789,11 +1010,14 @@ async fn register_builtin_skills(skill_registry: &SkillRegistry) {
                     let body_text = tokio::task::block_in_place(|| {
                         rt.block_on(async { resp.text().await.unwrap_or_default() })
                     });
+                    let body_size = body_text.len();
+                    let truncated = if body_size > max_response_bytes { body_text[..max_response_bytes].to_string() + "...[truncated]" } else { body_text };
                     Ok(serde_json::json!({
                         "url": url,
                         "method": method,
                         "status": status,
-                        "body": body_text,
+                        "body": truncated,
+                        "body_size": body_size,
                     }))
                 }
                 Err(e) => Ok(serde_json::json!({
@@ -981,14 +1205,10 @@ async fn auth_middleware(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
 
-    let token = if auth_header.starts_with("Bearer ") {
-        &auth_header[7..]
-    } else {
-        ""
-    };
+    let token = auth_header.strip_prefix("Bearer ").unwrap_or_default();
 
     if token.is_empty() {
-        if std::env::var("REQUIRE_AUTH").unwrap_or_default() == "true" {
+        if state.config.require_auth {
             return Err(axum::http::StatusCode::UNAUTHORIZED);
         }
         return Ok(next.run(req).await);
@@ -1070,6 +1290,168 @@ async fn skills_handler(
     }))
 }
 
+async fn chat_stream_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    Json(req): Json<ChatRequest>,
+) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
+    let session_id = req.session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let llm_router = state.llm_router.clone();
+    let session_store = state.session_store.clone();
+    let _ = session_store.save_message(&session_id, "user", &req.message, None, None).await;
+
+    let route_key = if req.model != "auto" { &req.model } else { req.agent_id.as_deref().unwrap_or("default") };
+
+    let mut enhanced_message = req.message.clone();
+    let kb_sources_json: Vec<serde_json::Value> = {
+        let query_embedding = match state.embedder.embed(&req.message).await {
+            Ok(emb) => emb,
+            Err(_) => maple_llm::embedding::simple_embedding(&req.message, 128),
+        };
+        let vector_results = state.vector_store.search(&query_embedding, 3).await;
+        let bm25_results = state.bm25_searcher.search(&req.message, 3);
+        let kb_results = state.hybrid_retriever.search(&req.message, 3, vector_results, bm25_results).await.unwrap_or_default();
+
+        if !kb_results.is_empty() {
+            let mut context_parts = Vec::new();
+            let mut sources = Vec::new();
+            for r in &kb_results {
+                context_parts.push(r.content.clone());
+                let snippet = if r.content.len() > 200 { r.content[..200].to_string() + "..." } else { r.content.clone() };
+                sources.push(serde_json::json!({
+                    "id": r.id,
+                    "snippet": snippet,
+                    "score": r.score,
+                    "source": r.source,
+                    "source_type": r.source_type,
+                }));
+            }
+            let kb_context = context_parts.join("\n---\n");
+            enhanced_message = format!("[Knowledge Base Context]\n{}\n---\n[User Question]\n{}", kb_context, req.message);
+            sources
+        } else {
+            Vec::new()
+        }
+    };
+
+    let llm_request = maple_llm::request::LlmRequest::new(enhanced_message, route_key);
+    let sid = session_id.clone();
+
+    let stream = async_stream::stream! {
+        if !kb_sources_json.is_empty() {
+            yield Ok(Event::default().event("kb_sources").data(serde_json::json!({"sources": kb_sources_json}).to_string()));
+        }
+        let stream_result = llm_router.route(&llm_request).await;
+        match stream_result {
+            Ok(adapter) => {
+                let model_name = adapter.name().to_string();
+                yield Ok(Event::default().event("meta").data(serde_json::json!({"session_id": sid, "model": model_name}).to_string()));
+
+                match adapter.stream(llm_request).await {
+                    Ok(mut llm_stream) => {
+                        let mut full_content = String::new();
+                        loop {
+                            match llm_stream.next_chunk().await {
+                                Ok(Some(chunk)) => {
+                                    if !chunk.delta.is_empty() {
+                                        full_content.push_str(&chunk.delta);
+                                        yield Ok(Event::default().event("token").data(serde_json::json!({"token": chunk.delta}).to_string()));
+                                    }
+                                    if chunk.finish_reason.is_some() {
+                                        break;
+                                    }
+                                }
+                                Ok(None) => break,
+                                Err(e) => {
+                                    yield Ok(Event::default().event("error").data(format!("Stream error: {}", e)));
+                                    break;
+                                }
+                            }
+                        }
+                        let _ = session_store.save_message(&sid, "assistant", &full_content, None, None).await;
+                        yield Ok(Event::default().event("done").data(serde_json::json!({"done": true}).to_string()));
+                    }
+                    Err(e) => {
+                        yield Ok(Event::default().event("error").data(format!("Stream init error: {}", e)));
+                        yield Ok(Event::default().event("done").data("{\"done\":true}"));
+                    }
+                }
+            }
+            Err(e) => {
+                yield Ok(Event::default().event("error").data(format!("No LLM available: {}", e)));
+                yield Ok(Event::default().event("done").data("{\"done\":true}"));
+            }
+        }
+    };
+
+    Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::new().interval(std::time::Duration::from_secs(15)).text("ping"))
+}
+
+async fn kb_upload_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    mut multipart: axum::extract::Multipart,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    let mut results = Vec::new();
+
+    while let Some(field) = multipart.next_field().await.map_err(|_| axum::http::StatusCode::BAD_REQUEST)? {
+        let field_name = field.name().unwrap_or("").to_string();
+        if field_name != "file" {
+            continue;
+        }
+
+        let filename = field.file_name().unwrap_or("untitled").to_string();
+        let bytes = field.bytes().await.map_err(|_| axum::http::StatusCode::BAD_REQUEST)?;
+        let content = String::from_utf8_lossy(&bytes).to_string();
+
+        let source_type = if filename.ends_with(".pdf") { "pdf" }
+            else if filename.ends_with(".md") { "markdown" }
+            else if filename.ends_with(".txt") { "text" }
+            else { "file" };
+
+        let doc_id = uuid::Uuid::new_v4().to_string();
+        let doc = Document {
+            id: doc_id.clone(),
+            title: filename.clone(),
+            content: content.clone(),
+            source_type: source_type.to_string(),
+            source_url: None,
+            chunks: vec![],
+        };
+
+        let chunks = state.indexer.index(&doc).unwrap_or_default();
+        for chunk in &chunks {
+            state.bm25_searcher.index_chunk(chunk);
+            let embedding = match state.embedder.embed(&chunk.content).await {
+                Ok(emb) => emb,
+                Err(_) => maple_llm::embedding::simple_embedding(&chunk.content, 128),
+            };
+            state.vector_store.upsert(&chunk.id, chunk, embedding).await;
+        }
+
+        let now = chrono::Utc::now().timestamp();
+        let chunk_count = chunks.len() as i32;
+        let _ = sqlx::query(
+            "INSERT INTO kb_documents (id, workspace_id, title, source_type, source_url, content, chunk_count, created_at) VALUES (?, 'default', ?, ?, NULL, ?, ?, ?)"
+        )
+        .bind(&doc_id)
+        .bind(&filename)
+        .bind(source_type)
+        .bind(&content)
+        .bind(chunk_count)
+        .bind(now)
+        .execute(&state.db)
+        .await;
+
+        results.push(serde_json::json!({
+            "document_id": doc_id,
+            "filename": filename,
+            "chunk_count": chunks.len(),
+            "source_type": source_type,
+        }));
+    }
+
+    Ok(axum::Json(serde_json::json!({ "uploaded": results })))
+}
+
 #[derive(Debug, Deserialize)]
 struct KbIndexRequest {
     title: String,
@@ -1146,6 +1528,29 @@ struct KbSearchResponse {
     results: Vec<serde_json::Value>,
 }
 
+async fn kb_documents_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::Json<serde_json::Value> {
+    let rows: Vec<(String, String, String, i32, i64)> = sqlx::query_as(
+        "SELECT id, title, source_type, chunk_count, created_at FROM kb_documents ORDER BY created_at DESC"
+    )
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+
+    axum::Json(serde_json::json!({
+        "documents": rows.into_iter().map(|(id, title, source_type, chunk_count, created_at)| {
+            serde_json::json!({
+                "id": id,
+                "title": title,
+                "source_type": source_type,
+                "chunk_count": chunk_count,
+                "created_at": created_at,
+            })
+        }).collect::<Vec<_>>()
+    }))
+}
+
 async fn kb_search_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
     Json(req): Json<KbSearchRequest>,
@@ -1164,13 +1569,34 @@ async fn kb_search_handler(
         bm25_results,
     ).await.unwrap_or_default();
 
+    let doc_rows: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT id, title, source_type FROM kb_documents"
+    )
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+    let doc_map: std::collections::HashMap<String, (String, String)> = doc_rows.into_iter()
+        .map(|(id, title, st)| (id, (title, st)))
+        .collect();
+
     axum::Json(KbSearchResponse {
-        results: results.into_iter().map(|r| serde_json::json!({
-            "id": r.id,
-            "content": r.content,
-            "score": r.score,
-            "source": r.source,
-        })).collect(),
+        results: results.into_iter().map(|r| {
+            let snippet = if r.content.len() > 200 { r.content[..200].to_string() + "..." } else { r.content.clone() };
+            let doc_id = r.source.strip_prefix("document:").unwrap_or(&r.id);
+            let (title, doc_source_type) = doc_map.get(doc_id)
+                .cloned()
+                .unwrap_or_else(|| (r.id.clone(), r.source_type.clone()));
+            serde_json::json!({
+                "id": r.id,
+                "title": title,
+                "content": r.content,
+                "snippet": snippet,
+                "score": r.score,
+                "source": r.source,
+                "source_type": doc_source_type,
+                "metadata": r.metadata,
+            })
+        }).collect(),
     })
 }
 
@@ -1200,7 +1626,7 @@ async fn memory_store_handler(
 ) -> impl IntoResponse {
     let entry = MemoryEntry {
         id: uuid::Uuid::new_v4().to_string(),
-        memory_type: MemoryType::from_str(&req.memory_type),
+        memory_type: req.memory_type.parse::<MemoryType>().unwrap_or(MemoryType::Working),
         content: req.content,
         metadata: req.metadata,
         created_at: chrono::Utc::now().timestamp(),
@@ -1228,13 +1654,16 @@ async fn memory_search_handler(
     Json(req): Json<MemorySearchRequest>,
 ) -> impl IntoResponse {
     let store = state.memory_store.lock().await;
-    let mt = MemoryType::from_str(&req.memory_type);
+    let mt = req.memory_type.parse::<MemoryType>().unwrap_or(MemoryType::Working);
     match store.search_by_type(&mt, &req.keyword, req.limit).await {
         Ok(entries) => axum::Json(serde_json::json!({
             "results": entries.iter().map(|e| serde_json::json!({
                 "id": e.id,
                 "content": e.content,
                 "type": e.memory_type.as_str(),
+                "source_type": e.memory_type.as_str(),
+                "score": 1.0,
+                "metadata": e.metadata,
                 "created_at": e.created_at,
             })).collect::<Vec<_>>()
         })),
@@ -1306,6 +1735,7 @@ async fn task_stats_handler(
 ) -> impl IntoResponse {
     match state.task_queue.stats().await {
         Ok(stats) => axum::Json(serde_json::json!({
+            "total": stats.pending + stats.running + stats.completed + stats.failed + stats.dead_letter,
             "pending": stats.pending,
             "running": stats.running,
             "completed": stats.completed,
@@ -1652,6 +2082,13 @@ async fn get_workflow_executions_handler(
 }
 
 #[derive(Debug, Deserialize)]
+struct RegisterRequest {
+    username: String,
+    password: String,
+    email: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct LoginRequest {
     username: String,
     password: String,
@@ -1666,13 +2103,162 @@ async fn login_handler(
     let admin_pass = &config.admin_password;
 
     if req.username == *admin_user && req.password == *admin_pass {
-        let token = state.auth_service.create_token_for_user(&req.username, "admin", 86400)
+        let user_id = format!("admin-{}", req.username);
+        let token = state.auth_service.create_token_for_user(&user_id, "admin", 3600)
             .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
-        
+        let refresh_token = uuid::Uuid::new_v4().to_string();
+        let refresh_hash = bcrypt::hash(&refresh_token, bcrypt::DEFAULT_COST)
+            .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+        let now = chrono::Utc::now().timestamp();
+        let _ = sqlx::query(
+            "INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)"
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(&user_id)
+        .bind(&refresh_hash)
+        .bind(now + 7 * 86400)
+        .bind(now)
+        .execute(&state.db)
+        .await;
+
         Ok(axum::Json(serde_json::json!({
             "token": token,
-            "user_id": req.username,
+            "refresh_token": refresh_token,
+            "user_id": user_id,
+            "username": req.username,
             "role": "admin",
+            "expires_in": 3600,
+        })))
+    } else {
+        Err(axum::http::StatusCode::UNAUTHORIZED)
+    }
+}
+
+async fn register_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    Json(req): Json<RegisterRequest>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    if req.username.trim().is_empty() || req.password.len() < 6 {
+        return Ok(axum::Json(serde_json::json!({
+            "error": "Username required, password min 6 chars"
+        })));
+    }
+
+    let existing: Option<(String,)> = sqlx::query_as(
+        "SELECT id FROM users WHERE username = ?"
+    )
+    .bind(&req.username)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if existing.is_some() {
+        return Ok(axum::Json(serde_json::json!({
+            "error": "Username already exists"
+        })));
+    }
+
+    let user_id = uuid::Uuid::new_v4().to_string();
+    let password_hash = bcrypt::hash(&req.password, bcrypt::DEFAULT_COST)
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+    let now = chrono::Utc::now().timestamp();
+
+    sqlx::query(
+        "INSERT INTO users (id, username, password_hash, email, role, created_at) VALUES (?, ?, ?, ?, 'user', ?)"
+    )
+    .bind(&user_id)
+    .bind(&req.username)
+    .bind(&password_hash)
+    .bind(&req.email)
+    .bind(now)
+    .execute(&state.db)
+    .await
+    .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let access_token = state.auth_service.create_token_for_user(&user_id, "user", 3600)
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    Ok(axum::Json(serde_json::json!({
+        "token": access_token,
+        "user_id": user_id,
+        "username": req.username,
+        "role": "user",
+        "expires_in": 3600,
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+struct RefreshRequest {
+    refresh_token: String,
+}
+
+async fn refresh_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    Json(req): Json<RefreshRequest>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    let now = chrono::Utc::now().timestamp();
+    let rows: Vec<(String, String, String, i64)> = sqlx::query_as(
+        "SELECT id, user_id, token_hash, expires_at FROM refresh_tokens WHERE expires_at > ?"
+    )
+    .bind(now)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let mut matched: Option<(String, String)> = None;
+    for (_id, user_id, token_hash, _expires) in &rows {
+        if bcrypt::verify(&req.refresh_token, token_hash).unwrap_or(false) {
+            matched = Some((user_id.clone(), _id.clone()));
+            break;
+        }
+    }
+
+    if let Some((user_id, token_id)) = matched {
+        let user_row: Option<(String, String)> = sqlx::query_as(
+            "SELECT username, role FROM users WHERE id = ?"
+        )
+        .bind(&user_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        let (username, role) = match user_row {
+            Some(r) => r,
+            None => return Err(axum::http::StatusCode::UNAUTHORIZED),
+        };
+
+        let access_token = state.auth_service.create_token_for_user(&user_id, &role, 3600)
+            .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        let new_refresh = uuid::Uuid::new_v4().to_string();
+        let new_hash = bcrypt::hash(&new_refresh, bcrypt::DEFAULT_COST)
+            .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        let _ = sqlx::query(
+            "DELETE FROM refresh_tokens WHERE id = ?"
+        )
+        .bind(&token_id)
+        .execute(&state.db)
+        .await;
+
+        let _ = sqlx::query(
+            "INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)"
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(&user_id)
+        .bind(&new_hash)
+        .bind(now + 7 * 86400)
+        .bind(now)
+        .execute(&state.db)
+        .await;
+
+        Ok(axum::Json(serde_json::json!({
+            "token": access_token,
+            "refresh_token": new_refresh,
+            "user_id": user_id,
+            "username": username,
+            "role": role,
+            "expires_in": 3600,
         })))
     } else {
         Err(axum::http::StatusCode::UNAUTHORIZED)
@@ -1725,13 +2311,12 @@ async fn delete_memory_handler(
 ) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
     let mut store = state.memory_store.lock().await;
     match store.delete(&memory_id).await {
-        Ok(true) => {
+        Ok(_) => {
             Ok(axum::Json(serde_json::json!({
                 "id": memory_id,
                 "status": "deleted",
             })))
         }
-        Ok(false) => Err(axum::http::StatusCode::NOT_FOUND),
         Err(_) => Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR),
     }
 }
@@ -2193,7 +2778,7 @@ impl ServerConfig {
             jwt_secret: std::env::var("JWT_SECRET")
                 .unwrap_or_else(|_| "mapleos-dev-secret-change-me".to_string()),
             require_auth: std::env::var("REQUIRE_AUTH")
-                .unwrap_or_default() == "true",
+                .unwrap_or_else(|_| "true".to_string()) == "true",
             admin_username: std::env::var("ADMIN_USERNAME")
                 .unwrap_or_else(|_| "admin".to_string()),
             admin_password: std::env::var("ADMIN_PASSWORD")
@@ -2225,7 +2810,7 @@ async fn main() -> anyhow::Result<()> {
 
     let database_url = &config.database_url;
 
-    let pool = sqlx::SqlitePool::connect(&database_url).await?;
+    let pool = sqlx::SqlitePool::connect(database_url).await?;
     run_migrations(&pool).await?;
 
     let event_bus = Arc::new(EventBus::new());
@@ -2235,6 +2820,24 @@ async fn main() -> anyhow::Result<()> {
     let hook_runner = Arc::new(HookRunner::new());
     let checkpoint_mgr = Arc::new(CheckpointManager::new(pool.clone()));
     let agent_registry = Arc::new(AgentRegistry::new());
+    {
+        let rows: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT id, name, status FROM agents"
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap_or_default();
+
+        for (id, name, status) in &rows {
+            let agent_status = if status == "Online" || status == "Idle" {
+                maple_agent::registry::AgentStatus::Online
+            } else {
+                maple_agent::registry::AgentStatus::Offline
+            };
+            agent_registry.register_agent(id, name, agent_status).await;
+        }
+        tracing::info!("Restored {} agents from DB", rows.len());
+    }
     let auth_service = Arc::new(AuthService::new(config.jwt_secret.clone()));
     let workspace_manager = Arc::new(tokio::sync::Mutex::new(WorkspaceManager::new(pool.clone())));
     {
@@ -2302,47 +2905,61 @@ async fn main() -> anyhow::Result<()> {
     let task_queue = Arc::new(TaskQueueService::new(pool.clone()));
     task_queue.init_schema().await?;
 
+    let scheduler = Arc::new(Scheduler::new());
+    let job_count: usize;
+    {
+        type ScheduledJobRow = (String, String, String, String, Option<i64>, i64, bool);
+        let rows: Vec<ScheduledJobRow> = sqlx::query_as(
+            "SELECT id, workflow_id, cron_expr, timezone, last_run_at, next_run_at, enabled FROM scheduled_jobs WHERE enabled = 1"
+        ).fetch_all(&pool).await?;
+        job_count = rows.len();
+        for row in rows {
+            scheduler.add_job(ScheduledJob {
+                id: row.0, workflow_id: row.1, cron_expr: row.2, timezone: row.3,
+                last_run_at: row.4, next_run_at: row.5, enabled: row.6,
+            }).await?;
+        }
+    }
+    tracing::info!("Scheduler loaded {} active jobs from DB", job_count);
+
     let task_worker_queue = task_queue.clone();
     let task_worker_skills = skill_registry.clone();
     let task_worker_llm = llm_router.clone();
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            match task_worker_queue.dequeue().await {
-                Ok(Some(task)) => {
-                    let payload = task.payload.clone();
-                    let prompt = payload["prompt"].as_str().unwrap_or("").to_string();
-                    let task_id = task.id.clone();
-                    if !prompt.is_empty() {
-                        let llm_request = maple_llm::request::LlmRequest::new(prompt, "task-worker");
-                        match task_worker_llm.route(&llm_request).await {
-                            Ok(adapter) => {
-                                match adapter.complete(llm_request).await {
-                                    Ok(_) => {
-                                        let _ = task_worker_queue.complete(&task_id).await;
-                                    }
-                                    Err(e) => {
-                                        let _ = task_worker_queue.fail(&task_id, &e.to_string()).await;
-                                    }
+            if let Ok(Some(task)) = task_worker_queue.dequeue().await {
+                let payload = task.payload.clone();
+                let prompt = payload["prompt"].as_str().unwrap_or("").to_string();
+                let task_id = task.id.clone();
+                if !prompt.is_empty() {
+                    let llm_request = maple_llm::request::LlmRequest::new(prompt, "task-worker");
+                    match task_worker_llm.route(&llm_request).await {
+                        Ok(adapter) => {
+                            match adapter.complete(llm_request).await {
+                                Ok(_) => {
+                                    let _ = task_worker_queue.complete(&task_id).await;
+                                }
+                                Err(e) => {
+                                    let _ = task_worker_queue.fail(&task_id, &e.to_string()).await;
                                 }
                             }
-                            Err(e) => {
-                                let _ = task_worker_queue.fail(&task_id, &format!("LLM routing: {}", e)).await;
-                            }
                         }
-                    } else {
-                        let skill_id = payload["skill_id"].as_str().unwrap_or("echo");
-                        match task_worker_skills.execute(skill_id, &payload).await {
-                            Ok(_) => {
-                                let _ = task_worker_queue.complete(&task_id).await;
-                            }
-                            Err(e) => {
-                                let _ = task_worker_queue.fail(&task_id, &e.to_string()).await;
-                            }
+                        Err(e) => {
+                            let _ = task_worker_queue.fail(&task_id, &format!("LLM routing: {}", e)).await;
+                        }
+                    }
+                } else {
+                    let skill_id = payload["skill_id"].as_str().unwrap_or("echo");
+                    match task_worker_skills.execute(skill_id, &payload).await {
+                        Ok(_) => {
+                            let _ = task_worker_queue.complete(&task_id).await;
+                        }
+                        Err(e) => {
+                            let _ = task_worker_queue.fail(&task_id, &e.to_string()).await;
                         }
                     }
                 }
-                Ok(None) | Err(_) => {}
             }
         }
     });
@@ -2372,6 +2989,25 @@ async fn main() -> anyhow::Result<()> {
         rate_limiter,
     });
 
+    let scheduler_wf = workflow_executor.clone();
+    let scheduler_db = pool.clone();
+    scheduler.start_loop(60, move |job: ScheduledJob| {
+        let wf = scheduler_wf.clone();
+        let db = scheduler_db.clone();
+        async move {
+            tracing::info!(job_id = %job.id, workflow_id = %job.workflow_id, "Scheduled job triggered");
+            let yaml_str: Option<String> = sqlx::query_scalar(
+                "SELECT yaml_content FROM workflows WHERE id = ?"
+            ).bind(&job.workflow_id).fetch_optional(&db).await.ok().flatten();
+            if let Some(yaml) = yaml_str {
+                if let Ok(parsed) = Workflow::parse_definition(&yaml) {
+                    let _ = wf.execute(&parsed.nodes, &job.workflow_id, parsed.version, serde_json::Value::Null).await;
+                }
+            }
+            Ok(())
+        }
+    }).await;
+
     let dispatcher = Arc::new(RpcDispatcher::new());
     register_business_handlers(&dispatcher, state.clone()).await;
 
@@ -2384,6 +3020,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/metrics", get(system_metrics_handler))
         .route("/ws/agents", get(ws_agent_handler))
         .route("/api/chat", post(chat_handler))
+        .route("/api/chat/stream", post(chat_stream_handler))
         .route("/api/models", get(models_handler))
         .route("/api/skills", get(skills_handler))
         .route("/api/config", get(get_config_handler).put(update_config_handler))
@@ -2417,7 +3054,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/workspaces/:id", get(get_workspace_handler).put(update_workspace_handler).delete(delete_workspace_handler))
         .route("/api/auth/login", post(login_handler))
         .route("/api/auth/token", post(token_handler))
-        .with_state(state);
+        .route("/api/auth/register", post(register_handler))
+        .route("/api/auth/refresh", post(refresh_handler))
+        .with_state(state.clone());
 
     let cors = if config.require_auth {
         CorsLayer::new()
@@ -2461,6 +3100,8 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn register_business_handlers(dispatcher: &Arc<RpcDispatcher>, state: Arc<AppState>) {
+    use maple_engine::skill_registry::Skill;
+    use serde_json::Value;
     dispatcher.register_default_handlers().await;
 
     let start_time = std::time::Instant::now();
@@ -2566,9 +3207,9 @@ async fn register_business_handlers(dispatcher: &Arc<RpcDispatcher>, state: Arc<
                 None => return Ok(serde_json::json!({"error": "workflow not found"})),
             };
 
-            let workflow = match Workflow::parse_yaml(&yaml) {
+            let workflow = match Workflow::parse_definition(&yaml) {
                 Ok(w) => w,
-                Err(e) => return Ok(serde_json::json!({"error": format!("YAML parse error: {}", e)})),
+                Err(e) => return Ok(serde_json::json!({"error": format!("Parse error: {}", e)})),
             };
 
             let exec_id = uuid::Uuid::new_v4().to_string();
@@ -2628,14 +3269,30 @@ async fn register_business_handlers(dispatcher: &Arc<RpcDispatcher>, state: Arc<
 
     let s = state.clone();
     dispatcher.register("agent.list", move |_: Option<serde_json::Value>| {
+        let db = s.db.clone();
         let registry = s.agent_registry.clone();
         async move {
-            let agents = registry.list_agents().await;
+            let rows: Vec<(String, String, String)> = sqlx::query_as(
+                "SELECT id, name, status FROM agents ORDER BY created_at DESC"
+            )
+            .fetch_all(&db)
+            .await
+            .unwrap_or_default();
+
+            for (id, name, status) in &rows {
+                let agent_status = if status == "Online" || status == "Idle" {
+                    maple_agent::registry::AgentStatus::Online
+                } else {
+                    maple_agent::registry::AgentStatus::Offline
+                };
+                registry.register_agent(id, name, agent_status).await;
+            }
+
             Ok(serde_json::json!({
-                "agents": agents.into_iter().map(|(id, name, status)| serde_json::json!({
+                "agents": rows.into_iter().map(|(id, name, status)| serde_json::json!({
                     "id": id,
                     "name": name,
-                    "status": format!("{:?}", status),
+                    "status": status,
                 })).collect::<Vec<_>>(),
             }))
         }
@@ -2725,16 +3382,18 @@ async fn register_business_handlers(dispatcher: &Arc<RpcDispatcher>, state: Arc<
     dispatcher.register("agent.chat", move |params: Option<serde_json::Value>| {
         let llm_router = s.llm_router.clone();
         let session_store = s.session_store.clone();
-        let skill_registry = s.skill_registry.clone();
         async move {
             let p = match params {
                 Some(v) => v,
-                None => return Ok(serde_json::json!({"error": "missing params: agent_id + prompt"})),
+                None => return Ok(serde_json::json!({"error": "missing params: agent_id + message"})),
             };
             let agent_id = p["agent_id"].as_str().unwrap_or("default").to_string();
-            let prompt = p["prompt"].as_str().unwrap_or("").to_string();
+            let prompt = p["message"].as_str()
+                .or_else(|| p["prompt"].as_str())
+                .unwrap_or("")
+                .to_string();
             if prompt.is_empty() {
-                return Ok(serde_json::json!({"error": "prompt is required"}));
+                return Ok(serde_json::json!({"error": "message is required"}));
             }
 
             let session_id = format!("agent-chat-{}", agent_id);
@@ -2750,12 +3409,14 @@ async fn register_business_handlers(dispatcher: &Arc<RpcDispatcher>, state: Arc<
                 Ok(response) => {
                     let _ = session_store.save_message(&session_id, "assistant", &response.content, None, response.tool_calls.as_deref()).await;
                     Ok(serde_json::json!({
+                        "reply": response.content,
                         "response": response.content,
                         "agent_id": agent_id,
                         "model": adapter.name().to_string(),
                     }))
                 }
                 Err(e) => Ok(serde_json::json!({
+                    "reply": format!("LLM error: {}", e),
                     "response": format!("LLM error: {}", e),
                     "agent_id": agent_id,
                 }))
@@ -2796,6 +3457,28 @@ async fn register_business_handlers(dispatcher: &Arc<RpcDispatcher>, state: Arc<
     }).await;
 
     let s = state.clone();
+    dispatcher.register("agent.deregister", move |params: Option<serde_json::Value>| {
+        let registry = s.agent_registry.clone();
+        let db = s.db.clone();
+        async move {
+            let p = match params {
+                Some(v) => v,
+                None => return Ok(serde_json::json!({"error": "missing params: id"})),
+            };
+            let id = p["id"].as_str().unwrap_or("").to_string();
+            if id.is_empty() {
+                return Ok(serde_json::json!({"error": "id is required"}));
+            }
+            registry.deregister_agent(&id).await;
+            let _ = sqlx::query("DELETE FROM agents WHERE id = ?")
+                .bind(&id)
+                .execute(&db)
+                .await;
+            Ok(serde_json::json!({"id": id, "status": "deregistered"}))
+        }
+    }).await;
+
+    let s = state.clone();
     dispatcher.register("task.create", move |params: Option<serde_json::Value>| {
         let task_queue = s.task_queue.clone();
         async move {
@@ -2804,9 +3487,17 @@ async fn register_business_handlers(dispatcher: &Arc<RpcDispatcher>, state: Arc<
                 None => return Ok(serde_json::json!({"error": "missing params"})),
             };
             let task_type = p["task_type"].as_str().unwrap_or("generic").to_string();
-            let agent_id = p["agent_id"].as_str().unwrap_or("").to_string();
-            let prompt = p["prompt"].as_str().unwrap_or("").to_string();
             let priority = p["priority"].as_i64().unwrap_or(0) as i32;
+
+            let (agent_id, prompt) = if let Some(payload) = p.get("payload").and_then(|v| v.as_object()) {
+                let aid = payload.get("agent_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let pr = payload.get("prompt").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                (aid, pr)
+            } else {
+                let aid = p["agent_id"].as_str().unwrap_or("").to_string();
+                let pr = p["prompt"].as_str().unwrap_or("").to_string();
+                (aid, pr)
+            };
 
             let payload = serde_json::json!({
                 "agent_id": agent_id,
@@ -2908,42 +3599,108 @@ async fn register_business_handlers(dispatcher: &Arc<RpcDispatcher>, state: Arc<
     }).await;
 
     let s = state.clone();
+struct McpSkillProxy {
+        id: String,
+        description: String,
+        server_name: String,
+        tool_name: String,
+        mcp_host: Arc<McpHostManager>,
+    }
+    impl Skill for McpSkillProxy {
+        fn id(&self) -> &str { &self.id }
+        fn description(&self) -> &str { &self.description }
+        fn execute(&self, config: &Value) -> anyhow::Result<Value> {
+            let rt = tokio::runtime::Handle::current();
+            let _guard = rt.enter();
+            tokio::task::block_in_place(|| {
+                rt.block_on(async {
+                    self.mcp_host.call_tool(&self.server_name, &self.tool_name, config.clone()).await
+                })
+            })
+        }
+    }
+
     dispatcher.register("skill.install", move |params: Option<serde_json::Value>| {
         let registry = s.skill_registry.clone();
+        let mcp_host_install = s.mcp_host.clone();
         async move {
             let p = match params {
                 Some(v) => v,
-                None => return Ok(serde_json::json!({"error": "missing params: skill_id"})),
+                None => return Ok(serde_json::json!({"error": "missing params"})),
             };
             let skill_id = p["skill_id"].as_str().unwrap_or("").to_string();
             if skill_id.is_empty() {
                 return Ok(serde_json::json!({"error": "skill_id is required"}));
             }
 
+            if let Some(mcp_config) = p.get("mcp_config") {
+                let mcp_host = mcp_host_install.clone();
+                let config: maple_gateway::mcp_host::McpServerConfig = serde_json::from_value(mcp_config.clone())
+                    .unwrap_or_else(|_| maple_gateway::mcp_host::McpServerConfig {
+                        name: skill_id.clone(),
+                        transport: maple_gateway::mcp_host::McpTransportConfig::Stdio {
+                            command: vec!["node".to_string(), p["command"].as_str().unwrap_or("").to_string()],
+                        },
+                        description: None,
+                        env: None,
+                    });
+
+                if let Err(e) = mcp_host.start_server(&config).await {
+                    return Ok(serde_json::json!({"skill_id": skill_id, "status": "error", "error": e.to_string()}));
+                }
+                let all_tools = mcp_host.list_tools();
+                let server_tools: Vec<(String, String)> = all_tools.into_iter().filter(|(server, _)| server == &skill_id).collect();
+                for (server, tool_name) in &server_tools {
+                    let proxy_id = format!("{}:{}", server, tool_name);
+                    registry.register(Box::new(McpSkillProxy {
+                        id: proxy_id,
+                        description: format!("MCP tool: {}", tool_name),
+                        server_name: skill_id.clone(),
+                        tool_name: tool_name.clone(),
+                        mcp_host: mcp_host.clone(),
+                    })).await;
+                }
+
+                return Ok(serde_json::json!({
+                    "skill_id": skill_id,
+                    "status": "installed",
+                    "tools_count": server_tools.len(),
+                    "tools": server_tools.iter().map(|(_, t)| t.clone()).collect::<Vec<_>>(),
+                }));
+            }
+
             struct PlaceholderSkill { id: String }
             impl maple_engine::skill_registry::Skill for PlaceholderSkill {
                 fn id(&self) -> &str { &self.id }
-                fn description(&self) -> &str { "Placeholder - awaiting MCP server connection" }
+                fn description(&self) -> &str { "Placeholder skill" }
                 fn execute(&self, config: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
                     Ok(serde_json::json!({"skill_id": self.id, "status": "placeholder", "input": config}))
                 }
             }
 
             registry.register(Box::new(PlaceholderSkill { id: skill_id.clone() })).await;
-            Ok(serde_json::json!({"skill_id": skill_id, "status": "installed"}))
+            Ok(serde_json::json!({"skill_id": skill_id, "status": "installed_placeholder"}))
         }
     }).await;
 
     let s = state.clone();
     dispatcher.register("skill.uninstall", move |params: Option<serde_json::Value>| {
         let registry = s.skill_registry.clone();
+        let mcp_host = s.mcp_host.clone();
         async move {
             let p = match params {
                 Some(v) => v,
-                None => return Ok(serde_json::json!({"error": "missing params: skill_id"})),
+                None => return Ok(serde_json::json!({"error": "missing params"})),
             };
             let skill_id = p["skill_id"].as_str().unwrap_or("").to_string();
+            mcp_host.stop_server(&skill_id).await.ok();
             registry.unregister(&skill_id).await;
+            let all_skills = registry.list().await;
+            for (skill_id_proxy, _) in &all_skills {
+                if skill_id_proxy.starts_with(&format!("{}:", skill_id)) {
+                    registry.unregister(skill_id_proxy).await;
+                }
+            }
             Ok(serde_json::json!({"skill_id": skill_id, "status": "uninstalled"}))
         }
     }).await;

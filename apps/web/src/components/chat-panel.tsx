@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import type { ChatMessage, ToolCall } from "@/lib/types";
+import type { ChatMessage, ToolCall, KnowledgeRef } from "@/lib/types";
 import { Button, Input, Badge, Card, CardContent, Spinner } from "@mapleos/ui";
 import { mapleApi, rpcCall } from "@/lib/api";
 
@@ -41,6 +41,12 @@ function MessageBubble({ message }: { message: ChatMessage }) {
             {message.toolCalls.map((tc: ToolCall) => <ToolCallCard key={tc.id} toolCall={tc} />)}
           </div>
         )}
+        {message.knowledgeRefs && message.knowledgeRefs.length > 0 && (
+          <div className="mt-2 space-y-1">
+            <div className="text-[10px] text-muted-foreground">引用知识库:</div>
+            {message.knowledgeRefs.map((ref: KnowledgeRef) => <KnowledgeRefCard key={ref.id} ref={ref} />)}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -65,6 +71,27 @@ function ToolCallCard({ toolCall }: { toolCall: ToolCall }) {
   );
 }
 
+function KnowledgeRefCard({ ref }: { ref: KnowledgeRef }) {
+  const scorePercent = Math.round(ref.score * 100);
+  const scoreColor = scorePercent >= 80 ? "bg-success" : scorePercent >= 50 ? "bg-primary" : "bg-warning";
+
+  return (
+    <Card className="border-dashed shadow-none">
+      <CardContent className="p-2">
+        <div className="flex items-center gap-2">
+          <Badge variant="outline" className="text-[10px]">{ref.source_type}</Badge>
+          <span className="text-[12px] font-medium truncate max-w-[200px]">{ref.title}</span>
+          <div className="flex items-center gap-1 ml-auto">
+            <div className={`h-1.5 rounded-full ${scoreColor}`} style={{ width: `${scorePercent}px` }} />
+            <span className="text-[10px] text-muted-foreground">{scorePercent}%</span>
+          </div>
+        </div>
+        {ref.snippet && <div className="mt-1 text-[11px] text-muted-foreground line-clamp-2">{ref.snippet}</div>}
+      </CardContent>
+    </Card>
+  );
+}
+
 const QUICK_PROMPTS = [
   { label: "帮我写一段 Rust 异步任务处理代码", prompt: "帮我写一段 Rust 异步任务处理代码，使用 Tokio runtime" },
   { label: "分析最近的任务执行情况", prompt: "分析最近的任务执行情况，给出优化建议" },
@@ -78,6 +105,8 @@ export function ChatPanel() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [agents, setAgents] = useState<AgentOption[]>([]);
   const [selectedAgent, setSelectedAgent] = useState<string>("");
+  const [currentSession, setCurrentSession] = useState<string>("");
+  const [sessionList, setSessionList] = useState<{ id: string; title: string; created_at: number }[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -90,43 +119,115 @@ export function ChatPanel() {
       } catch { setAgents([]); }
     };
     loadAgents();
+    loadSessions();
   }, []);
+
+  const loadSessions = async () => {
+    try {
+      const res = await mapleApi<{ sessions: { id: string; title: string; created_at: number }[] }>("/api/sessions");
+      setSessionList(res.sessions ?? []);
+    } catch { setSessionList([]); }
+  };
+
+  const newSession = () => {
+    setMessages([]);
+    setCurrentSession("");
+  };
 
   useEffect(() => { scrollRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
   const sendMessage = async (overrideInput?: string) => {
     const text = overrideInput ?? input;
     if (!text.trim() || isStreaming) return;
+    const sessionId = currentSession || `session-${Date.now()}`;
+    if (!currentSession) setCurrentSession(sessionId);
     const userMsg: ChatMessage = { id: `msg-${Date.now()}`, role: "user", content: text.trim(), timestamp: Date.now() };
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
     setIsStreaming(true);
-    const assistantMsg: ChatMessage = { id: `msg-${Date.now() + 1}`, role: "assistant", content: "", timestamp: Date.now(), toolCalls: [] };
+
+    let knowledgeRefs: KnowledgeRef[] = [];
+    try {
+      const kbRes = await mapleApi<{ results: KnowledgeRef[] }>("/api/kb/search", {
+        method: "POST",
+        body: { query: text.trim(), top_k: 3 },
+      });
+      knowledgeRefs = kbRes.results ?? [];
+    } catch { /* kb search optional */ }
+
+    const assistantMsg: ChatMessage = { id: `msg-${Date.now() + 1}`, role: "assistant", content: "", timestamp: Date.now(), toolCalls: [], knowledgeRefs };
     setMessages((prev) => [...prev, assistantMsg]);
 
     try {
-      const res = await fetch(`/api/maple/api/chat`, {
+      const res = await fetch(`/api/maple/api/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: userMsg.content, agent_id: selectedAgent }),
+        body: JSON.stringify({ message: userMsg.content, agent_id: selectedAgent, session_id: sessionId }),
       });
       if (!res.ok) throw new Error(`请求失败: ${res.status}`);
 
-      const data = await res.json() as { reply: string; session_id: string; tool_calls?: unknown[] };
-      setMessages((prev) => {
-        const updated = [...prev];
-        const last = updated[updated.length - 1];
-        if (last.role === "assistant") {
-          last.content = data.reply ?? "";
-          if (data.tool_calls && Array.isArray(data.tool_calls)) {
-            last.toolCalls = (data.tool_calls as ToolCall[]).map((tc) => ({
-              ...tc,
-              status: tc.status ?? (tc.result ? "completed" : "running"),
-            }));
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error("无响应体");
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let accumulated = "";
+      let currentEvent = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (line.startsWith("event:")) {
+            currentEvent = line.slice(6).trim();
+            continue;
+          }
+          if (line.startsWith("data:")) {
+            const dataStr = line.slice(5).trim();
+            if (!dataStr) continue;
+            if (currentEvent === "error") {
+              let errorMsg = dataStr;
+              try { const p = JSON.parse(dataStr); errorMsg = p.message ?? p.error ?? dataStr; } catch { /* plain text */ }
+              setMessages((prev) => {
+                const updated = [...prev];
+                const last = updated[updated.length - 1];
+                if (last.role === "assistant") last.content = accumulated || `LLM 不可用: ${errorMsg}`;
+                return updated;
+              });
+              break;
+            }
+            try {
+              const parsed = JSON.parse(dataStr);
+              if (parsed.done) {
+                setMessages((prev) => {
+                  const updated = [...prev];
+                  const last = updated[updated.length - 1];
+                  if (last.role === "assistant") last.content = accumulated;
+                  return updated;
+                });
+                break;
+              }
+              if (parsed.token) {
+                accumulated += parsed.token;
+                setMessages((prev) => {
+                  const updated = [...prev];
+                  const last = updated[updated.length - 1];
+                  if (last.role === "assistant") last.content = accumulated;
+                  return updated;
+                });
+              }
+              if (parsed.session_id && parsed.model) {
+                setCurrentSession(parsed.session_id);
+              }
+            } catch { /* ignore non-JSON data lines */ }
           }
         }
-        return updated;
-      });
+      }
     } catch (err) {
       setMessages((prev) => {
         const updated = [...prev];
@@ -157,6 +258,17 @@ export function ChatPanel() {
         <div className="flex items-center gap-2">
           {isStreaming && <Spinner className="w-4 h-4" />}
           <Badge variant="outline" className="text-[10px]">{messages.length} 条消息</Badge>
+          {sessionList.length > 1 && (
+            <select
+              value={currentSession}
+              onChange={(e) => { setCurrentSession(e.target.value); setMessages([]); }}
+              className="h-7 rounded border bg-background text-[11px] px-1"
+            >
+              <option value="">新建对话</option>
+              {sessionList.map((s) => <option key={s.id} value={s.id}>{s.title}</option>)}
+            </select>
+          )}
+          <Button size="sm" variant="ghost" onClick={newSession}>新建对话</Button>
         </div>
       </div>
 
