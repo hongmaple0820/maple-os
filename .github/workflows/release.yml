@@ -139,6 +139,8 @@ jobs:
         run: cargo install tauri-cli --version "^2"
 
       - name: Build desktop app
+        env:
+          NEXT_STATIC_EXPORT: "1"
         run: cd apps/desktop && pnpm tauri build
 
       - name: Upload desktop artifact
@@ -200,6 +202,8 @@ jobs:
         run: cargo install tauri-cli --version "^2"
 
       - name: Build desktop app
+        env:
+          NEXT_STATIC_EXPORT: "1"
         run: cd apps/desktop && pnpm tauri build --target aarch64-apple-darwin
 
       - name: Upload desktop artifact
@@ -257,6 +261,8 @@ jobs:
         run: cargo install tauri-cli --version "^2"
 
       - name: Build desktop app
+        env:
+          NEXT_STATIC_EXPORT: "1"
         run: cd apps/desktop && pnpm tauri build --target x86_64-pc-windows-msvc
 
       - name: Upload desktop artifact
