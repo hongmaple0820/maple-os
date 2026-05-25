@@ -3,6 +3,8 @@ name = "mapleos-desktop"
 version = "0.1.0"
 edition = "2024"
 
+[workspace]
+
 [dependencies]
 tauri = { version = "2", features = ["devtools"] }
 tauri-plugin-shell = "2"

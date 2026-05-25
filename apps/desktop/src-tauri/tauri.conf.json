@@ -36,8 +36,7 @@
       "icons/icon.ico"
     ],
     "externalBin": [
-      "mapleos-server",
-      "bridge-http"
+      "mapleos-server"
     ]
   },
   "plugins": {
@@ -46,11 +45,6 @@
       "scope": [
         {
           "name": "mapleos-server",
-          "sidecar": true,
-          "args": true
-        },
-        {
-          "name": "bridge-http",
           "sidecar": true,
           "args": true
         }

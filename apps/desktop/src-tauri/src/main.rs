@@ -1,26 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::process::Command;
 use tauri::{Manager, Menu, MenuItem, Submenu};
 
-fn start_backend() -> std::process::Child {
-    Command::new("mapleos-server")
-        .env("PORT", "7788")
-        .spawn()
-        .expect("failed to start mapleos-server")
-}
-
-fn start_bridge() -> std::process::Child {
-    Command::new("node")
-        .arg("bridge/bridge-http.mjs")
-        .spawn()
-        .expect("failed to start bridge-http")
-}
-
 fn main() {
-    let mut backend = start_backend();
-    let mut bridge = start_bridge();
-
     let menu = Menu::new()
         .item(&MenuItem::new("MapleOS", true, None))
         .item(&Submenu::new("文件", Menu::new()
@@ -40,11 +22,17 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .invoke_handler(tauri::generate_handler![greet, get_system_info])
-        .on_window_event(|event| {
-            if let tauri::WindowEvent::Destroyed = event.event() {
-                let _ = backend.kill();
-                let _ = bridge.kill();
-            }
+        .setup(|app| {
+            let sidecar = app.shell().sidecar("mapleos-server").unwrap();
+            let (mut rx, _) = sidecar.spawn().expect("failed to start mapleos-server sidecar");
+            tauri::async_runtime::spawn(async move {
+                while let Some(event) = rx.recv().await {
+                    if let tauri_plugin_shell::ShellEvent::Stderr(line) = event {
+                        eprintln!("[server] {}", line);
+                    }
+                }
+            });
+            Ok(())
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
