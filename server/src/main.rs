@@ -38,6 +38,46 @@ use std::sync:: Arc;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
+#[derive(Debug, Serialize)]
+struct ApiError {
+    error: String,
+    code: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    details: Option<serde_json::Value>,
+}
+
+impl ApiError {
+    fn new(error: impl Into<String>, code: impl Into<String>) -> Self {
+        Self {
+            error: error.into(),
+            code: code.into(),
+            details: None,
+        }
+    }
+
+    fn with_details(error: impl Into<String>, code: impl Into<String>, details: serde_json::Value) -> Self {
+        Self {
+            error: error.into(),
+            code: code.into(),
+            details: Some(details),
+        }
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> axum::response::Response {
+        let status = match self.code.as_str() {
+            "NOT_FOUND" => axum::http::StatusCode::NOT_FOUND,
+            "UNAUTHORIZED" => axum::http::StatusCode::UNAUTHORIZED,
+            "FORBIDDEN" => axum::http::StatusCode::FORBIDDEN,
+            "BAD_REQUEST" => axum::http::StatusCode::BAD_REQUEST,
+            "CONFLICT" => axum::http::StatusCode::CONFLICT,
+            _ => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        (status, Json(self)).into_response()
+    }
+}
+
 pub struct AppState {
     pub config: ServerConfig,
     pub db: sqlx::SqlitePool,
@@ -804,6 +844,43 @@ async fn health_handler() -> impl IntoResponse {
     }))
 }
 
+async fn audit_log_middleware(
+    req: axum::http::Request<axum::body::Body>,
+    next: Next,
+) -> axum::response::Response {
+    let method = req.method().clone();
+    let path = req.uri().path().to_string();
+    let query = req.uri().query().map(|q| q.to_string()).unwrap_or_default();
+    let user_agent = req.headers()
+        .get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown")
+        .to_string();
+    let client_ip = req.headers()
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown")
+        .to_string();
+
+    let start = std::time::Instant::now();
+    let response = next.run(req).await;
+    let duration = start.elapsed();
+    let status = response.status().as_u16();
+
+    tracing::info!(
+        method = %method,
+        path = %path,
+        query = %query,
+        status = status,
+        duration_ms = duration.as_millis() as u64,
+        user_agent = %user_agent,
+        client_ip = %client_ip,
+        "API request"
+    );
+
+    response
+}
+
 async fn auth_middleware(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
     req: axum::http::Request<axum::body::Body>,
@@ -811,7 +888,7 @@ async fn auth_middleware(
 ) -> Result<axum::response::Response, axum::http::StatusCode> {
     let path = req.uri().path();
     
-    if path == "/health" || path.starts_with("/ws/") || path.starts_with("/api/events") {
+    if path == "/health" || path == "/health/deep" || path.starts_with("/ws/") || path.starts_with("/api/events") {
         return Ok(next.run(req).await);
     }
 
@@ -1560,6 +1637,119 @@ async fn deep_health_handler(
     }))
 }
 
+#[derive(Debug, Deserialize)]
+struct AgentRegisterRequest {
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    transport_type: Option<String>,
+    #[serde(default)]
+    transport_config: Option<serde_json::Value>,
+    #[serde(default)]
+    capabilities: Option<Vec<String>>,
+    #[serde(default)]
+    max_concurrent_tasks: Option<u32>,
+}
+
+async fn register_agent_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    Json(req): Json<AgentRegisterRequest>,
+) -> axum::Json<serde_json::Value> {
+    let agent_id = format!("agent-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("x"));
+    let now = chrono::Utc::now().timestamp();
+
+    let capabilities_json = serde_json::json!({
+        "tools": req.capabilities.unwrap_or_default(),
+        "skills": [],
+        "max_context_length": 128000,
+        "supports_streaming": true,
+        "supports_function_calling": true,
+    });
+
+    let transport_type = req.transport_type.unwrap_or_else(|| "websocket".to_string());
+    let transport_config = req.transport_config.unwrap_or_else(|| serde_json::json!({}));
+
+    let _ = sqlx::query(
+        "INSERT INTO agents (id, name, transport_type, transport_config, capabilities, status, max_concurrent_tasks, created_at) VALUES (?, ?, ?, ?, ?, 'offline', ?, ?)"
+    )
+    .bind(&agent_id)
+    .bind(&req.name)
+    .bind(&transport_type)
+    .bind(transport_config.to_string())
+    .bind(capabilities_json.to_string())
+    .bind(req.max_concurrent_tasks.unwrap_or(3) as i64)
+    .bind(now)
+    .execute(&*state.db)
+    .await;
+
+    state.agent_registry.register_agent(
+        &agent_id,
+        &req.name,
+        maple_agent::registry::AgentStatus::Offline,
+    ).await;
+
+    axum::Json(serde_json::json!({
+        "id": agent_id,
+        "name": req.name,
+        "description": req.description,
+        "status": "registered",
+    }))
+}
+
+async fn list_agents_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::Json<serde_json::Value> {
+    let agents = state.agent_registry.list_agents().await;
+    axum::Json(serde_json::json!({
+        "agents": agents.into_iter().map(|(id, name, status)| serde_json::json!({
+            "id": id,
+            "name": name,
+            "status": format!("{:?}", status),
+        })).collect::<Vec<_>>(),
+    }))
+}
+
+async fn get_agent_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(agent_id): axum::extract::Path<String>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    match state.agent_registry.get_agent(&agent_id).await {
+        Some(agent) => Ok(axum::Json(serde_json::json!({
+            "id": agent.id,
+            "name": agent.name,
+            "description": agent.description,
+            "transport": agent.transport,
+            "capabilities": agent.capabilities,
+            "max_concurrent_tasks": agent.max_concurrent_tasks,
+        }))),
+        None => Err(axum::http::StatusCode::NOT_FOUND),
+    }
+}
+
+async fn delete_agent_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(agent_id): axum::extract::Path<String>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    state.agent_registry.set_offline(&agent_id).await;
+    state.agent_registry.remove_task_channel(&agent_id).await;
+
+    let result = sqlx::query("DELETE FROM agents WHERE id = ?")
+        .bind(&agent_id)
+        .execute(&*state.db)
+        .await
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if result.rows_affected() > 0 {
+        Ok(axum::Json(serde_json::json!({
+            "id": agent_id,
+            "status": "deleted",
+        })))
+    } else {
+        Err(axum::http::StatusCode::NOT_FOUND)
+    }
+}
+
 #[derive(Clone)]
 struct ServerConfig {
     pub host: String,
@@ -1777,6 +1967,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/skills", get(skills_handler))
         .route("/api/kb/index", post(kb_index_handler))
         .route("/api/kb/search", post(kb_search_handler))
+        .route("/api/agents", get(list_agents_handler).post(register_agent_handler))
+        .route("/api/agents/:id", get(get_agent_handler).delete(delete_agent_handler))
         .route("/api/sessions", get(sessions_handler))
         .route("/api/sessions/:id", delete(delete_session_handler))
         .route("/api/sessions/:id/messages", get(get_session_messages_handler))
@@ -1800,11 +1992,36 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/auth/token", post(token_handler))
         .with_state(state);
 
+    let cors = if config.require_auth {
+        CorsLayer::new()
+            .allow_origin([
+                "http://localhost:3000".parse().unwrap(),
+                "http://localhost:3001".parse().unwrap(),
+                "https://mapleos.dev".parse().unwrap(),
+            ])
+            .allow_methods([
+                axum::http::Method::GET,
+                axum::http::Method::POST,
+                axum::http::Method::PUT,
+                axum::http::Method::DELETE,
+                axum::http::Method::OPTIONS,
+            ])
+            .allow_headers([
+                axum::http::header::AUTHORIZATION,
+                axum::http::header::CONTENT_TYPE,
+                axum::http::header::ACCEPT,
+            ])
+            .max_age(std::time::Duration::from_secs(3600))
+    } else {
+        CorsLayer::permissive()
+    };
+
     let app = Router::new()
         .merge(rpc_router)
         .merge(state_routes)
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
-        .layer(CorsLayer::permissive())
+        .layer(middleware::from_fn(audit_log_middleware))
+        .layer(cors)
         .layer(TraceLayer::new_for_http());
 
     let bind_addr = config.bind_address();
