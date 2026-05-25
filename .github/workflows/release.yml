@@ -266,47 +266,6 @@ jobs:
           path: |
             apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
 
-  build-mobile-android:
-    name: Build Mobile Android APK
-    runs-on: ubuntu-latest
-    if: ${{ secrets.EXPO_TOKEN != '' }}
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-
-      - name: Enable corepack & install pnpm
-        run: |
-          corepack enable
-          corepack prepare pnpm@latest --activate
-
-      - name: Install frontend dependencies
-        run: pnpm install
-
-      - name: Build shared packages
-        run: pnpm --filter=@mapleos/ui --filter=@mapleos/sdk build
-
-      - name: Setup EAS CLI
-        run: npm install -g eas-cli
-
-      - name: Build Android APK (preview)
-        working-directory: apps/mobile
-        run: eas build --platform android --profile preview --local --output build/
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-
-      - name: Upload mobile artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: mapleos-mobile-android
-          path: apps/mobile/build/*.apk
-
   build-web-static:
     name: Build Web Static Export
     runs-on: ubuntu-latest
@@ -381,7 +340,7 @@ jobs:
 
   create-release:
     name: Create GitHub Release
-    needs: [build-server-binaries, build-desktop-linux, build-desktop-macos, build-desktop-windows, build-mobile-android, build-web-static, build-docker]
+    needs: [build-server-binaries, build-desktop-linux, build-desktop-macos, build-desktop-windows, build-web-static, build-docker]
     if: always() && needs.build-server-binaries.result == 'success' && needs.build-web-static.result == 'success' && needs.build-docker.result == 'success'
     runs-on: ubuntu-latest
     steps:
@@ -408,7 +367,6 @@ jobs:
             artifacts/mapleos-desktop-linux/*.rpm
             artifacts/mapleos-desktop-macos-arm/*.dmg
             artifacts/mapleos-desktop-windows/*.msi
-            artifacts/mapleos-mobile-android/*.apk
             artifacts/mapleos-web-static/mapleos-web-static.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
