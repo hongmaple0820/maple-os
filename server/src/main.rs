@@ -79,7 +79,7 @@ impl IntoResponse for ApiError {
 }
 
 pub struct AppState {
-    pub config: ServerConfig,
+    pub config: Arc<tokio::sync::RwLock<ServerConfig>>,
     pub db: sqlx::SqlitePool,
     pub event_bus: Arc<EventBus>,
     pub llm_router: Arc<LlmRouter>,
@@ -98,6 +98,13 @@ pub struct AppState {
     pub memory_store: Arc<tokio::sync::Mutex<MemoryStore>>,
     pub prompt_version_mgr: Arc<PromptVersionManager>,
     pub task_queue: Arc<TaskQueueService>,
+    pub rate_limiter: RateLimiter,
+}
+
+impl AppState {
+    pub async fn get_config(&self) -> ServerConfig {
+        self.config.read().await.clone()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -811,19 +818,28 @@ async fn ws_agent_handler(
     ws: WebSocketUpgrade,
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     let token = headers
         .get("X-Agent-Token")
         .and_then(|v| v.to_str().ok())
+        .filter(|s| !s.is_empty())
+        .or_else(|| headers.get("Authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.strip_prefix("Bearer ")))
+        .or_else(|| params.get("token").map(|s| s.as_str()))
         .unwrap_or("");
 
     let agent_id = match state.auth_service.verify_agent_token(token).await {
         Ok(id) => id,
         Err(_) => {
-            tracing::warn!("WebSocket auth failed, rejecting connection");
-            return ws.on_upgrade(move |_socket| async move {
-                tracing::warn!("Unauthenticated WebSocket connection closed");
-            });
+            if state.config.read().await.require_auth {
+                tracing::warn!("WebSocket auth failed, rejecting connection");
+                return ws.on_upgrade(move |_socket| async move {
+                    tracing::warn!("Unauthenticated WebSocket connection closed");
+                });
+            }
+            "anonymous-agent".to_string()
         }
     };
 
@@ -879,6 +895,73 @@ async fn audit_log_middleware(
     );
 
     response
+}
+
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+use std::time::Instant;
+
+#[derive(Clone)]
+struct RateLimiter {
+    requests: Arc<RwLock<HashMap<String, Vec<Instant>>>>,
+    max_requests: usize,
+    window_secs: u64,
+}
+
+impl RateLimiter {
+    fn new(max_requests: usize, window_secs: u64) -> Self {
+        Self {
+            requests: Arc::new(RwLock::new(HashMap::new())),
+            max_requests,
+            window_secs,
+        }
+    }
+
+    async fn check(&self, key: &str) -> bool {
+        let mut requests = self.requests.write().await;
+        let now = Instant::now();
+        let window = std::time::Duration::from_secs(self.window_secs);
+
+        let entry = requests.entry(key.to_string()).or_insert_with(Vec::new);
+        entry.retain(|t| now.duration_since(*t) < window);
+
+        if entry.len() >= self.max_requests {
+            false
+        } else {
+            entry.push(now);
+            true
+        }
+    }
+}
+
+async fn rate_limit_middleware(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    req: axum::http::Request<axum::body::Body>,
+    next: Next,
+) -> Result<axum::response::Response, axum::http::StatusCode> {
+    let path = req.uri().path();
+    
+    if path == "/health" || path == "/health/deep" || path.starts_with("/ws/") {
+        return Ok(next.run(req).await);
+    }
+
+    let client_ip = req.headers()
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown")
+        .split(',')
+        .next()
+        .unwrap_or("unknown")
+        .trim()
+        .to_string();
+
+    if state.rate_limiter.check(&client_ip).await {
+        Ok(next.run(req).await)
+    } else {
+        Err(axum::http::StatusCode::TOO_MANY_REQUESTS)
+    }
 }
 
 async fn auth_middleware(
@@ -1357,8 +1440,9 @@ async fn login_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
     Json(req): Json<LoginRequest>,
 ) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
-    let admin_user = &state.config.admin_username;
-    let admin_pass = &state.config.admin_password;
+    let config = state.config.read().await;
+    let admin_user = &config.admin_username;
+    let admin_pass = &config.admin_password;
 
     if req.username == *admin_user && req.password == *admin_pass {
         let token = state.auth_service.create_token_for_user(&req.username, "admin", 86400)
@@ -1634,6 +1718,68 @@ async fn deep_health_handler(
             }
         },
         "timestamp": chrono::Utc::now().to_rfc3339(),
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateConfigRequest {
+    host: Option<String>,
+    port: Option<u16>,
+    jwt_secret: Option<String>,
+    require_auth: Option<bool>,
+    admin_username: Option<String>,
+    admin_password: Option<String>,
+    usage_limit_usd: Option<f64>,
+    log_level: Option<String>,
+}
+
+async fn get_config_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::Json<serde_json::Value> {
+    let config = state.config.read().await;
+    axum::Json(serde_json::json!({
+        "host": config.host,
+        "port": config.port,
+        "require_auth": config.require_auth,
+        "usage_limit_usd": config.usage_limit_usd,
+        "log_level": config.log_level,
+    }))
+}
+
+async fn update_config_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    Json(req): Json<UpdateConfigRequest>,
+) -> axum::Json<serde_json::Value> {
+    let mut config = state.config.write().await;
+    
+    if let Some(host) = req.host {
+        config.host = host;
+    }
+    if let Some(port) = req.port {
+        config.port = port;
+    }
+    if let Some(secret) = req.jwt_secret {
+        config.jwt_secret = secret;
+    }
+    if let Some(auth) = req.require_auth {
+        config.require_auth = auth;
+    }
+    if let Some(user) = req.admin_username {
+        config.admin_username = user;
+    }
+    if let Some(pass) = req.admin_password {
+        config.admin_password = pass;
+    }
+    if let Some(limit) = req.usage_limit_usd {
+        config.usage_limit_usd = limit;
+    }
+    if let Some(level) = req.log_level {
+        config.log_level = level;
+    }
+
+    axum::Json(serde_json::json!({
+        "status": "updated",
+        "message": "Configuration updated. Some changes may require restart.",
     }))
 }
 
@@ -1930,8 +2076,10 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    let rate_limiter = RateLimiter::new(100, 60);
+
     let state = Arc::new(AppState {
-        config: config.clone(),
+        config: Arc::new(tokio::sync::RwLock::new(config.clone())),
         db: pool.clone(),
         event_bus: event_bus.clone(),
         llm_router: llm_router.clone(),
@@ -1950,6 +2098,7 @@ async fn main() -> anyhow::Result<()> {
         memory_store: memory_store.clone(),
         prompt_version_mgr: prompt_version_mgr.clone(),
         task_queue: task_queue.clone(),
+        rate_limiter,
     });
 
     let dispatcher = Arc::new(RpcDispatcher::new());
@@ -1965,6 +2114,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/chat", post(chat_handler))
         .route("/api/models", get(models_handler))
         .route("/api/skills", get(skills_handler))
+        .route("/api/config", get(get_config_handler).put(update_config_handler))
         .route("/api/kb/index", post(kb_index_handler))
         .route("/api/kb/search", post(kb_search_handler))
         .route("/api/agents", get(list_agents_handler).post(register_agent_handler))
@@ -2019,6 +2169,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .merge(rpc_router)
         .merge(state_routes)
+        .layer(middleware::from_fn_with_state(state.clone(), rate_limit_middleware))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
         .layer(middleware::from_fn(audit_log_middleware))
         .layer(cors)
