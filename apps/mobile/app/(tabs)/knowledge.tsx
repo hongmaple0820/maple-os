@@ -1,7 +1,8 @@
 import { View, Text, TextInput, FlatList, StyleSheet } from "react-native";
 import { useState } from "react";
+import { mobileRestCall } from "../../src/lib/api";
 
-interface KbResult { id: string; content: string; score: number; source_type?: string }
+interface KbResult { id: string; content: string; score: number; source_type?: string; title?: string; snippet?: string }
 
 export default function KnowledgeScreen() {
   const [query, setQuery] = useState("");
@@ -13,12 +14,7 @@ export default function KnowledgeScreen() {
     if (!query.trim()) return;
     setSearching(true);
     try {
-      const res = await fetch("http://localhost:7788/api/kb/search", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: query.trim(), top_k: 8 }),
-      });
-      const data = await res.json();
+      const data = await mobileRestCall("/api/kb/search", { query: query.trim(), top_k: 8 }) as { results: KbResult[] };
       setResults(data.results ?? []);
     } catch { setResults([]); }
     setSearching(false);
@@ -36,7 +32,8 @@ export default function KnowledgeScreen() {
         <Text style={styles.resultScore}>{Math.round(item.score * 100)}%</Text>
         {item.source_type && <Text style={[styles.sourceBadge, { color: scoreColor(item.score) }]}>{item.source_type}</Text>}
       </View>
-      <Text style={styles.resultContent} numberOfLines={3}>{item.content}</Text>
+      {item.title && <Text style={styles.resultTitle}>{item.title}</Text>}
+      <Text style={styles.resultContent} numberOfLines={3}>{item.snippet || item.content}</Text>
     </View>
   );
 
@@ -61,6 +58,11 @@ export default function KnowledgeScreen() {
           {results.length === 0 && !searching && <Text style={styles.empty}>No results</Text>}
         </View>
       )}
+      {activeTab === "index" && (
+        <View style={styles.placeholderSection}>
+          <Text style={styles.placeholderText}>Knowledge indexing - coming soon</Text>
+        </View>
+      )}
     </View>
   );
 }
@@ -72,11 +74,14 @@ const styles = StyleSheet.create({
   tab: { color: "#888", fontSize: 14 },
   tabActive: { color: "#6366f1", fontWeight: "600" },
   searchSection: { flex: 1 },
+  placeholderSection: { flex: 1, justifyContent: "center", alignItems: "center" },
+  placeholderText: { color: "#888", fontSize: 14 },
   searchInput: { backgroundColor: "#1a1a2e", color: "#e0e0e0", borderRadius: 8, padding: 12, fontSize: 14, marginBottom: 12 },
   resultCard: { backgroundColor: "#1a1a2e", borderRadius: 8, padding: 12, marginBottom: 8 },
   resultHeader: { flexDirection: "row", justifyContent: "space-between" },
   resultScore: { color: "#6366f1", fontWeight: "600", fontSize: 12 },
   sourceBadge: { fontSize: 11 },
-  resultContent: { color: "#e0e0e0", fontSize: 13, marginTop: 6 },
+  resultTitle: { color: "#e0e0e0", fontSize: 13, fontWeight: "600", marginTop: 4 },
+  resultContent: { color: "#888", fontSize: 13, marginTop: 4 },
   empty: { color: "#888", textAlign: "center", marginTop: 32 },
 });

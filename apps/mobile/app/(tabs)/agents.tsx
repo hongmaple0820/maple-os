@@ -1,7 +1,10 @@
-import { View, Text, FlatList, StyleSheet } from "react-native";
+import { View, Text, TextInput, FlatList, StyleSheet } from "react-native";
 import { useState, useEffect } from "react";
+import { mobileRpcCall } from "../../src/lib/api";
 
 interface AgentItem { id: string; name: string; status: string; description: string }
+
+interface AgentListResult { agents: AgentItem[] }
 
 export default function AgentsScreen() {
   const [agents, setAgents] = useState<AgentItem[]>([]);
@@ -10,26 +13,14 @@ export default function AgentsScreen() {
   const [messages, setMessages] = useState<{ role: string; content: string }[]>([]);
 
   useEffect(() => {
-    (async () => {
-      try {
-        const res = await fetch("http://localhost:7788/rpc", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ jsonrpc: "2.0", method: "agent.list", params: {}, id: 1 }),
-        });
-        const data = await res.json();
-        setAgents(data.result?.agents ?? []);
-      } catch {}
-    })();
+    mobileRpcCall<AgentListResult>("agent.list", {})
+      .then((r) => setAgents(r.agents ?? []))
+      .catch(() => {});
   }, []);
 
   const dispatchTask = async (agentId: string, task: string) => {
     try {
-      await fetch("http://localhost:7788/rpc", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jsonrpc: "2.0", method: "task.create", params: { task_type: "prompt", priority: 1, payload: { agent_id: agentId, prompt: task } }, id: 2 }),
-      });
+      await mobileRpcCall("task.create", { task_type: "prompt", priority: 1, payload: { agent_id: agentId, prompt: task } });
       setMessages((prev) => [...prev, { role: "system", content: `Task dispatched to ${agentId}` }]);
     } catch (err) {
       setMessages((prev) => [...prev, { role: "system", content: `Error: ${(err as Error).message}` }]);
@@ -41,10 +32,10 @@ export default function AgentsScreen() {
       <View style={styles.agentHeader}>
         <Text style={styles.agentName}>{item.name}</Text>
         <Text style={[styles.agentStatus, item.status === "Online" ? styles.online : styles.offline]}>
-          {item.status ?? "Unknown"}
+          {item.status || "Unknown"}
         </Text>
       </View>
-      <Text style={styles.agentDesc} numberOfLines={2}>{item.description ?? ""}</Text>
+      <Text style={styles.agentDesc} numberOfLines={2}>{item.description || ""}</Text>
       <View style={styles.agentActions}>
         <Text style={styles.dispatchBtn} onPress={() => dispatchTask(item.id, chatInput || "Hello")}>Dispatch Task</Text>
         <Text style={styles.selectBtn} onPress={() => setSelectedAgent(item.id)}>

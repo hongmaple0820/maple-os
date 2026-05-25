@@ -1,8 +1,8 @@
 import { View, Text, ScrollView, StyleSheet } from "react-native";
 import { useState, useEffect } from "react";
-import { rpcCall } from "@mapleos/sdk";
+import { mobileRpcCall } from "../../src/lib/api";
 
-interface MetricCardProps { label: string; value: string; icon: string }
+interface MetricCardProps { label: string; value: string }
 
 function MetricCard({ label, value }: MetricCardProps) {
   return (
@@ -13,16 +13,24 @@ function MetricCard({ label, value }: MetricCardProps) {
   );
 }
 
+interface SystemInfoResult {
+  version: string;
+  uptime_secs: number;
+  agents_count: number;
+  workflows_count: number;
+  tasks_count: number;
+}
+
 export default function DashboardScreen() {
-  const [systemInfo, setSystemInfo] = useState({ version: "", agents_count: 0, workflows_count: 0, tasks_count: 0, uptime_secs: 0 });
+  const [systemInfo, setSystemInfo] = useState<SystemInfoResult>({
+    version: "-", uptime_secs: 0, agents_count: 0, workflows_count: 0, tasks_count: 0,
+  });
+  const [error, setError] = useState("");
 
   useEffect(() => {
-    (async () => {
-      try {
-        const info = await rpcCall("system.info", {});
-        setSystemInfo(info as any);
-      } catch {}
-    })();
+    mobileRpcCall<SystemInfoResult>("system.info", {})
+      .then(setSystemInfo)
+      .catch((err) => setError(err.message));
   }, []);
 
   const uptimeHrs = Math.floor(systemInfo.uptime_secs / 3600);
@@ -30,12 +38,13 @@ export default function DashboardScreen() {
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <Text style={styles.title}>MapleOS Dashboard</Text>
+      {error ? <Text style={styles.errorText}>{error}</Text> : null}
       <View style={styles.grid}>
-        <MetricCard label="版本" value={systemInfo.version || "0.1.0"} icon="info" />
-        <MetricCard label="运行时长" value={`${uptimeHrs}h`} icon="clock" />
-        <MetricCard label="Agent" value={`${systemInfo.agents_count}`} icon="people" />
-        <MetricCard label="工作流" value={`${systemInfo.workflows_count}`} icon="flow" />
-        <MetricCard label="任务" value={`${systemInfo.tasks_count}`} icon="task" />
+        <MetricCard label="版本" value={systemInfo.version} />
+        <MetricCard label="运行时长" value={`${uptimeHrs}h`} />
+        <MetricCard label="Agent" value={`${systemInfo.agents_count}`} />
+        <MetricCard label="工作流" value={`${systemInfo.workflows_count}`} />
+        <MetricCard label="任务" value={`${systemInfo.tasks_count}`} />
       </View>
     </ScrollView>
   );
@@ -49,4 +58,5 @@ const styles = StyleSheet.create({
   metricCard: { flex: 1, minWidth: "45%", backgroundColor: "#1a1a2e", borderRadius: 12, padding: 16, alignItems: "center" },
   metricValue: { fontSize: 24, fontWeight: "700", color: "#6366f1" },
   metricLabel: { fontSize: 12, color: "#888", marginTop: 4 },
+  errorText: { color: "#f87171", fontSize: 12, marginBottom: 8 },
 });

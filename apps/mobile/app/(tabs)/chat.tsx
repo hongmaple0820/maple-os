@@ -1,9 +1,12 @@
-import { View, Text, TextInput, ScrollView, FlatList, StyleSheet } from "react-native";
-import { useState, useRef } from "react";
-import { rpcCall } from "@mapleos/sdk";
+import { View, Text, TextInput, FlatList, StyleSheet } from "react-native";
+import { useState, useEffect } from "react";
+import { mobileRpcCall } from "../../src/lib/api";
 
 interface AgentOption { id: string; name: string }
 interface Message { id: string; role: "user" | "assistant"; content: string; timestamp: number }
+
+interface AgentListResult { agents: AgentOption[] }
+interface AgentChatResult { reply: string }
 
 export default function ChatScreen() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -12,15 +15,14 @@ export default function ChatScreen() {
   const [selectedAgent, setSelectedAgent] = useState("");
   const [streaming, setStreaming] = useState(false);
 
-  const loadAgents = async () => {
-    try {
-      const r = await rpcCall("agent.list", {});
-      setAgents(r.agents ?? []);
-      if (r.agents?.length) setSelectedAgent(r.agents[0].id);
-    } catch {}
-  };
-
-  useState(() => { loadAgents(); });
+  useEffect(() => {
+    mobileRpcCall<AgentListResult>("agent.list", {})
+      .then((r) => {
+        setAgents(r.agents ?? []);
+        if (r.agents?.length) setSelectedAgent(r.agents[0].id);
+      })
+      .catch(() => {});
+  }, []);
 
   const sendMessage = async () => {
     if (!input.trim() || streaming) return;
@@ -33,7 +35,7 @@ export default function ChatScreen() {
     setMessages((prev) => [...prev, assistantMsg]);
 
     try {
-      const res = await rpcCall("agent.chat", { message: userMsg.content, agent_id: selectedAgent });
+      const res = await mobileRpcCall<AgentChatResult>("agent.chat", { message: userMsg.content, agent_id: selectedAgent });
       setMessages((prev) => {
         const updated = [...prev];
         updated[updated.length - 1].content = res.reply ?? "";
@@ -105,6 +107,6 @@ const styles = StyleSheet.create({
   assistantText: { color: "#e0e0e0", fontSize: 14 },
   inputBar: { flexDirection: "row", padding: 8, backgroundColor: "#1a1a2e", borderTopWidth: 1, borderTopColor: "#2a2a4a" },
   input: { flex: 1, backgroundColor: "#0f0f23", color: "#e0e0e0", borderRadius: 8, padding: 10, fontSize: 14 },
-  sendBtn: { color: "#6366f1", fontWeight: "700", paddingHorizontal: 16, fontSize: 14 },
+  sendBtn: { color: "#6366f1", fontWeight: "700", paddingHorizontal: 16, fontSize: 14, lineHeight: 40 },
   sendDisabled: { color: "#666" },
 });
