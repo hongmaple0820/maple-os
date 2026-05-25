@@ -26,9 +26,6 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact: mapleos-server-aarch64-macos
-          - os: macos-13
-            target: x86_64-apple-darwin
-            artifact: mapleos-server-x86_64-macos
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact: mapleos-server-x86_64-windows.exe
@@ -412,7 +409,6 @@ jobs:
           files: |
             artifacts/mapleos-server-x86_64-linux/mapleos-server-x86_64-linux.tar.gz
             artifacts/mapleos-server-aarch64-macos/mapleos-server-aarch64-macos.tar.gz
-            artifacts/mapleos-server-x86_64-macos/mapleos-server-x86_64-macos.tar.gz
             artifacts/mapleos-server-x86_64-windows/mapleos-server-x86_64-windows.exe.zip
             artifacts/mapleos-desktop-linux/*.deb
             artifacts/mapleos-desktop-linux/*.rpm
