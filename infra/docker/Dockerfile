@@ -1,4 +1,4 @@
-FROM rust:latest-slim AS builder
+FROM rust:slim AS builder
 
 RUN apt-get update && apt-get install -y pkg-config libsqlite3-dev && rm -rf /var/lib/apt/lists/*
 
