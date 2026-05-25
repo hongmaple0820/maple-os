@@ -43,7 +43,7 @@ use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
 pub struct AppState {
-    pub config: ServerConfig,
+    config: ServerConfig,
     pub db: sqlx::SqlitePool,
     pub event_bus: Arc<EventBus>,
     pub llm_router: Arc<LlmRouter>,
@@ -1583,7 +1583,7 @@ async fn delete_memory_handler(
 }
 
 #[derive(Clone)]
-pub struct ServerConfig {
+struct ServerConfig {
     pub host: String,
     pub port: u16,
     pub database_url: String,

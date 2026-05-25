@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use async_trait::async_trait;
 use serde_json::Value;
 use reqwest::Client;
@@ -34,21 +32,25 @@ pub trait ChannelAdapter: Send + Sync {
     async fn send_to_user(&self, user_id: &str, msg: &FmpMessage) -> Result<()>;
 }
 
+#[allow(dead_code)]
 struct FeishuAdapter {
     app_id: String,
     app_secret: String,
     client: Client,
 }
+#[allow(dead_code)]
 struct TelegramAdapter {
     bot_token: String,
     client: Client,
 }
 
+#[allow(dead_code)]
 struct DingtalkAdapter {
     app_key: String,
     app_secret: String,
     client: Client,
 }
+#[allow(dead_code)]
 impl FeishuAdapter {
     pub fn new(app_id: &str, app_secret: &str) -> Self {
         Self {
@@ -74,6 +76,7 @@ impl FeishuAdapter {
             .ok_or_else(|| anyhow::anyhow!("Failed to get Feishu tenant token"))
     }
 }
+#[allow(dead_code)]
 impl TelegramAdapter {
     pub fn new(bot_token: &str) -> Self {
         Self {
@@ -82,6 +85,7 @@ impl TelegramAdapter {
         }
     }
 }
+#[allow(dead_code)]
 impl DingtalkAdapter {
     pub fn new(app_key: &str, app_secret: &str) -> Self {
         Self {
