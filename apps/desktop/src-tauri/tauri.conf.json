@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "cd ../web && pnpm dev",
     "devUrl": "http://localhost:3000",
-    "beforeBuildCommand": "cd ../web && NEXT_STATIC_EXPORT=1 pnpm build",
+    "beforeBuildCommand": "cd ../web && pnpm build:static",
     "frontendDist": "../web/out"
   },
   "app": {
