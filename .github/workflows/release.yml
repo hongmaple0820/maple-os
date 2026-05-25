@@ -269,6 +269,7 @@ jobs:
   build-mobile-android:
     name: Build Mobile Android APK
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
         with:
@@ -294,12 +295,14 @@ jobs:
         run: npm install -g eas-cli
 
       - name: Build Android APK (preview)
+        if: ${{ secrets.EXPO_TOKEN }}
         working-directory: apps/mobile
         run: eas build --platform android --profile preview --local --output build/
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
 
       - name: Upload mobile artifact
+        if: ${{ secrets.EXPO_TOKEN }}
         uses: actions/upload-artifact@v4
         with:
           name: mapleos-mobile-android
