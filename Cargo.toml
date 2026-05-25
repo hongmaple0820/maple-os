@@ -10,6 +10,9 @@ members = [
     "core/maple-collab",
     "core/maple-rpc",
     "server",
+]
+
+exclude = [
     "apps/desktop/src-tauri",
 ]
 
@@ -28,7 +31,7 @@ chrono = { version = "0.4", features = ["serde"] }
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.7", features = ["ws"] }
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono", "uuid"] }
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 async-trait = "0.1"
 thiserror = "1"
 anyhow = "1"

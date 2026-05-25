@@ -246,7 +246,7 @@ export function WorkflowManager() {
 
   const loadExecHistory = async (wfId: string) => {
     try {
-      const res = await mapleApi<{ executions: { id: string; status: string; started_at: number; completed_at: number | null }[] }>("/api/maple/api/workflows/" + wfId + "/executions");
+      const res = await mapleApi<{ executions: { id: string; status: string; started_at: number; completed_at: number | null }[] }>("/api/workflows/" + wfId + "/executions");
       setExecHistory(res.executions ?? []);
       setRightTab("history");
     } catch { setExecHistory([]); }

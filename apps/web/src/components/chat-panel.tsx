@@ -124,7 +124,7 @@ export function ChatPanel() {
 
   const loadSessions = async () => {
     try {
-      const res = await mapleApi<{ sessions: { id: string; title: string; created_at: number }[] }>("/api/maple/api/sessions");
+      const res = await mapleApi<{ sessions: { id: string; title: string; created_at: number }[] }>("/api/sessions");
       setSessionList(res.sessions ?? []);
     } catch { setSessionList([]); }
   };
@@ -148,10 +148,9 @@ export function ChatPanel() {
 
     let knowledgeRefs: KnowledgeRef[] = [];
     try {
-      const kbRes = await fetch("/api/maple/api/kb/search", {
+      const kbRes = await mapleApi<{ results: KnowledgeRef[] }>("/api/kb/search", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: text.trim(), top_k: 3 }),
+        body: { query: text.trim(), top_k: 3 },
       });
       if (kbRes.ok) {
         const kbData = await kbRes.json() as { results: KnowledgeRef[] };
@@ -166,7 +165,7 @@ export function ChatPanel() {
       const res = await fetch(`/api/maple/api/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: userMsg.content, agent_id: selectedAgent }),
+        body: JSON.stringify({ message: userMsg.content, agent_id: selectedAgent, session_id }),
       });
       if (!res.ok) throw new Error(`请求失败: ${res.status}`);
 
@@ -176,6 +175,7 @@ export function ChatPanel() {
       const decoder = new TextDecoder();
       let buffer = "";
       let accumulated = "";
+      let currentEvent = "";
 
       while (true) {
         const { done, value } = await reader.read();
@@ -186,10 +186,24 @@ export function ChatPanel() {
         buffer = lines.pop() ?? "";
 
         for (const line of lines) {
-          if (line.startsWith("event:")) continue;
+          if (line.startsWith("event:")) {
+            currentEvent = line.slice(6).trim();
+            continue;
+          }
           if (line.startsWith("data:")) {
             const dataStr = line.slice(5).trim();
             if (!dataStr) continue;
+            if (currentEvent === "error") {
+              let errorMsg = dataStr;
+              try { const p = JSON.parse(dataStr); errorMsg = p.message ?? p.error ?? dataStr; } catch { /* plain text */ }
+              setMessages((prev) => {
+                const updated = [...prev];
+                const last = updated[updated.length - 1];
+                if (last.role === "assistant") last.content = accumulated || `LLM 不可用: ${errorMsg}`;
+                return updated;
+              });
+              break;
+            }
             try {
               const parsed = JSON.parse(dataStr);
               if (parsed.done) {
@@ -210,13 +224,8 @@ export function ChatPanel() {
                   return updated;
                 });
               }
-              if (parsed.session_id) {
-                setMessages((prev) => {
-                  const updated = [...prev];
-                  const last = updated[updated.length - 1];
-                  if (last.role === "assistant") last.content = accumulated || "思考中...";
-                  return updated;
-                });
+              if (parsed.session_id && parsed.model) {
+                setCurrentSession(parsed.session_id);
               }
             } catch { /* ignore non-JSON data lines */ }
           }
