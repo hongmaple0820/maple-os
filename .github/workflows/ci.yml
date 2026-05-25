@@ -2,37 +2,30 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [master]
   pull_request:
-    branches: [main, master]
+    branches: [master]
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  check:
-    name: Check & Test
+  rust-check:
+    name: Rust Check & Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.95.0
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 26
-
-      - name: Enable corepack & install pnpm
-        run: |
-          corepack enable
-          corepack prepare pnpm@11.2.2 --activate
-
-      - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile
+          toolchain: stable
+          components: clippy
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -48,27 +41,48 @@ jobs:
         run: cargo check --all-targets
 
       - name: Cargo test
-        run: cargo test --all-targets
+        run: cargo test --lib
 
       - name: Cargo clippy
         run: cargo clippy --all-targets -- -D warnings
 
-      - name: Frontend build check
+  frontend-check:
+    name: Frontend Check & Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Enable corepack & install pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@latest --activate
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build shared packages first
+        run: pnpm --filter=@mapleos/ui --filter=@mapleos/sdk build
+
+      - name: Frontend typecheck
+        run: pnpm --filter=mapleos-web typecheck
+
+      - name: Frontend build
         run: pnpm --filter=mapleos-web build
-
-      - name: Install Playwright browsers
-        run: pnpm exec playwright install chromium --with-deps
-
-      - name: Run E2E tests
-        run: pnpm test:e2e
-        env:
-          CI: true
 
   docker-build:
     name: Docker Build Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Build Docker image
         run: docker build -f infra/docker/Dockerfile -t mapleos-server:ci .

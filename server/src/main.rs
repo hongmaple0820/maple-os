@@ -38,7 +38,7 @@ use maple_gateway::mcp_host::McpHostManager;
 use maple_llm::embedding::{Embedder, OllamaEmbedder, FallbackEmbedder};
 use maple_collab::workspace::WorkspaceManager;
 use serde::{Deserialize, Serialize};
-use std::sync:: Arc;
+use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
@@ -76,6 +76,8 @@ struct ChatRequest {
     tools: Vec<maple_llm::request::ToolDefinition>,
     #[serde(default)]
     session_id: Option<String>,
+    #[serde(default)]
+    agent_id: Option<String>,
 }
 
 fn default_model() -> String {
@@ -98,7 +100,8 @@ async fn chat_handler(
 
     let _ = state.session_store.save_message(&session_id, "user", &req.message, None, None).await;
 
-    let llm_request = maple_llm::request::LlmRequest::new(req.message.clone(), "default");
+    let route_key = if req.model != "auto" { req.model.as_str() } else { req.agent_id.as_deref().unwrap_or("default") };
+    let llm_request = maple_llm::request::LlmRequest::new(req.message.clone(), route_key);
 
     let adapter = match state.llm_router.route(&llm_request).await {
         Ok(a) => a,
@@ -1030,7 +1033,8 @@ async fn chat_stream_handler(
     let session_store = state.session_store.clone();
     let _ = session_store.save_message(&session_id, "user", &req.message, None, None).await;
 
-    let llm_request = maple_llm::request::LlmRequest::new(req.message.clone(), "default");
+    let route_key = if req.model != "auto" { &req.model } else { req.agent_id.as_deref().unwrap_or("default") };
+    let llm_request = maple_llm::request::LlmRequest::new(req.message.clone(), route_key);
     let complete_result = match llm_router.route(&llm_request).await {
         Ok(adapter) => {
             let model_name = adapter.name().to_string();
@@ -1160,15 +1164,34 @@ async fn kb_search_handler(
         bm25_results,
     ).await.unwrap_or_default();
 
+    let doc_rows: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT id, title, source_type FROM kb_documents"
+    )
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+    let doc_map: std::collections::HashMap<String, (String, String)> = doc_rows.into_iter()
+        .map(|(id, title, st)| (id, (title, st)))
+        .collect();
+
     axum::Json(KbSearchResponse {
-        results: results.into_iter().map(|r| serde_json::json!({
-            "id": r.id,
-            "content": r.content,
-            "score": r.score,
-            "source": r.source,
-            "source_type": r.source_type,
-            "metadata": r.metadata,
-        })).collect(),
+        results: results.into_iter().map(|r| {
+            let snippet = if r.content.len() > 200 { r.content[..200].to_string() + "..." } else { r.content.clone() };
+            let doc_id = r.source.strip_prefix("document:").unwrap_or(&r.id);
+            let (title, doc_source_type) = doc_map.get(doc_id)
+                .cloned()
+                .unwrap_or_else(|| (r.id.clone(), r.source_type.clone()));
+            serde_json::json!({
+                "id": r.id,
+                "title": title,
+                "content": r.content,
+                "snippet": snippet,
+                "score": r.score,
+                "source": r.source,
+                "source_type": doc_source_type,
+                "metadata": r.metadata,
+            })
+        }).collect(),
     })
 }
 
@@ -1307,6 +1330,7 @@ async fn task_stats_handler(
 ) -> impl IntoResponse {
     match state.task_queue.stats().await {
         Ok(stats) => axum::Json(serde_json::json!({
+            "total": stats.pending + stats.running + stats.completed + stats.failed + stats.dead_letter,
             "pending": stats.pending,
             "running": stats.running,
             "completed": stats.completed,
