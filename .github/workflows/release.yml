@@ -78,7 +78,7 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           cd target/${{ matrix.target }}/release
-          compress-archive -Path mapleos-server.exe -DestinationPath ${{ matrix.artifact }}.zip -Force
+          compress-archive -Path mapleos-server.exe -DestinationPath ${{ matrix.artifact }}.zip -Force -Force
         shell: pwsh
 
       - name: Upload artifact
