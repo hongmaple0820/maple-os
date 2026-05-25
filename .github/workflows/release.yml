@@ -78,7 +78,7 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           cd target/${{ matrix.target }}/release
-          compress-archive -Path mapleos-server.exe -DestinationPath ${{ matrix.artifact }}.zip
+          compress-archive -Path mapleos-server.exe -DestinationPath ${{ matrix.artifact }}.zip -Force
         shell: pwsh
 
       - name: Upload artifact
@@ -269,6 +269,7 @@ jobs:
   build-mobile-android:
     name: Build Mobile Android APK
     runs-on: ubuntu-latest
+    if: ${{ secrets.EXPO_TOKEN != '' }}
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
@@ -295,14 +296,12 @@ jobs:
         run: npm install -g eas-cli
 
       - name: Build Android APK (preview)
-        if: ${{ secrets.EXPO_TOKEN }}
         working-directory: apps/mobile
         run: eas build --platform android --profile preview --local --output build/
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
 
       - name: Upload mobile artifact
-        if: ${{ secrets.EXPO_TOKEN }}
         uses: actions/upload-artifact@v4
         with:
           name: mapleos-mobile-android
@@ -383,6 +382,7 @@ jobs:
   create-release:
     name: Create GitHub Release
     needs: [build-server-binaries, build-desktop-linux, build-desktop-macos, build-desktop-windows, build-mobile-android, build-web-static, build-docker]
+    if: always() && needs.build-server-binaries.result == 'success' && needs.build-web-static.result == 'success' && needs.build-docker.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
