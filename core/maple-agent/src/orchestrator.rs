@@ -60,9 +60,11 @@ impl Orchestrator {
 
     pub async fn create_plan(&self, goal: &str, tools: &[String]) -> Result<ExecutionPlan> {
         let available_agents = self.registry.list_agents().await;
-        let online_count = available_agents.iter().filter(|(_, _, s)| *s == crate::registry::AgentStatus::Online).count();
+        let online_agents: Vec<_> = available_agents.iter()
+            .filter(|(_, _, s)| *s == crate::registry::AgentStatus::Online)
+            .collect();
 
-        if online_count <= 1 {
+        if online_agents.len() <= 1 {
             return Ok(ExecutionPlan {
                 goal: goal.to_string(),
                 steps: vec![PlanStep {
@@ -70,17 +72,51 @@ impl Orchestrator {
                     description: goal.to_string(),
                     required_tools: tools.to_vec(),
                     depends_on: Vec::new(),
-                    assigned_agent: None,
+                    assigned_agent: online_agents.first().map(|(id, _, _)| id.clone()),
                 }],
             });
         }
 
-        let sub_tasks = self.decompose_goal(goal, tools);
+        let mut sub_tasks = self.decompose_goal(goal, tools);
+        
+        for step in &mut sub_tasks {
+            step.assigned_agent = self.find_best_agent(&step.required_tools, &online_agents).await;
+        }
 
         Ok(ExecutionPlan {
             goal: goal.to_string(),
             steps: sub_tasks,
         })
+    }
+
+    async fn find_best_agent(
+        &self,
+        required_tools: &[String],
+        agents: &[(String, String, crate::registry::AgentStatus)],
+    ) -> Option<String> {
+        if required_tools.is_empty() {
+            return agents.first().map(|(id, _, _)| id.clone());
+        }
+
+        let mut best_agent: Option<String> = None;
+        let mut best_score = 0;
+
+        for (agent_id, _, _) in agents {
+            let agent = self.registry.get_agent(agent_id).await;
+            if let Some(agent_info) = agent {
+                let capabilities = &agent_info.capabilities;
+                let score = required_tools.iter()
+                    .filter(|tool| capabilities.iter().any(|cap| cap.contains(tool.as_str()) || tool.contains(cap.as_str())))
+                    .count();
+                
+                if score > best_score {
+                    best_score = score;
+                    best_agent = Some(agent_id.clone());
+                }
+            }
+        }
+
+        best_agent.or_else(|| agents.first().map(|(id, _, _)| id.clone()))
     }
 
     fn decompose_goal(&self, goal: &str, tools: &[String]) -> Vec<PlanStep> {

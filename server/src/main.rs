@@ -1354,6 +1354,212 @@ async fn delete_memory_handler(
     }
 }
 
+async fn delete_session_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(session_id): axum::extract::Path<String>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    match state.session_store.delete_session(&session_id).await {
+        Ok(true) => Ok(axum::Json(serde_json::json!({
+            "session_id": session_id,
+            "status": "deleted",
+        }))),
+        Ok(false) => Err(axum::http::StatusCode::NOT_FOUND),
+        Err(_) => Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+async fn get_session_messages_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(session_id): axum::extract::Path<String>,
+) -> axum::Json<serde_json::Value> {
+    match state.session_store.get_session_messages(&session_id).await {
+        Ok(messages) => axum::Json(serde_json::json!({
+            "session_id": session_id,
+            "messages": messages.iter().map(|m| serde_json::json!({
+                "role": m.role,
+                "content": m.content,
+                "created_at": m.created_at,
+            })).collect::<Vec<_>>(),
+        })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn get_prompt_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(prompt_ref): axum::extract::Path<String>,
+) -> axum::Json<serde_json::Value> {
+    match state.prompt_version_mgr.get_latest(&prompt_ref).await {
+        Ok(Some(version)) => axum::Json(serde_json::json!({
+            "prompt_ref": prompt_ref,
+            "version": version.version,
+            "content": version.content,
+            "created_at": version.created_at,
+        })),
+        Ok(None) => axum::Json(serde_json::json!({
+            "error": "Prompt not found",
+            "prompt_ref": prompt_ref,
+        })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn rollback_prompt_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(prompt_ref): axum::extract::Path<String>,
+    Json(req): Json<serde_json::Value>,
+) -> axum::Json<serde_json::Value> {
+    let version = req["version"].as_i64().unwrap_or(0) as i32;
+    match state.prompt_version_mgr.rollback(&prompt_ref, version).await {
+        Ok(new_version) => axum::Json(serde_json::json!({
+            "prompt_ref": prompt_ref,
+            "rolled_back_to": version,
+            "new_version": new_version,
+            "status": "rolled_back",
+        })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn trigger_sync_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::Json<serde_json::Value> {
+    match state.sync_engine.full_sync().await {
+        Ok(result) => axum::Json(serde_json::json!({
+            "status": "completed",
+            "pushed": result.pushed_count,
+            "pulled": result.pulled_count,
+            "conflicts": result.conflicts,
+        })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn sync_status_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::Json<serde_json::Value> {
+    axum::Json(serde_json::json!({
+        "status": "ok",
+        "engine": "webdav",
+        "interval_secs": 300,
+    }))
+}
+
+async fn get_workspace_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(workspace_id): axum::extract::Path<String>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    let row = sqlx::query_as::<_, (String, String, Option<String>, String, i64, i64, i64, i64)>(
+        "SELECT id, name, description, owner_id, max_agents, auto_approve, knowledge_base_enabled, created_at FROM workspaces WHERE id = ?"
+    )
+    .bind(&workspace_id)
+    .fetch_optional(&*state.db)
+    .await
+    .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    match row {
+        Some((id, name, desc, owner, max_agents, auto_approve, kb_enabled, created)) => {
+            Ok(axum::Json(serde_json::json!({
+                "id": id,
+                "name": name,
+                "description": desc,
+                "owner_id": owner,
+                "max_agents": max_agents,
+                "auto_approve": auto_approve,
+                "knowledge_base_enabled": kb_enabled,
+                "created_at": created,
+            })))
+        }
+        None => Err(axum::http::StatusCode::NOT_FOUND),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateWorkspaceRequest {
+    name: Option<String>,
+    description: Option<String>,
+    max_agents: Option<i64>,
+    auto_approve: Option<bool>,
+    knowledge_base_enabled: Option<bool>,
+}
+
+async fn update_workspace_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(workspace_id): axum::extract::Path<String>,
+    Json(req): Json<UpdateWorkspaceRequest>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    if let Some(name) = &req.name {
+        let _ = sqlx::query("UPDATE workspaces SET name = ? WHERE id = ?")
+            .bind(name).bind(&workspace_id).execute(&*state.db).await;
+    }
+    if let Some(desc) = &req.description {
+        let _ = sqlx::query("UPDATE workspaces SET description = ? WHERE id = ?")
+            .bind(desc).bind(&workspace_id).execute(&*state.db).await;
+    }
+    if let Some(max) = req.max_agents {
+        let _ = sqlx::query("UPDATE workspaces SET max_agents = ? WHERE id = ?")
+            .bind(max).bind(&workspace_id).execute(&*state.db).await;
+    }
+    if let Some(auto) = req.auto_approve {
+        let _ = sqlx::query("UPDATE workspaces SET auto_approve = ? WHERE id = ?")
+            .bind(auto as i64).bind(&workspace_id).execute(&*state.db).await;
+    }
+    if let Some(kb) = req.knowledge_base_enabled {
+        let _ = sqlx::query("UPDATE workspaces SET knowledge_base_enabled = ? WHERE id = ?")
+            .bind(kb as i64).bind(&workspace_id).execute(&*state.db).await;
+    }
+
+    Ok(axum::Json(serde_json::json!({
+        "id": workspace_id,
+        "status": "updated",
+    })))
+}
+
+async fn delete_workspace_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(workspace_id): axum::extract::Path<String>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    let result = sqlx::query("DELETE FROM workspaces WHERE id = ?")
+        .bind(&workspace_id)
+        .execute(&*state.db)
+        .await
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if result.rows_affected() > 0 {
+        Ok(axum::Json(serde_json::json!({
+            "id": workspace_id,
+            "status": "deleted",
+        })))
+    } else {
+        Err(axum::http::StatusCode::NOT_FOUND)
+    }
+}
+
+async fn deep_health_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::Json<serde_json::Value> {
+    let db_ok = sqlx::query("SELECT 1").execute(&*state.db).await.is_ok();
+    let agents = state.agent_registry.list_agents().await;
+    let tasks = state.task_queue.stats().await.unwrap_or_default();
+
+    axum::Json(serde_json::json!({
+        "status": if db_ok { "healthy" } else { "degraded" },
+        "version": env!("CARGO_PKG_VERSION"),
+        "checks": {
+            "database": db_ok,
+            "agents_online": agents.iter().filter(|(_, _, s)| *s == maple_agent::registry::AgentStatus::Online).count(),
+            "agents_total": agents.len(),
+            "tasks": {
+                "pending": tasks.pending,
+                "running": tasks.running,
+                "completed": tasks.completed,
+                "failed": tasks.failed,
+            }
+        },
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+    }))
+}
+
 #[derive(Clone)]
 struct ServerConfig {
     pub host: String,
@@ -1564,6 +1770,7 @@ async fn main() -> anyhow::Result<()> {
 
     let state_routes = Router::new()
         .route("/health", get(health_handler))
+        .route("/health/deep", get(deep_health_handler))
         .route("/ws/agents", get(ws_agent_handler))
         .route("/api/chat", post(chat_handler))
         .route("/api/models", get(models_handler))
@@ -1571,10 +1778,16 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/kb/index", post(kb_index_handler))
         .route("/api/kb/search", post(kb_search_handler))
         .route("/api/sessions", get(sessions_handler))
+        .route("/api/sessions/:id", delete(delete_session_handler))
+        .route("/api/sessions/:id/messages", get(get_session_messages_handler))
         .route("/api/memories", post(memory_store_handler))
         .route("/api/memories/search", post(memory_search_handler))
         .route("/api/memories/:id", get(get_memory_handler).delete(delete_memory_handler))
         .route("/api/prompts", post(prompt_create_handler))
+        .route("/api/prompts/:ref", get(get_prompt_handler))
+        .route("/api/prompts/:ref/rollback", post(rollback_prompt_handler))
+        .route("/api/sync/trigger", post(trigger_sync_handler))
+        .route("/api/sync/status", get(sync_status_handler))
         .route("/api/tasks/enqueue", post(task_enqueue_handler))
         .route("/api/tasks/stats", get(task_stats_handler))
         .route("/api/tasks/dead-letter", get(task_dead_letter_handler))
@@ -1582,6 +1795,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/events", get(sse_events_handler))
         .route("/api/workflows/:id", get(get_workflow_handler).put(update_workflow_handler).delete(delete_workflow_handler))
         .route("/api/workflows/:id/executions", get(get_workflow_executions_handler))
+        .route("/api/workspaces/:id", get(get_workspace_handler).put(update_workspace_handler).delete(delete_workspace_handler))
         .route("/api/auth/login", post(login_handler))
         .route("/api/auth/token", post(token_handler))
         .with_state(state);
