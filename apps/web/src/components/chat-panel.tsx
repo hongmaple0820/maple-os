@@ -107,6 +107,8 @@ export function ChatPanel() {
   const [selectedAgent, setSelectedAgent] = useState<string>("");
   const [currentSession, setCurrentSession] = useState<string>("");
   const [sessionList, setSessionList] = useState<{ id: string; title: string; created_at: number }[]>([]);
+  const [models, setModels] = useState<string[]>([]);
+  const [selectedModel, setSelectedModel] = useState<string>("auto");
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -118,7 +120,14 @@ export function ChatPanel() {
         if (list.length > 0 && !selectedAgent) setSelectedAgent(list[0].id);
       } catch { setAgents([]); }
     };
+    const loadModels = async () => {
+      try {
+        const r = await mapleApi<{ models: string[] }>("/api/models");
+        setModels(r.models ?? []);
+      } catch { setModels([]); }
+    };
     loadAgents();
+    loadModels();
     loadSessions();
   }, []);
 
@@ -162,7 +171,7 @@ export function ChatPanel() {
       const res = await fetch(`/api/maple/api/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: userMsg.content, agent_id: selectedAgent, session_id: sessionId }),
+        body: JSON.stringify({ message: userMsg.content, agent_id: selectedAgent, session_id: sessionId, model: selectedModel }),
       });
       if (!res.ok) throw new Error(`请求失败: ${res.status}`);
 
@@ -252,6 +261,16 @@ export function ChatPanel() {
               className="h-7 rounded border bg-background text-[12px] px-2 font-mono"
             >
               {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </select>
+          )}
+          {models.length > 0 && (
+            <select
+              value={selectedModel}
+              onChange={(e) => setSelectedModel(e.target.value)}
+              className="h-7 rounded border bg-background text-[12px] px-2 font-mono"
+            >
+              <option value="auto">自动选择</option>
+              {models.map((m) => <option key={m} value={m}>{m}</option>)}
             </select>
           )}
         </div>

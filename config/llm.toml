@@ -40,7 +40,7 @@ context_length = 200000
 [qwen]
 enabled = false
 api_key = ""  # 或使用环境变量 QWEN_API_KEY
-base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode"
 models = ["qwen-plus", "qwen-turbo", "qwen-max"]
 default_model = "qwen-plus"
 pricing = { input = 0.0008, output = 0.002 }
@@ -50,7 +50,7 @@ context_length = 128000
 [glm]
 enabled = false
 api_key = ""  # 或使用环境变量 GLM_API_KEY
-base_url = "https://open.bigmodel.cn/api/paas/v4"
+base_url = "https://open.bigmodel.cn/api/paas"
 models = ["glm-4", "glm-4-flash", "glm-3-turbo"]
 default_model = "glm-4"
 pricing = { input = 0.001, output = 0.001 }
@@ -70,7 +70,7 @@ context_length = 128000
 [google]
 enabled = false
 api_key = ""  # 或使用环境变量 GOOGLE_API_KEY
-base_url = "https://generativelanguage.googleapis.com/v1beta"
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
 models = ["gemini-1.5-pro", "gemini-1.5-flash"]
 default_model = "gemini-1.5-flash"
 pricing = { input = 0.00125, output = 0.005 }

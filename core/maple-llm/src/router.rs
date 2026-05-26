@@ -60,6 +60,14 @@ impl LlmRouter {
     }
 
     pub async fn route(&self, req: &LlmRequest) -> Result<&dyn LlmAdapter> {
+        if let Some(adapter) = self.adapters.get(&req.requested_model)
+            && !req.requested_model.is_empty()
+            && req.requested_model != "default"
+            && req.requested_model != "auto"
+        {
+            return Ok(adapter.as_ref());
+        }
+
         if req.privacy_level == PrivacyLevel::Sensitive {
             return self.get_local_adapter()
                 .ok_or_else(|| anyhow::anyhow!("No local model available for sensitive data"));
