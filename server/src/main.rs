@@ -1,3 +1,6 @@
+mod cache;
+mod metrics;
+
 use axum::Json;
 use axum::Router;
 use axum::extract::ws::WebSocketUpgrade;
@@ -110,6 +113,8 @@ pub struct AppState {
     pub task_queue: Arc<TaskQueueService>,
     pub mcp_host: Arc<McpHostManager>,
     pub rate_limiter: RateLimiter,
+    pub cache: cache::AppCache,
+    pub metrics: metrics::AppMetrics,
 }
 
 impl AppState {
@@ -1542,9 +1547,26 @@ fn get_required_permission(path: &str, method: &axum::http::Method) -> Option<ma
 async fn models_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> impl IntoResponse {
+    // 尝试从缓存获取
+    let cache_key = "models_list".to_string();
+    let cached: Option<Vec<serde_json::Value>> = state.cache.models.get(&cache_key);
+    if let Some(cached) = cached {
+        return axum::Json(serde_json::json!({
+            "models": cached,
+            "cached": true,
+        }));
+    }
+    
+    // 缓存未命中，从LLM路由获取
     let models = state.llm_router.list_models().await;
+    let models_json: Vec<serde_json::Value> = models.into_iter().map(|m| serde_json::json!(m)).collect();
+    
+    // 存入缓存
+    state.cache.models.insert(cache_key, models_json.clone());
+    
     axum::Json(serde_json::json!({
-        "models": models,
+        "models": models_json,
+        "cached": false,
     }))
 }
 
@@ -3314,6 +3336,8 @@ async fn main() -> anyhow::Result<()> {
         task_queue: task_queue.clone(),
         mcp_host: Arc::new(McpHostManager::new()),
         rate_limiter,
+        cache: cache::AppCache::new(),
+        metrics: metrics::AppMetrics::new(),
     });
 
     let scheduler_wf = workflow_executor.clone();
@@ -3345,6 +3369,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(health_handler))
         .route("/health/deep", get(deep_health_handler))
         .route("/metrics", get(system_metrics_handler))
+        .route("/prometheus", get(metrics::metrics_handler))
         .route("/ws/agents", get(ws_agent_handler))
         .route("/api/chat", post(chat_handler))
         .route("/api/chat/stream", post(chat_stream_handler))

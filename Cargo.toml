@@ -54,6 +54,7 @@ hex = "0.4"
 async-stream = "0.3"
 urlencoding = "2"
 bcrypt = "0.16"
+prometheus = "0.13"
 
 maple-engine = { path = "core/maple-engine" }
 maple-llm = { path = "core/maple-llm" }
