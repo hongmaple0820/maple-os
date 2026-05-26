@@ -1,0 +1,108 @@
+# Agent配置文件
+# Agent通过API动态注册，此文件用于预配置和默认设置
+
+[default]
+# 默认Agent设置
+max_concurrent_tasks = 3
+default_transport = "websocket"
+heartbeat_interval_secs = 30
+offline_timeout_secs = 120
+
+# Agent能力模板
+[capabilities.default]
+tools = []
+skills = []
+max_context_length = 128000
+supports_streaming = true
+supports_image = false
+supports_function_calling = true
+
+# 预定义Agent示例
+[[agents]]
+id = "assistant-001"
+name = "通用助手"
+description = "通用AI助手，支持多种任务"
+transport = "websocket"
+max_concurrent_tasks = 5
+
+[agents.capabilities]
+tools = ["web_search", "code_interpreter", "file_reader"]
+skills = ["conversation", "summarization", "translation"]
+max_context_length = 128000
+supports_streaming = true
+supports_image = true
+supports_function_calling = true
+
+[agents.triggers]
+events = ["user_message", "task_request"]
+keywords = ["帮助", "help", "assist"]
+workflow_ids = []
+
+[[agents]]
+id = "coder-001"
+name = "代码助手"
+description = "专注于代码生成和调试"
+transport = "websocket"
+max_concurrent_tasks = 3
+
+[agents.capabilities]
+tools = ["code_interpreter", "file_reader", "git_operations"]
+skills = ["code_generation", "debugging", "refactoring"]
+max_context_length = 64000
+supports_streaming = true
+supports_image = false
+supports_function_calling = true
+
+[agents.triggers]
+events = ["code_request", "debug_request"]
+keywords = ["代码", "code", "debug", "编程"]
+workflow_ids = ["code-review", "bug-fix"]
+
+# Webhook Agent示例
+[[agents]]
+id = "webhook-agent-001"
+name = "Webhook集成"
+description = "通过Webhook接收任务"
+transport = { type = "webhook", url = "https://example.com/webhook", secret = "webhook_secret_123" }
+max_concurrent_tasks = 10
+
+[agents.capabilities]
+tools = ["http_client", "json_parser"]
+skills = ["api_integration", "data_processing"]
+max_context_length = 32000
+supports_streaming = false
+supports_image = false
+supports_function_calling = true
+
+[agents.triggers]
+events = ["webhook_received"]
+keywords = []
+workflow_ids = ["data-sync"]
+
+# MCP Agent示例
+[[agents]]
+id = "mcp-agent-001"
+name = "MCP工具代理"
+description = "通过MCP协议提供工具服务"
+transport = { type = "mcp", command = ["node", "mcp-server.js"] }
+max_concurrent_tasks = 5
+
+[agents.capabilities]
+tools = ["custom_tool_1", "custom_tool_2"]
+skills = ["tool_execution"]
+max_context_length = 16000
+supports_streaming = false
+supports_image = false
+supports_function_calling = true
+
+[agents.triggers]
+events = ["tool_request"]
+keywords = ["tool", "工具"]
+workflow_ids = []
+
+# 负载均衡配置
+[load_balancing]
+strategy = "round_robin"  # round_robin, least_connections, random
+health_check_interval_secs = 60
+max_retries = 3
+retry_delay_ms = 1000

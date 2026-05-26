@@ -36,6 +36,11 @@ impl OpenAiCompatAdapter {
         self
     }
 
+    pub fn with_base_url(mut self, url: String) -> Self {
+        self.base_url = url;
+        self
+    }
+
     pub fn deepseek(api_key: String) -> Self {
         Self::new(
             "https://api.deepseek.com".to_string(),
