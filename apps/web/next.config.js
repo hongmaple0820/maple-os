@@ -5,6 +5,9 @@ const nextConfig = {
     ignoreBuildErrors: true,
   },
   output: process.env.NEXT_STATIC_EXPORT ? "export" : undefined,
+  experimental: {
+    allowedHosts: [".monkeycode-ai.online"],
+  },
   async rewrites() {
     if (process.env.NEXT_STATIC_EXPORT) return [];
     return [

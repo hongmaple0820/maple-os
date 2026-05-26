@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@hello-pangea/dnd": "^18.0.1",
     "@mapleos/sdk": "workspace:*",
     "@mapleos/ui": "workspace:*",
     "framer-motion": "^11.12.0",
