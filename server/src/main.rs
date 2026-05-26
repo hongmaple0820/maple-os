@@ -150,6 +150,11 @@ async fn chat_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
     Json(req): Json<ChatRequest>,
 ) -> Result<axum::Json<ChatResponse>, axum::http::StatusCode> {
+    // 输入验证
+    if req.message.trim().is_empty() {
+        return Err(axum::http::StatusCode::BAD_REQUEST);
+    }
+    
     let session_id = req.session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     let _ = state.session_store.save_message(&session_id, "user", &req.message, None, None).await;
@@ -2967,6 +2972,14 @@ async fn register_agent_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
     Json(req): Json<AgentRegisterRequest>,
 ) -> axum::Json<serde_json::Value> {
+    // 输入验证
+    if req.name.trim().is_empty() {
+        return axum::Json(serde_json::json!({
+            "error": "Agent name is required",
+            "code": "INVALID_INPUT"
+        }));
+    }
+    
     let agent_id = format!("agent-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("x"));
     let now = chrono::Utc::now().timestamp();
 
@@ -2992,7 +3005,11 @@ async fn register_agent_handler(
     .bind(req.max_concurrent_tasks.unwrap_or(3) as i64)
     .bind(now)
     .execute(&state.db)
-    .await;
+    .await
+    .map_err(|e| {
+        tracing::error!("Failed to insert agent into database: {}", e);
+        e
+    });
 
     state.agent_registry.register_agent(
         &agent_id,
