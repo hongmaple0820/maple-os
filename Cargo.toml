@@ -26,6 +26,7 @@ repository = "https://github.com/hongmaple0820/maple-os"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
+toml = "0.8"
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 tokio = { version = "1", features = ["full"] }
@@ -53,6 +54,7 @@ hex = "0.4"
 async-stream = "0.3"
 urlencoding = "2"
 bcrypt = "0.16"
+prometheus = "0.13"
 
 maple-engine = { path = "core/maple-engine" }
 maple-llm = { path = "core/maple-llm" }
