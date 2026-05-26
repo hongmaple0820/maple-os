@@ -9,14 +9,17 @@ pub struct OllamaAdapter {
     client: reqwest::Client,
     base_url: String,
     model: String,
+    name: String,
 }
 
 impl OllamaAdapter {
     pub fn new(model: String) -> Self {
+        let name = format!("ollama/{}", model);
         Self {
             client: reqwest::Client::new(),
             base_url: "http://127.0.0.1:11434".to_string(),
             model,
+            name,
         }
     }
 
@@ -156,7 +159,7 @@ impl LlmAdapter for OllamaAdapter {
     }
 
     fn name(&self) -> &str {
-        &self.model
+        &self.name
     }
 
     fn supports_function_calling(&self) -> bool {

@@ -809,6 +809,39 @@ fn build_llm_router(config: &ServerConfig) -> Arc<LlmRouter> {
         }
     }
     
+    // 注册Google Gemini适配器
+    let google_config = llm_config.as_ref().and_then(|c| c.google.as_ref());
+    let google_enabled = google_config.and_then(|c| c.enabled).unwrap_or(false);
+    
+    if google_enabled || std::env::var("GOOGLE_API_KEY").is_ok() {
+        let api_key = std::env::var("GOOGLE_API_KEY")
+            .or_else(|_| {
+                google_config
+                    .and_then(|c| c.api_key.clone())
+                    .ok_or_else(|| std::env::VarError::NotPresent)
+            })
+            .unwrap_or_default();
+        
+        if !api_key.is_empty() {
+            let model = google_config
+                .and_then(|c| c.default_model.clone())
+                .unwrap_or_else(|| "gemini-1.5-flash".to_string());
+            let mut adapter = maple_llm::adapters::openai_compat::OpenAiCompatAdapter::google(api_key, model);
+            if let Some(google) = google_config {
+                if let Some(base_url) = &google.base_url {
+                    adapter = adapter.with_base_url(base_url.clone());
+                }
+                if let Some(context_length) = google.context_length {
+                    adapter = adapter.with_context_length(context_length);
+                }
+                if let Some(pricing) = &google.pricing {
+                    adapter = adapter.with_pricing(pricing.input, pricing.output);
+                }
+            }
+            router.register_adapter(Box::new(adapter));
+        }
+    }
+    
     // 设置回退链
     let mut fallback = vec!["ollama/qwen2.5:7b".to_string()];
     
@@ -838,6 +871,11 @@ fn build_llm_router(config: &ServerConfig) -> Arc<LlmRouter> {
     if std::env::var("GLM_API_KEY").is_ok() || glm_enabled {
         if !fallback.contains(&"glm-4".to_string()) {
             fallback.push("glm-4".to_string());
+        }
+    }
+    if std::env::var("GOOGLE_API_KEY").is_ok() || google_enabled {
+        if !fallback.contains(&"gemini-1.5-flash".to_string()) {
+            fallback.push("gemini-1.5-flash".to_string());
         }
     }
     router.set_fallback_chain(fallback);
