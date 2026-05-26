@@ -72,11 +72,10 @@ export default function Home() {
     return () => window.removeEventListener("auth:logout", handleLogout);
   }, []);
 
-  if (!authenticated) {
-    return <AuthPage onAuth={() => setAuthenticated(true)} />;
-  }
+
 
   const pollData = async () => {
+    if (!authenticated) return;
     try {
       const info = await rpcCall<SystemInfo>("system.info");
       setSysInfo(info);
@@ -89,10 +88,15 @@ export default function Home() {
   };
 
   useEffect(() => {
+    if (!authenticated) return;
     pollData();
     const interval = setInterval(pollData, 10000);
     return () => clearInterval(interval);
-  }, []);
+  }, [authenticated]);
+
+  if (!authenticated) {
+    return <AuthPage onAuth={() => setAuthenticated(true)} />;
+  }
 
   const handleCommandNavigate = (id: string) => {
     if (id === "open-palette") { setPaletteOpen(true); return; }
