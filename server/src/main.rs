@@ -1196,7 +1196,7 @@ async fn auth_middleware(
     let path = req.uri().path();
     let method = req.method().clone();
     
-    if path == "/health" || path == "/health/deep" || path.starts_with("/ws/") || path.starts_with("/api/events") {
+    if path == "/health" || path == "/health/deep" || path.starts_with("/ws/") || path.starts_with("/api/events") || path.starts_with("/api/auth/") {
         return Ok(next.run(req).await);
     }
 
@@ -2102,6 +2102,7 @@ async fn login_handler(
     let admin_user = &config.admin_username;
     let admin_pass = &config.admin_password;
 
+    // First try admin login with plaintext password comparison
     if req.username == *admin_user && req.password == *admin_pass {
         let user_id = format!("admin-{}", req.username);
         let token = state.auth_service.create_token_for_user(&user_id, "admin", 3600)
@@ -2121,17 +2122,58 @@ async fn login_handler(
         .execute(&state.db)
         .await;
 
-        Ok(axum::Json(serde_json::json!({
+        return Ok(axum::Json(serde_json::json!({
             "token": token,
             "refresh_token": refresh_token,
             "user_id": user_id,
             "username": req.username,
             "role": "admin",
             "expires_in": 3600,
-        })))
-    } else {
-        Err(axum::http::StatusCode::UNAUTHORIZED)
+        })));
     }
+
+    // If admin login fails, try database user login
+    let user_row: Option<(String, String, String, String)> = sqlx::query_as(
+        "SELECT id, username, password_hash, role FROM users WHERE username = ?"
+    )
+    .bind(&req.username)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    if let Some((user_id, username, password_hash, role)) = user_row {
+        // Verify password with bcrypt
+        if bcrypt::verify(&req.password, &password_hash).unwrap_or(false) {
+            let token = state.auth_service.create_token_for_user(&user_id, &role, 3600)
+                .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+            let refresh_token = uuid::Uuid::new_v4().to_string();
+            let refresh_hash = bcrypt::hash(&refresh_token, bcrypt::DEFAULT_COST)
+                .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+            let now = chrono::Utc::now().timestamp();
+            let _ = sqlx::query(
+                "INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)"
+            )
+            .bind(uuid::Uuid::new_v4().to_string())
+            .bind(&user_id)
+            .bind(&refresh_hash)
+            .bind(now + 7 * 86400)
+            .bind(now)
+            .execute(&state.db)
+            .await;
+
+            return Ok(axum::Json(serde_json::json!({
+                "token": token,
+                "refresh_token": refresh_token,
+                "user_id": user_id,
+                "username": username,
+                "role": role,
+                "expires_in": 3600,
+            })));
+        }
+    }
+
+    // Neither admin nor database user credentials matched
+    Err(axum::http::StatusCode::UNAUTHORIZED)
 }
 
 async fn register_handler(
