@@ -50,6 +50,7 @@ struct ApiError {
     details: Option<serde_json::Value>,
 }
 
+#[allow(dead_code)]
 impl ApiError {
     fn new(error: impl Into<String>, code: impl Into<String>) -> Self {
         Self {
@@ -1128,7 +1129,7 @@ use tokio::sync::RwLock;
 use std::time::Instant;
 
 #[derive(Clone)]
-struct RateLimiter {
+pub struct RateLimiter {
     requests: Arc<RwLock<HashMap<String, Vec<Instant>>>>,
     max_requests: usize,
     window_secs: u64,
@@ -1386,6 +1387,7 @@ async fn chat_stream_handler(
     Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::new().interval(std::time::Duration::from_secs(15)).text("ping"))
 }
 
+#[allow(dead_code)]
 async fn kb_upload_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
     mut multipart: axum::extract::Multipart,
@@ -1528,6 +1530,7 @@ struct KbSearchResponse {
     results: Vec<serde_json::Value>,
 }
 
+#[allow(dead_code)]
 async fn kb_documents_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> axum::Json<serde_json::Value> {
@@ -2445,7 +2448,7 @@ async fn trigger_sync_handler(
 }
 
 async fn sync_status_handler(
-    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::State(_state): axum::extract::State<Arc<AppState>>,
 ) -> axum::Json<serde_json::Value> {
     axum::Json(serde_json::json!({
         "status": "ok",
@@ -2795,7 +2798,7 @@ async fn delete_agent_handler(
 }
 
 #[derive(Clone)]
-struct ServerConfig {
+pub struct ServerConfig {
     pub host: String,
     pub port: u16,
     pub database_url: String,
