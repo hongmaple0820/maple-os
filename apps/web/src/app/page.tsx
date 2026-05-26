@@ -64,9 +64,11 @@ export default function Home() {
   const [serverOnline, setServerOnline] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     setAuthenticated(isAuthenticated());
+    setLoading(false);
     const handleLogout = () => setAuthenticated(false);
     window.addEventListener("auth:logout", handleLogout);
     return () => window.removeEventListener("auth:logout", handleLogout);
@@ -93,6 +95,14 @@ export default function Home() {
     const interval = setInterval(pollData, 10000);
     return () => clearInterval(interval);
   }, [authenticated]);
+
+  if (loading) {
+    return (
+      <div className="flex h-screen items-center justify-center">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+      </div>
+    );
+  }
 
   if (!authenticated) {
     return <AuthPage onAuth={() => setAuthenticated(true)} />;
