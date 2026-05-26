@@ -9,6 +9,7 @@ import { ScaleEngineManager } from "@/components/scale-engine-manager";
 import { CommandPalette } from "@/components/command-palette";
 import { SettingsPage } from "@/components/settings-page";
 import { PluginsPage } from "@/components/plugins-page";
+import CollaborationWorkspace from "@/components/collaboration/workspace-page";
 import { Badge, Button } from "@mapleos/ui";
 import { rpcCall, mapleApi, isAuthenticated, getAuthState, clearAuthState } from "@/lib/api";
 import { AuthPage } from "@/components/auth-page";
@@ -19,6 +20,7 @@ const NAV_ITEMS = [
   { id: "workflows", label: "工作流", icon: "git-branch" },
   { id: "agents", label: "Agent", icon: "bot" },
   { id: "knowledge", label: "知识库", icon: "book-open" },
+  { id: "collaboration", label: "协作空间", icon: "users" },
   { id: "scale", label: "SCALE 引擎", icon: "shield" },
   { id: "plugins", label: "插件", icon: "puzzle" },
   { id: "settings", label: "设置", icon: "settings" },
@@ -49,8 +51,9 @@ const iconPaths: Record<string, string> = {
   "git-branch": "M6 3v12M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6M18 9c0 3-4 6-8 6",
   "bot": "M12 8V4H8M16 8V4h-4M8 16v4M16 16v4M3 8h18v8H3z",
   "book-open": "M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2zM22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z",
+  "users": "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M16 3.128a4 4 0 0 1 0 7.744M22 21v-2a4 4 0 0 0-3-3.87",
   "shield": "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z",
-  "puzzle": "M19.439 7.85c-.049.322.059.648.289.878l1.658 1.658a1.2 1.2 0 0 1 0 1.697l-2.608 2.608a1.2 1.2 0 0 1-1.697 0L15.72 12.45c-.23-.23-.556-.338-.878-.289a3.722 3.722 0 0 1-2.036-.18 1.2 1.2 0 0 0-1.378 1.378 3.722 3.722 0 0 1 .18 2.036c-.049.322.059.648.289.878l1.658 1.658a1.2 1.2 0 0 1 0 1.697l-2.608 2.608a1.2 1.2 0 0 1-1.697 0L7.85 19.439c-.23-.23-.556-.338-.878-.289a3.722 3.722 0 0 1-2.036.18 1.2 1.2 0 0 0-1.378-1.378 3.722 3.722 0 0 1 .18-2.036c.049-.322-.059-.648-.289-.878L3.98 14.497a1.2 1.2 0 0 1 0-1.697l2.608-2.608a1.2 1.2 0 0 1 1.697 0L8.28 11.55c.23.23.556.338.878.289a3.722 3.722 0 0 1 2.036-.18 1.2 1.2 0 0 0 1.378-1.378 3.722 3.722 0 0 1-.18-2.036c-.049-.322.059-.648.289-.878l1.658-1.658a1.2 1.2 0 0 1 0-1.697l2.608-2.608a1.2 1.2 0 0 1 1.697 0l1.658 1.658c.23.23.556.338.878.289a3.722 3.722 0 0 1 2.036.18 1.2 1.2 0 0 0 1.378 1.378 3.722 3.722 0 0 1-.18 2.036z",
+  "puzzle": "M19.439 7.85c-.049.322.059.648.289.878l1.658 1.658a1.2 1.2 0 0 1 0 1.697l-2.608 2.608a1.2 1.2 0 0 1-1.697 0L15.72 12.45c-.23-.23-.556-.338-.878-.289a3.722 3.722 0 0 1-2.036-.18 1.2 1.2 0 0 0-1.378 1.378 3.722 3.722 0 0 1 .18 2.036c-.049.322.059.648.289.878l1.658 1.658a1.2 1.2 0 0 1 0 1.697l-2.608 2.608a1.2 1.2 0 0 1-1.697 0L7.85 19.439c-.23-.23-.556-.338-.878-.289a3.722 3.722 0 0 1-2.036.18 1.2 1.2 0 0 0-1.378-1.378 3.722 3.722 0 0 1 .18-2.036c.049-.322-.059-.648-.289-.878L3.98 14.497a1.2 1.2 0 0 1 0-1.697l2.608-2.608a1.2 1.2 0 0 1 1.697 0L8.28 11.55c.23.23.556.338.878.289a3.722 3.722 0 0 1 2.036-.18 1.2 1.2 0 0 0 1.378-1.378 3.722 3.722 0 0 1-.18-2.036c.049-.322.059-.648.289-.878l1.658-1.658a1.2 1.2 0 0 1 0-1.697l2.608-2.608a1.2 1.2 0 0 1 1.697 0l1.658 1.658c.23.23.556.338.878.289a3.722 3.722 0 0 1 2.036.18 1.2 1.2 0 0 0 1.378 1.378 3.722 3.722 0 0 1-.18 2.036z",
   "settings": "M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z",
 };
 
@@ -165,6 +168,7 @@ export default function Home() {
           {activeNav === "workflows" && <WorkflowManager />}
           {activeNav === "agents" && <AgentManager />}
           {activeNav === "knowledge" && <KnowledgeManager />}
+          {activeNav === "collaboration" && <CollaborationWorkspace />}
           {activeNav === "scale" && <ScaleEngineManager />}
           {activeNav === "plugins" && <PluginsPage />}
           {activeNav === "settings" && <SettingsPage />}
