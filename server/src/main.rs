@@ -174,8 +174,8 @@ async fn chat_handler(
         impl ToolExecutor for AppToolExecutor {
             async fn execute(&self, tool_use: &ToolUse) -> anyhow::Result<ToolResult> {
                 match self.skill_registry.execute(&tool_use.name, &tool_use.input).await {
-                    Ok(v) => Ok(ToolResult::success(&tool_use.id, v)),
-                    Err(e) => Ok(ToolResult::error(&tool_use.id, &e.to_string())),
+                    Ok(v) => Ok(ToolResult::success(&tool_use.id, &tool_use.name, v)),
+                    Err(e) => Ok(ToolResult::error(&tool_use.id, &tool_use.name, &e.to_string())),
                 }
             }
         }

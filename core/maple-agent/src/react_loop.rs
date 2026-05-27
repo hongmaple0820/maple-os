@@ -1,9 +1,12 @@
 
 use maple_llm::request::{LlmRequest, Message, ToolDefinition};
 use maple_llm::router::LlmAdapter;
+use maple_engine::hooks::{HookRunner, HookDecision};
+use crate::context_compressor::{ContextCompressor, ContextCompressorConfig};
 use async_trait::async_trait;
 use serde_json::Value;
 use anyhow::Result;
+use futures::StreamExt;
 
 pub struct ToolUse {
     pub id: String,
@@ -13,22 +16,25 @@ pub struct ToolUse {
 
 pub struct ToolResult {
     pub tool_use_id: String,
+    pub tool_name: String,
     pub output: Value,
     pub is_error: bool,
 }
 
 impl ToolResult {
-    pub fn error(tool_use_id: &str, reason: &str) -> Self {
+    pub fn error(tool_use_id: &str, tool_name: &str, reason: &str) -> Self {
         Self {
             tool_use_id: tool_use_id.to_string(),
+            tool_name: tool_name.to_string(),
             output: Value::String(reason.to_string()),
             is_error: true,
         }
     }
 
-    pub fn success(tool_use_id: &str, output: Value) -> Self {
+    pub fn success(tool_use_id: &str, tool_name: &str, output: Value) -> Self {
         Self {
             tool_use_id: tool_use_id.to_string(),
+            tool_name: tool_name.to_string(),
             output,
             is_error: false,
         }
@@ -78,7 +84,7 @@ impl Session {
     }
 
     pub fn push_message(&mut self, msg: Message) {
-        self.input_token_count += msg.content.len() / 4;
+        self.input_token_count += maple_llm::token_counter::count_message_tokens(&msg.content, &msg.role);
         self.messages.push(msg);
     }
 
@@ -98,15 +104,34 @@ pub trait ToolExecutor: Send + Sync {
 
 pub struct ReactLoop {
     max_iterations: usize,
-    auto_compaction_threshold: u32,
+    max_concurrent_tools: usize,
+    hook_runner: HookRunner,
+    context_compressor: ContextCompressor,
 }
 
 impl ReactLoop {
     pub fn new(max_iterations: usize) -> Self {
         Self {
             max_iterations,
-            auto_compaction_threshold: 100_000,
+            max_concurrent_tools: 4,
+            hook_runner: HookRunner::new(),
+            context_compressor: ContextCompressor::new(ContextCompressorConfig::default()),
         }
+    }
+
+    pub fn with_max_concurrent_tools(mut self, n: usize) -> Self {
+        self.max_concurrent_tools = n;
+        self
+    }
+
+    pub fn with_hook_runner(mut self, runner: HookRunner) -> Self {
+        self.hook_runner = runner;
+        self
+    }
+
+    pub fn with_context_compressor(mut self, compressor: ContextCompressor) -> Self {
+        self.context_compressor = compressor;
+        self
     }
 
     pub async fn run_turn(
@@ -123,7 +148,20 @@ impl ReactLoop {
         loop {
             iterations += 1;
             if iterations > self.max_iterations {
+                self.hook_runner.run_error("Max iterations reached").await;
                 return Ok(TurnSummary::max_iterations_reached());
+            }
+
+            // Hook: pre-LLM call
+            if let HookDecision::Deny(reason) = self.hook_runner
+                .run_pre_llm_call("default", session.messages.len()).await?
+            {
+                self.hook_runner.run_error(&reason).await;
+                return Ok(TurnSummary {
+                    completed: false,
+                    content: reason,
+                    iterations,
+                });
             }
 
             let mut request = LlmRequest::new(
@@ -136,7 +174,20 @@ impl ReactLoop {
                 request.tools = Some(tools.clone());
             }
 
-            let response = adapter.complete(request).await?;
+            let response = match adapter.complete(request).await {
+                Ok(resp) => resp,
+                Err(e) => {
+                    self.hook_runner.run_error(&e.to_string()).await;
+                    return Err(e);
+                }
+            };
+
+            // Hook: post-LLM call
+            self.hook_runner.run_post_llm_call(
+                "default",
+                response.input_tokens,
+                response.output_tokens,
+            ).await;
 
             let tool_calls = response.parse_tool_calls();
 
@@ -159,51 +210,73 @@ impl ReactLoop {
                 response.tool_calls.clone().unwrap_or_default(),
             ));
 
-            for tool_use in &assistant_msg.tool_uses {
-                match tool_executor.execute(tool_use).await {
-                    Ok(result) => {
-                        let output_str = serde_json::to_string(&result.output).unwrap_or_default();
-                        session.push_message(Message::tool_result(
-                            &tool_use.id,
-                            &output_str,
-                            result.is_error,
-                        ));
-                    }
-                    Err(e) => {
-                        session.push_message(Message::tool_result(
-                            &tool_use.id,
-                            &format!("Error: {}", e),
-                            true,
-                        ));
-                    }
+            // Concurrent tool execution — inspired by rig's buffer_unordered pattern
+            // Execute tools concurrently, then emit results in original index order
+            let tool_uses = &assistant_msg.tool_uses;
+            let max_concurrent = self.max_concurrent_tools.max(1);
+
+            // Hook: pre-tool-use for each tool (check if any should be blocked)
+            let mut blocked_tool: Option<(usize, String)> = None;
+            for (idx, tool_use) in tool_uses.iter().enumerate() {
+                if let HookDecision::Deny(reason) = self.hook_runner
+                    .run_pre_tool_use(&tool_use.name, &tool_use.input).await?
+                {
+                    blocked_tool = Some((idx, reason));
+                    break;
                 }
             }
 
-            if session.input_tokens() > self.auto_compaction_threshold as usize {
-                self.auto_compact(session);
+            if let Some((idx, reason)) = blocked_tool {
+                let tool_use = &tool_uses[idx];
+                session.push_message(Message::tool_result(
+                    &tool_use.id,
+                    &format!("Blocked by hook: {}", reason),
+                    true,
+                ));
+                self.hook_runner.run_error(&format!("Tool {} blocked: {}", tool_use.name, reason)).await;
+                continue;
+            }
+
+            let mut indexed_results: Vec<(usize, ToolResult)> = futures::stream::iter(
+                tool_uses.iter().enumerate()
+            )
+            .map(|(idx, tool_use)| async move {
+                let result = match tool_executor.execute(tool_use).await {
+                    Ok(r) => r,
+                    Err(e) => ToolResult::error(&tool_use.id, &tool_use.name, &format!("Error: {}", e)),
+                };
+                (idx, result)
+            })
+            .buffer_unordered(max_concurrent)
+            .collect::<Vec<_>>()
+            .await;
+
+            // Sort by original index to preserve tool_use order (not completion order)
+            indexed_results.sort_by_key(|(idx, _)| *idx);
+
+            // Hook: post-tool-use for each result
+            for (_, result) in &indexed_results {
+                self.hook_runner.run_post_tool_use(
+                    &result.tool_name,
+                    &result.output,
+                ).await;
+            }
+
+            for (_, result) in indexed_results {
+                let output_str = serde_json::to_string(&result.output).unwrap_or_default();
+                session.push_message(Message::tool_result(
+                    &result.tool_use_id,
+                    &output_str,
+                    result.is_error,
+                ));
+            }
+
+            // Context compression — inspired by hermes-agent's head/tail protection
+            if self.context_compressor.needs_compression(&session.messages) {
+                let compressed = self.context_compressor.compress(&session.messages);
+                session.messages = compressed;
+                session.input_token_count = session.messages.iter().map(|m| m.content.len() / 4).sum();
             }
         }
-    }
-
-    fn auto_compact(&self, session: &mut Session) {
-        if session.messages.len() <= 4 {
-            return;
-        }
-
-        let mut compacted = Vec::new();
-
-        if !session.messages.is_empty() && session.messages[0].role == "system" {
-            compacted.push(session.messages[0].clone());
-        }
-
-        compacted.push(Message::system("[Earlier conversation context has been compacted to save tokens. Key information is preserved.]"));
-
-        let recent_count = session.messages.len().min(6);
-        for msg in session.messages.iter().rev().take(recent_count).rev() {
-            compacted.push(msg.clone());
-        }
-
-        session.messages = compacted;
-        session.input_token_count = session.messages.iter().map(|m| m.content.len() / 4).sum();
     }
 }

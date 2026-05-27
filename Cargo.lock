@@ -1330,6 +1330,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "dashmap",
+ "futures",
  "maple-engine",
  "maple-llm",
  "serde",

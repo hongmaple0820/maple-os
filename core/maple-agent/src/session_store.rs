@@ -12,6 +12,13 @@ impl SessionStore {
     }
 
     pub async fn load_session(&self, session_id: &str) -> Result<Session> {
+        self.load_session_with_limit(session_id, None).await
+    }
+
+    /// Load session with optional message limit
+    /// If max_messages is set, only the most recent N messages are loaded
+    /// System prompt is always preserved
+    pub async fn load_session_with_limit(&self, session_id: &str, max_messages: Option<usize>) -> Result<Session> {
         let rows = sqlx::query_as::<_, (String, String, String)>(
             "SELECT role, content, metadata FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC"
         )
@@ -38,7 +45,28 @@ impl SessionStore {
             messages.push(msg);
         }
 
-        let token_count: usize = messages.iter().map(|m| m.content.len() / 4).sum();
+        // Apply message window limit if specified
+        if let Some(limit) = max_messages {
+            if messages.len() > limit {
+                // Preserve system prompt (first message if it's system role)
+                let system_prompt = if messages.first().map_or(false, |m| m.role == "system") {
+                    Some(messages.remove(0))
+                } else {
+                    None
+                };
+
+                // Keep only the most recent messages
+                let start = messages.len().saturating_sub(limit);
+                messages = messages[start..].to_vec();
+
+                // Re-insert system prompt at the beginning
+                if let Some(prompt) = system_prompt {
+                    messages.insert(0, prompt);
+                }
+            }
+        }
+
+        let token_count: usize = messages.iter().map(|m| maple_llm::token_counter::count_message_tokens(&m.content, &m.role)).sum();
         Ok(Session {
             messages,
             input_token_count: token_count,

@@ -1,11 +1,13 @@
 use crate::response::LlmResponse;
 use crate::stream::LlmStream;
 use crate::usage::UsageTracker;
+use crate::error::{LlmError, ClassifiedError};
 use crate::{LlmRequest, PrivacyLevel};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 use anyhow::Result;
 
 #[async_trait]
@@ -29,11 +31,23 @@ pub struct RoutingRule {
     pub fallback_to_cloud: bool,
 }
 
+/// Per-adapter health state — tracks errors for circuit-breaker behavior
+#[derive(Debug, Clone, Default)]
+pub struct AdapterHealth {
+    pub consecutive_errors: u32,
+    pub last_error: Option<String>,
+    pub is_circuit_open: bool,
+    pub circuit_open_until: Option<std::time::Instant>,
+}
+
 pub struct LlmRouter {
     adapters: HashMap<String, Box<dyn LlmAdapter>>,
     routing_rules: Vec<RoutingRule>,
     fallback_chain: Vec<String>,
     usage_tracker: Arc<UsageTracker>,
+    health: RwLock<HashMap<String, AdapterHealth>>,
+    max_consecutive_errors: u32,
+    circuit_breaker_duration: std::time::Duration,
 }
 
 impl LlmRouter {
@@ -43,6 +57,9 @@ impl LlmRouter {
             routing_rules: Vec::new(),
             fallback_chain: Vec::new(),
             usage_tracker,
+            health: RwLock::new(HashMap::new()),
+            max_consecutive_errors: 5,
+            circuit_breaker_duration: std::time::Duration::from_secs(60),
         }
     }
 
@@ -108,11 +125,66 @@ impl LlmRouter {
     }
 
     async fn is_available(&self, model_id: &str) -> bool {
-        self.adapters.contains_key(model_id)
+        if !self.adapters.contains_key(model_id) {
+            return false;
+        }
+
+        let health = self.health.read().await;
+        if let Some(adapter_health) = health.get(model_id) {
+            if adapter_health.is_circuit_open {
+                if let Some(until) = adapter_health.circuit_open_until {
+                    if std::time::Instant::now() < until {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
     }
 
     pub async fn list_models(&self) -> Vec<String> {
         self.adapters.keys().cloned().collect()
+    }
+
+    /// Record an error for an adapter — used by error classifier
+    pub async fn record_error(&self, model_id: &str, error: &LlmError) {
+        let decision = error.classify_decision();
+
+        let mut health = self.health.write().await;
+        let adapter_health = health.entry(model_id.to_string()).or_default();
+
+        adapter_health.consecutive_errors += 1;
+        adapter_health.last_error = Some(error.to_string());
+
+        if adapter_health.consecutive_errors >= self.max_consecutive_errors {
+            adapter_health.is_circuit_open = true;
+            adapter_health.circuit_open_until = Some(
+                std::time::Instant::now() + self.circuit_breaker_duration,
+            );
+        }
+    }
+
+    /// Record a successful call — resets error counter
+    pub async fn record_success(&self, model_id: &str) {
+        let mut health = self.health.write().await;
+        if let Some(adapter_health) = health.get_mut(model_id) {
+            adapter_health.consecutive_errors = 0;
+            adapter_health.last_error = None;
+            adapter_health.is_circuit_open = false;
+            adapter_health.circuit_open_until = None;
+        }
+    }
+
+    /// Get adapter with error-classified retry logic
+    pub async fn route_with_retry(&self, req: &LlmRequest) -> Result<(&dyn LlmAdapter, String)> {
+        let adapter = self.route(req).await?;
+        let model_id = adapter.name().to_string();
+        Ok((adapter, model_id))
+    }
+
+    /// Get health status for all adapters
+    pub async fn get_health_status(&self) -> HashMap<String, AdapterHealth> {
+        self.health.read().await.clone()
     }
 }
 
@@ -263,7 +335,7 @@ mod tests {
             }
             
             fn count_tokens(&self, text: &str) -> usize {
-                text.len() / 4
+                crate::token_counter::count_tokens(text)
             }
             
             fn max_context_length(&self) -> usize {

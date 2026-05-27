@@ -2,6 +2,7 @@ use crate::router::LlmAdapter;
 use crate::request::LlmRequest;
 use crate::response::LlmResponse;
 use crate::stream::{LlmStream, StreamChunk};
+use crate::error::LlmError;
 use async_trait::async_trait;
 use anyhow::Result;
 
@@ -169,7 +170,8 @@ impl LlmAdapter for OpenAiCompatAdapter {
         let text = resp.text().await?;
 
         if !status.is_success() {
-            anyhow::bail!("OpenAI-compat API error ({}): {}", status, text);
+            let llm_err = LlmError::classify(status.as_u16(), &text, &self.model);
+            return Err(anyhow::anyhow!(llm_err));
         }
 
         let json: serde_json::Value = serde_json::from_str(&text)?;
@@ -211,14 +213,15 @@ impl LlmAdapter for OpenAiCompatAdapter {
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            anyhow::bail!("OpenAI-compat stream error ({}): {}", status, text);
+            let llm_err = LlmError::classify(status.as_u16(), &text, &self.model);
+            return Err(anyhow::anyhow!(llm_err));
         }
 
         Ok(Box::new(crate::stream::LiveSseStream::new(resp, crate::stream::SseFormat::OpenAi)))
     }
 
     fn count_tokens(&self, text: &str) -> usize {
-        text.len() / 4
+        crate::token_counter::count_tokens(text)
     }
 
     fn max_context_length(&self) -> usize {

@@ -17,3 +17,4 @@ dashmap = { workspace = true }
 sqlx = { workspace = true }
 maple-llm = { workspace = true }
 maple-engine = { workspace = true }
+futures = { workspace = true }

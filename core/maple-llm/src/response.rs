@@ -46,9 +46,13 @@ impl LlmResponse {
                 if let Some(name) = tc["function"]["name"].as_str() {
                     let arguments = tc["function"]["arguments"].as_str().unwrap_or("{}");
                     let args: serde_json::Value = serde_json::from_str(arguments).ok()?;
+                    // Normalize null/empty args to {} — rig null-args pattern
+                    let args = if args.is_null() { serde_json::json!({}) } else { args };
                     Some(ParsedToolCall { id, name: name.to_string(), arguments: args })
                 } else if let Some(name) = tc["name"].as_str() {
                     let args = tc["arguments"].clone();
+                    // Normalize null/empty args to {} — rig null-args pattern
+                    let args = if args.is_null() { serde_json::json!({}) } else { args };
                     Some(ParsedToolCall { id, name: name.to_string(), arguments: args })
                 } else {
                     None
@@ -123,5 +127,23 @@ mod tests {
         assert!(!resp.has_tool_calls());
         resp.tool_calls = Some(vec![serde_json::json!({"id": "1", "function": {"name": "x", "arguments": "{}"}})]);
         assert!(resp.has_tool_calls());
+    }
+
+    #[test]
+    fn test_parse_tool_calls_null_args() {
+        let mut resp = LlmResponse::new("".to_string(), 0, 0);
+        resp.tool_calls = Some(vec![
+            serde_json::json!({
+                "id": "call_null",
+                "function": {
+                    "name": "no_args_tool",
+                    "arguments": serde_json::Value::Null
+                }
+            }),
+        ]);
+
+        let calls = resp.parse_tool_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].arguments, serde_json::json!({}));
     }
 }
