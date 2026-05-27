@@ -143,6 +143,24 @@ export function ChatPanel() {
     setCurrentSession("");
   };
 
+  const loadSessionMessages = async (sessionId: string) => {
+    if (!sessionId) { setMessages([]); return; }
+    try {
+      const res = await mapleApi<{ messages: { role: string; content: string; created_at: number }[] }>(
+        `/api/sessions/${sessionId}/messages`
+      );
+      const loaded: ChatMessage[] = (res.messages ?? []).map((m, i) => ({
+        id: `loaded-${i}`,
+        role: m.role as "user" | "assistant",
+        content: m.content,
+        timestamp: m.created_at * 1000,
+      }));
+      setMessages(loaded);
+    } catch {
+      setMessages([]);
+    }
+  };
+
   useEffect(() => { scrollRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
   const sendMessage = async (overrideInput?: string) => {
@@ -280,7 +298,7 @@ export function ChatPanel() {
           {sessionList.length > 1 && (
             <select
               value={currentSession}
-              onChange={(e) => { setCurrentSession(e.target.value); setMessages([]); }}
+              onChange={(e) => { const sid = e.target.value; setCurrentSession(sid); loadSessionMessages(sid); }}
               className="h-7 rounded border bg-background text-[11px] px-1"
             >
               <option value="">新建对话</option>

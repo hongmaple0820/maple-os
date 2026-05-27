@@ -16,12 +16,21 @@ use dashmap::DashMap;
 
 type ApprovalMap = Arc<DashMap<String, watch::Sender<bool>>>;
 
+/// Async callback for executing an agent task.
+/// Takes (agent_id, goal) and returns the agent's response as a String.
+pub type AgentHandler = Arc<
+    dyn Fn(String, String) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + Send>>
+        + Send
+        + Sync,
+>;
+
 pub struct NodeExecutor {
     llm_router: Arc<LlmRouter>,
     skill_registry: Arc<SkillRegistry>,
     hook_runner: Arc<HookRunner>,
     workflow_nodes: Vec<WorkflowNode>,
     approval_channels: ApprovalMap,
+    agent_handler: Option<AgentHandler>,
 }
 
 impl Clone for NodeExecutor {
@@ -32,6 +41,7 @@ impl Clone for NodeExecutor {
             hook_runner: self.hook_runner.clone(),
             workflow_nodes: self.workflow_nodes.clone(),
             approval_channels: self.approval_channels.clone(),
+            agent_handler: self.agent_handler.clone(),
         }
     }
 }
@@ -48,11 +58,17 @@ impl NodeExecutor {
             hook_runner,
             workflow_nodes: Vec::new(),
             approval_channels: Arc::new(DashMap::new()),
+            agent_handler: None,
         }
     }
 
     pub fn set_workflow_nodes(&mut self, nodes: Vec<WorkflowNode>) {
         self.workflow_nodes = nodes;
+    }
+
+    pub fn with_agent_handler(mut self, handler: AgentHandler) -> Self {
+        self.agent_handler = Some(handler);
+        self
     }
 
     fn find_node(&self, node_id: &str) -> Option<&WorkflowNode> {
@@ -100,6 +116,9 @@ impl NodeExecutor {
                     tokio::time::sleep(std::time::Duration::from_secs(*duration_secs)).await;
                     Value::String("delay_completed".to_string())
                 }
+                crate::workflow::NodeType::Agent { agent_id, goal, timeout_secs } => {
+                    self.execute_agent(agent_id, goal, *timeout_secs).await?
+                }
             };
 
             ctx.checkpoints.push(Checkpoint {
@@ -137,6 +156,28 @@ impl NodeExecutor {
         let resolved_config = resolve_value(config, context);
         let result = self.skill_registry.execute(skill_id, &resolved_config).await?;
         Ok(result)
+    }
+
+    async fn execute_agent(
+        &self,
+        agent_id: &str,
+        goal: &str,
+        timeout_secs: Option<u64>,
+    ) -> Result<Value> {
+        if let Some(handler) = &self.agent_handler {
+            let timeout = timeout_secs.unwrap_or(120);
+            let agent_id = agent_id.to_string();
+            let goal = goal.to_string();
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(timeout),
+                handler(agent_id, goal),
+            ).await {
+                Ok(result) => result.map(|s| Value::String(s)),
+                Err(_) => anyhow::bail!("Agent {} timed out after {}s", agent_id, timeout),
+            }
+        } else {
+            anyhow::bail!("No agent handler registered; cannot execute agent node '{}'", agent_id)
+        }
     }
 
     fn execute_condition(

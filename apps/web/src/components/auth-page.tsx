@@ -153,7 +153,14 @@ type AuthResponse = { token?: string; error?: string; user_id?: string; username
         </form>
 
         <div className="text-center text-[11px] text-muted-foreground">
-          Default: admin / mapleos
+          {mode === "login" ? "Don't have an account? " : "Already have an account? "}
+          <button
+            type="button"
+            className="text-primary hover:underline"
+            onClick={() => onModeChange(mode === "login" ? "register" : "login")}
+          >
+            {mode === "login" ? "Register" : "Login"}
+          </button>
         </div>
       </div>
     </div>

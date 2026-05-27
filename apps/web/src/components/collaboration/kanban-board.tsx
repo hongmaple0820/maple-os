@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import { DragDropContext, Droppable, Draggable, DropResult } from "@hello-pangea/dnd";
 import {
   MoreHorizontal,
@@ -14,6 +14,7 @@ import {
   Paperclip,
   GripVertical
 } from "lucide-react";
+import { mapleApi } from "@/lib/api";
 
 export interface Task {
   id: string;
@@ -148,6 +149,41 @@ export function KanbanBoard({ initialColumns, onTaskMove, onTaskClick }: KanbanB
   const [columns, setColumns] = useState<Column[]>(initialColumns || defaultColumns);
   const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (initialColumns) return;
+    mapleApi<{ tasks: Array<{ id: string; title: string; description?: string; status: string; priority: string; assignee?: { name: string; avatar?: string }; due_date?: string; tags: string[] }> }>("/api/board/tasks")
+      .then((res) => {
+        const tasks = res.tasks ?? [];
+        if (tasks.length === 0) return;
+        const statusMap: Record<string, string> = { todo: "todo", "in-progress": "in-progress", review: "review", done: "done" };
+        const cols: Column[] = [
+          { id: "todo", title: "待办", tasks: [] },
+          { id: "in-progress", title: "进行中", tasks: [] },
+          { id: "review", title: "审核中", tasks: [] },
+          { id: "done", title: "已完成", tasks: [] },
+        ];
+        for (const t of tasks) {
+          const colIdx = cols.findIndex((c) => c.id === (statusMap[t.status] || "todo"));
+          if (colIdx >= 0) {
+            cols[colIdx].tasks.push({
+              id: t.id,
+              title: t.title,
+              description: t.description,
+              status: (statusMap[t.status] || "todo") as Task["status"],
+              priority: (t.priority as Task["priority"]) || "medium",
+              assignee: t.assignee,
+              dueDate: t.due_date,
+              tags: t.tags || [],
+              commentsCount: 0,
+              attachmentsCount: 0,
+            });
+          }
+        }
+        setColumns(cols);
+      })
+      .catch(() => {});
+  }, [initialColumns]);
+
   const onDragStart = useCallback((start: { draggableId: string }) => {
     setDraggingTaskId(start.draggableId);
   }, []);
@@ -187,9 +223,14 @@ export function KanbanBoard({ initialColumns, onTaskMove, onTaskClick }: KanbanB
         if (col.id === destination.droppableId) return { ...col, tasks: destTasks };
         return col;
       });
-      
+
       setColumns(newColumns);
       onTaskMove?.(removed.id, source.droppableId, destination.droppableId);
+      // Persist status change to backend
+      mapleApi(`/api/board/tasks/${removed.id}`, {
+        method: "PUT",
+        body: { status: destination.droppableId },
+      }).catch(() => {});
     }
   }, [columns, onTaskMove]);
 

@@ -1,5 +1,11 @@
 mod cache;
+mod config;
+mod db;
 mod metrics;
+mod middleware;
+mod sandbox;
+mod skills;
+mod state;
 
 use axum::Json;
 use axum::Router;
@@ -10,16 +16,12 @@ use axum::routing::{get, post, delete};
 use std::convert::Infallible;
 use axum::middleware::{self, Next};
 
+use state::{AppState, ApiError, ServerConfig};
 use maple_engine::workflow::Workflow;
 use maple_engine::executor::{WorkflowExecutor, NodeExecutor};
 use maple_engine::event_bus::EventBus;
-use maple_engine::checkpoint::CheckpointManager;
-use maple_engine::hooks::HookRunner;
 use maple_engine::skill_registry::SkillRegistry;
 use maple_llm::router::LlmRouter;
-use maple_llm::router::RoutingRule;
-use maple_llm::usage::UsageTracker;
-use maple_llm::adapters::ollama::OllamaAdapter;
 use maple_agent::registry::AgentRegistry;
 use maple_agent::react_loop::{ReactLoop, Session, ToolExecutor, ToolUse, ToolResult};
 use maple_agent::session_store::SessionStore;
@@ -39,89 +41,12 @@ use maple_kb::prompt_version::PromptVersionManager;
 use maple_engine::task_queue::TaskQueueService;
 use maple_engine::scheduler::{Scheduler, ScheduledJob};
 use maple_gateway::mcp_host::McpHostManager;
-use maple_llm::embedding::{Embedder, OllamaEmbedder, FallbackEmbedder};
+use maple_llm::embedding::Embedder;
 use maple_collab::workspace::WorkspaceManager;
 use serde::{Deserialize, Serialize};
-use serde_yaml;
-use toml;
 use std::sync::Arc;
-use sqlx;
-use anyhow;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
-
-#[derive(Debug, Serialize)]
-struct ApiError {
-    error: String,
-    code: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    details: Option<serde_json::Value>,
-}
-
-#[allow(dead_code)]
-impl ApiError {
-    fn new(error: impl Into<String>, code: impl Into<String>) -> Self {
-        Self {
-            error: error.into(),
-            code: code.into(),
-            details: None,
-        }
-    }
-
-    fn with_details(error: impl Into<String>, code: impl Into<String>, details: serde_json::Value) -> Self {
-        Self {
-            error: error.into(),
-            code: code.into(),
-            details: Some(details),
-        }
-    }
-}
-
-impl IntoResponse for ApiError {
-    fn into_response(self) -> axum::response::Response {
-        let status = match self.code.as_str() {
-            "NOT_FOUND" => axum::http::StatusCode::NOT_FOUND,
-            "UNAUTHORIZED" => axum::http::StatusCode::UNAUTHORIZED,
-            "FORBIDDEN" => axum::http::StatusCode::FORBIDDEN,
-            "BAD_REQUEST" => axum::http::StatusCode::BAD_REQUEST,
-            "CONFLICT" => axum::http::StatusCode::CONFLICT,
-            _ => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-        };
-        (status, Json(self)).into_response()
-    }
-}
-
-pub struct AppState {
-    pub config: Arc<tokio::sync::RwLock<ServerConfig>>,
-    pub db: sqlx::SqlitePool,
-    pub event_bus: Arc<EventBus>,
-    pub llm_router: Arc<LlmRouter>,
-    pub workflow_executor: Arc<WorkflowExecutor>,
-    pub agent_registry: Arc<AgentRegistry>,
-    pub auth_service: Arc<AuthService>,
-    pub workspace_manager: Arc<tokio::sync::Mutex<WorkspaceManager>>,
-    pub sync_engine: Arc<SyncEngine>,
-    pub skill_registry: Arc<SkillRegistry>,
-    pub session_store: Arc<SessionStore>,
-    pub bm25_searcher: Arc<BM25Searcher>,
-    pub vector_store: Arc<dyn VectorSearch>,
-    pub hybrid_retriever: Arc<HybridRetriever>,
-    pub indexer: Arc<Indexer>,
-    pub embedder: Arc<dyn Embedder>,
-    pub memory_store: Arc<tokio::sync::Mutex<MemoryStore>>,
-    pub prompt_version_mgr: Arc<PromptVersionManager>,
-    pub task_queue: Arc<TaskQueueService>,
-    pub mcp_host: Arc<McpHostManager>,
-    pub rate_limiter: RateLimiter,
-    pub cache: cache::AppCache,
-    pub metrics: metrics::AppMetrics,
-}
-
-impl AppState {
-    pub async fn get_config(&self) -> ServerConfig {
-        self.config.read().await.clone()
-    }
-}
 
 #[derive(Debug, Deserialize)]
 struct ChatRequest {
@@ -290,1068 +215,6 @@ async fn chat_handler(
     }
 }
 
-async fn run_migrations(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS workflows (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            version INTEGER NOT NULL DEFAULT 1,
-            yaml_content TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'draft',
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
-        )"
-    ).execute(pool).await?;
-
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS workflow_executions (
-            id TEXT PRIMARY KEY,
-            workflow_id TEXT NOT NULL,
-            workflow_version INTEGER NOT NULL,
-            status TEXT NOT NULL DEFAULT 'running',
-            context_snapshot TEXT,
-            input TEXT,
-            output TEXT,
-            error TEXT,
-            started_at INTEGER NOT NULL,
-            completed_at INTEGER,
-            agent_id TEXT
-        )"
-    ).execute(pool).await?;
-
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS checkpoints (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            exec_id TEXT NOT NULL,
-            node_id TEXT NOT NULL,
-            output TEXT NOT NULL,
-            context_snapshot TEXT NOT NULL,
-            created_at INTEGER NOT NULL
-        )"
-    ).execute(pool).await?;
-
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS agents (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            transport_type TEXT NOT NULL,
-            transport_config TEXT NOT NULL,
-            capabilities TEXT NOT NULL,
-            triggers TEXT,
-            status TEXT NOT NULL DEFAULT 'offline',
-            last_heartbeat INTEGER,
-            max_concurrent_tasks INTEGER NOT NULL DEFAULT 3,
-            created_at INTEGER NOT NULL
-        )"
-    ).execute(pool).await?;
-
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS kb_documents (
-            id TEXT PRIMARY KEY,
-            workspace_id TEXT NOT NULL,
-            title TEXT NOT NULL,
-            source_type TEXT NOT NULL,
-            source_url TEXT,
-            content TEXT NOT NULL,
-            chunk_count INTEGER NOT NULL DEFAULT 0,
-            created_at INTEGER NOT NULL
-        )"
-    ).execute(pool).await?;
-
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS kb_chunks (
-            id TEXT PRIMARY KEY,
-            document_id TEXT NOT NULL,
-            content TEXT NOT NULL,
-            embedding BLOB,
-            term_freqs TEXT,
-            created_at INTEGER NOT NULL
-        )"
-    ).execute(pool).await?;
-
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS messages (
-            id TEXT PRIMARY KEY,
-            workspace_id TEXT NOT NULL,
-            type TEXT NOT NULL,
-            sender_id TEXT NOT NULL,
-            sender_type TEXT NOT NULL,
-            content TEXT NOT NULL,
-            metadata TEXT,
-            created_at INTEGER NOT NULL
-        )"
-    ).execute(pool).await?;
-
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS chat_messages (
-            id TEXT PRIMARY KEY,
-            session_id TEXT NOT NULL,
-            role TEXT NOT NULL,
-            content TEXT NOT NULL,
-            metadata TEXT,
-            created_at INTEGER NOT NULL
-        )"
-    ).execute(pool).await?;
-
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS kv_store (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL,
-            updated_at INTEGER NOT NULL
-        )"
-    ).execute(pool).await?;
-
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS prompt_versions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            prompt_ref TEXT NOT NULL,
-            version INTEGER NOT NULL,
-            content TEXT NOT NULL,
-            change_reason TEXT,
-            ab_test_result TEXT,
-            created_at INTEGER NOT NULL,
-            UNIQUE(prompt_ref, version)
-        )"
-    ).execute(pool).await?;
-
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS scheduled_jobs (
-            id TEXT PRIMARY KEY,
-            workflow_id TEXT NOT NULL,
-            cron_expr TEXT NOT NULL,
-            timezone TEXT NOT NULL DEFAULT 'UTC',
-            last_run_at INTEGER,
-            next_run_at INTEGER NOT NULL,
-            enabled INTEGER NOT NULL DEFAULT 1
-        )"
-    ).execute(pool).await?;
-
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS sync_state (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
-            last_sync_at INTEGER,
-            local_version INTEGER NOT NULL DEFAULT 0,
-            remote_version INTEGER,
-            pending_changes INTEGER NOT NULL DEFAULT 0
-        )"
-    ).execute(pool).await?;
-
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS memories (
-            id TEXT PRIMARY KEY,
-            memory_type TEXT NOT NULL,
-            content TEXT NOT NULL,
-            metadata TEXT,
-            created_at INTEGER NOT NULL,
-            access_count INTEGER NOT NULL DEFAULT 0
-        )"
-    ).execute(pool).await?;
-
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS workspaces (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            description TEXT,
-            owner_id TEXT NOT NULL,
-            max_agents INTEGER DEFAULT 10,
-            auto_approve INTEGER DEFAULT 0,
-            knowledge_base_enabled INTEGER DEFAULT 1,
-            created_at INTEGER NOT NULL
-        )"
-    ).execute(pool).await?;
-
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS workspace_members (
-            workspace_id TEXT NOT NULL,
-            member_id TEXT NOT NULL,
-            name TEXT NOT NULL,
-            member_type TEXT NOT NULL,
-            role TEXT NOT NULL,
-            PRIMARY KEY (workspace_id, member_id),
-            FOREIGN KEY (workspace_id) REFERENCES workspaces(id)
-        )"
-    ).execute(pool).await?;
-
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_workflow_exec_workflow ON workflow_executions(workflow_id)")
-        .execute(pool).await?;
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_checkpoints_exec ON checkpoints(exec_id)")
-        .execute(pool).await?;
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_messages_workspace ON messages(workspace_id, created_at)")
-        .execute(pool).await?;
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_kb_chunks_document ON kb_chunks(document_id)")
-        .execute(pool).await?;
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_kb_documents_workspace ON kb_documents(workspace_id)")
-        .execute(pool).await?;
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id, created_at)")
-        .execute(pool).await?;
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_next ON scheduled_jobs(next_run_at) WHERE enabled = 1")
-        .execute(pool).await?;
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_workspace_members_workspace ON workspace_members(workspace_id)")
-        .execute(pool).await?;
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(memory_type)")
-        .execute(pool).await?;
-
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS task_queue (
-            id TEXT PRIMARY KEY,
-            task_type TEXT NOT NULL,
-            priority INTEGER NOT NULL DEFAULT 0,
-            payload TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'pending',
-            retry_count INTEGER NOT NULL DEFAULT 0,
-            max_retries INTEGER NOT NULL DEFAULT 3,
-            next_run_at INTEGER NOT NULL DEFAULT 0,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL,
-            error_message TEXT,
-            agent_id TEXT
-        )"
-    ).execute(pool).await?;
-
-    sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_task_queue_status_priority
-         ON task_queue(status, priority DESC, next_run_at)"
-    ).execute(pool).await?;
-
-    sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_task_queue_type
-         ON task_queue(task_type, status)"
-    ).execute(pool).await?;
-
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS users (
-            id TEXT PRIMARY KEY,
-            username TEXT NOT NULL UNIQUE,
-            password_hash TEXT NOT NULL,
-            email TEXT,
-            role TEXT NOT NULL DEFAULT 'user',
-            created_at INTEGER NOT NULL
-        )"
-    ).execute(pool).await?;
-
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS refresh_tokens (
-            id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            token_hash TEXT NOT NULL UNIQUE,
-            expires_at INTEGER NOT NULL,
-            created_at INTEGER NOT NULL,
-            FOREIGN KEY (user_id) REFERENCES users(id)
-        )"
-    ).execute(pool).await?;
-
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)")
-        .execute(pool).await?;
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens(user_id)")
-        .execute(pool).await?;
-
-    tracing::info!("Database migrations completed");
-    Ok(())
-}
-
-#[derive(Debug, Deserialize)]
-struct LlmConfig {
-    default: Option<DefaultConfig>,
-    ollama: Option<OllamaConfig>,
-    deepseek: Option<ProviderConfig>,
-    anthropic: Option<ProviderConfig>,
-    qwen: Option<ProviderConfig>,
-    glm: Option<ProviderConfig>,
-    openai: Option<ProviderConfig>,
-    google: Option<ProviderConfig>,
-    routing_rules: Option<Vec<RoutingRuleConfig>>,
-    fallback_chain: Option<Vec<String>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct DefaultConfig {
-    model: Option<String>,
-    daily_budget: Option<f64>,
-    enable_routing: Option<bool>,
-}
-
-#[derive(Debug, Deserialize)]
-struct OllamaConfig {
-    enabled: Option<bool>,
-    base_url: Option<String>,
-    models: Option<Vec<String>>,
-    default_model: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ProviderConfig {
-    enabled: Option<bool>,
-    api_key: Option<String>,
-    base_url: Option<String>,
-    models: Option<Vec<String>>,
-    default_model: Option<String>,
-    pricing: Option<PricingConfig>,
-    context_length: Option<usize>,
-}
-
-#[derive(Debug, Deserialize)]
-struct PricingConfig {
-    input: f64,
-    output: f64,
-}
-
-#[derive(Debug, Deserialize)]
-struct RoutingRuleConfig {
-    name: String,
-    condition: String,
-    preferred: Vec<String>,
-    fallback_to_cloud: Option<bool>,
-}
-
-fn load_llm_config() -> Option<LlmConfig> {
-    let config_path = std::path::Path::new("config/llm.toml");
-    if !config_path.exists() {
-        tracing::info!("LLM config file not found at config/llm.toml, using environment variables");
-        return None;
-    }
-    
-    match std::fs::read_to_string(config_path) {
-        Ok(content) => {
-            match toml::from_str::<LlmConfig>(&content) {
-                Ok(config) => {
-                    tracing::info!("Loaded LLM config from config/llm.toml");
-                    Some(config)
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to parse LLM config: {}", e);
-                    None
-                }
-            }
-        }
-        Err(e) => {
-            tracing::warn!("Failed to read LLM config file: {}", e);
-            None
-        }
-    }
-}
-
-fn build_llm_router(config: &ServerConfig) -> Arc<LlmRouter> {
-    let usage_tracker = Arc::new(UsageTracker::new(config.usage_limit_usd));
-    let mut router = LlmRouter::new(usage_tracker);
-    
-    // 加载配置文件
-    let llm_config = load_llm_config();
-    
-    // 注册Ollama适配器
-    let ollama_config = llm_config.as_ref().and_then(|c| c.ollama.as_ref());
-    let ollama_enabled = ollama_config.and_then(|c| c.enabled).unwrap_or(true);
-    
-    if ollama_enabled {
-        if let Ok(base_url) = std::env::var("OLLAMA_BASE_URL") {
-            let model = std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "qwen2.5:7b".to_string());
-            let adapter = OllamaAdapter::new(model).with_base_url(base_url);
-            router.register_adapter(Box::new(adapter));
-        } else if let Some(ollama) = ollama_config {
-            let base_url = ollama.base_url.clone().unwrap_or_else(|| "http://127.0.0.1:11434".to_string());
-            let models = ollama.models.clone().unwrap_or_else(|| vec!["qwen2.5:7b".to_string()]);
-            for model in models {
-                let adapter = OllamaAdapter::new(model.clone()).with_base_url(base_url.clone());
-                router.register_adapter(Box::new(adapter));
-            }
-        } else {
-            let adapter = OllamaAdapter::qwen_7b();
-            router.register_adapter(Box::new(adapter));
-        }
-    }
-    
-    // 注册DeepSeek适配器
-    let deepseek_config = llm_config.as_ref().and_then(|c| c.deepseek.as_ref());
-    let deepseek_enabled = deepseek_config.and_then(|c| c.enabled).unwrap_or(false);
-    
-    if deepseek_enabled || std::env::var("DEEPSEEK_API_KEY").is_ok() {
-        let api_key = std::env::var("DEEPSEEK_API_KEY")
-            .or_else(|_| {
-                deepseek_config
-                    .and_then(|c| c.api_key.clone())
-                    .ok_or_else(|| std::env::VarError::NotPresent)
-            })
-            .unwrap_or_default();
-        
-        if !api_key.is_empty() {
-            let mut adapter = maple_llm::adapters::openai_compat::OpenAiCompatAdapter::deepseek(api_key);
-            if let Some(deepseek) = deepseek_config {
-                if let Some(base_url) = &deepseek.base_url {
-                    adapter = adapter.with_base_url(base_url.clone());
-                }
-                if let Some(context_length) = deepseek.context_length {
-                    adapter = adapter.with_context_length(context_length);
-                }
-                if let Some(pricing) = &deepseek.pricing {
-                    adapter = adapter.with_pricing(pricing.input, pricing.output);
-                }
-            }
-            router.register_adapter(Box::new(adapter));
-        }
-    }
-    
-    // 注册Anthropic适配器
-    let anthropic_config = llm_config.as_ref().and_then(|c| c.anthropic.as_ref());
-    let anthropic_enabled = anthropic_config.and_then(|c| c.enabled).unwrap_or(false);
-    
-    if anthropic_enabled || std::env::var("ANTHROPIC_API_KEY").is_ok() {
-        let api_key = std::env::var("ANTHROPIC_API_KEY")
-            .or_else(|_| {
-                anthropic_config
-                    .and_then(|c| c.api_key.clone())
-                    .ok_or_else(|| std::env::VarError::NotPresent)
-            })
-            .unwrap_or_default();
-        
-        if !api_key.is_empty() {
-            let model = anthropic_config
-                .and_then(|c| c.default_model.clone())
-                .unwrap_or_else(|| "claude-3-5-sonnet-20241022".to_string());
-            let mut adapter = maple_llm::adapters::anthropic::AnthropicAdapter::new(api_key, model);
-            if let Some(anthropic) = anthropic_config {
-                if let Some(base_url) = &anthropic.base_url {
-                    adapter = adapter.with_base_url(base_url.clone());
-                }
-            }
-            router.register_adapter(Box::new(adapter));
-        }
-    }
-    
-    // 注册通义千问适配器
-    let qwen_config = llm_config.as_ref().and_then(|c| c.qwen.as_ref());
-    let qwen_enabled = qwen_config.and_then(|c| c.enabled).unwrap_or(false);
-    
-    if qwen_enabled || std::env::var("QWEN_API_KEY").is_ok() {
-        let api_key = std::env::var("QWEN_API_KEY")
-            .or_else(|_| {
-                qwen_config
-                    .and_then(|c| c.api_key.clone())
-                    .ok_or_else(|| std::env::VarError::NotPresent)
-            })
-            .unwrap_or_default();
-        
-        if !api_key.is_empty() {
-            let mut adapter = maple_llm::adapters::openai_compat::OpenAiCompatAdapter::qwen(api_key);
-            if let Some(qwen) = qwen_config {
-                if let Some(base_url) = &qwen.base_url {
-                    adapter = adapter.with_base_url(base_url.clone());
-                }
-                if let Some(context_length) = qwen.context_length {
-                    adapter = adapter.with_context_length(context_length);
-                }
-                if let Some(pricing) = &qwen.pricing {
-                    adapter = adapter.with_pricing(pricing.input, pricing.output);
-                }
-            }
-            router.register_adapter(Box::new(adapter));
-        }
-    }
-    
-    // 注册智谱GLM适配器
-    let glm_config = llm_config.as_ref().and_then(|c| c.glm.as_ref());
-    let glm_enabled = glm_config.and_then(|c| c.enabled).unwrap_or(false);
-    
-    if glm_enabled || std::env::var("GLM_API_KEY").is_ok() {
-        let api_key = std::env::var("GLM_API_KEY")
-            .or_else(|_| {
-                glm_config
-                    .and_then(|c| c.api_key.clone())
-                    .ok_or_else(|| std::env::VarError::NotPresent)
-            })
-            .unwrap_or_default();
-        
-        if !api_key.is_empty() {
-            let mut adapter = maple_llm::adapters::openai_compat::OpenAiCompatAdapter::glm(api_key);
-            if let Some(glm) = glm_config {
-                if let Some(base_url) = &glm.base_url {
-                    adapter = adapter.with_base_url(base_url.clone());
-                }
-                if let Some(context_length) = glm.context_length {
-                    adapter = adapter.with_context_length(context_length);
-                }
-                if let Some(pricing) = &glm.pricing {
-                    adapter = adapter.with_pricing(pricing.input, pricing.output);
-                }
-            }
-            router.register_adapter(Box::new(adapter));
-        }
-    }
-    
-    // 注册OpenAI适配器
-    let openai_config = llm_config.as_ref().and_then(|c| c.openai.as_ref());
-    let openai_enabled = openai_config.and_then(|c| c.enabled).unwrap_or(false);
-    
-    if openai_enabled || std::env::var("OPENAI_API_KEY").is_ok() {
-        let api_key = std::env::var("OPENAI_API_KEY")
-            .or_else(|_| {
-                openai_config
-                    .and_then(|c| c.api_key.clone())
-                    .ok_or_else(|| std::env::VarError::NotPresent)
-            })
-            .unwrap_or_default();
-        
-        if !api_key.is_empty() {
-            let model = openai_config
-                .and_then(|c| c.default_model.clone())
-                .unwrap_or_else(|| "gpt-4o-mini".to_string());
-            let mut adapter = maple_llm::adapters::openai_compat::OpenAiCompatAdapter::openai(api_key, model);
-            if let Some(openai) = openai_config {
-                if let Some(base_url) = &openai.base_url {
-                    adapter = adapter.with_base_url(base_url.clone());
-                }
-                if let Some(context_length) = openai.context_length {
-                    adapter = adapter.with_context_length(context_length);
-                }
-                if let Some(pricing) = &openai.pricing {
-                    adapter = adapter.with_pricing(pricing.input, pricing.output);
-                }
-            }
-            router.register_adapter(Box::new(adapter));
-        }
-    }
-    
-    // 注册Google Gemini适配器
-    let google_config = llm_config.as_ref().and_then(|c| c.google.as_ref());
-    let google_enabled = google_config.and_then(|c| c.enabled).unwrap_or(false);
-    
-    if google_enabled || std::env::var("GOOGLE_API_KEY").is_ok() {
-        let api_key = std::env::var("GOOGLE_API_KEY")
-            .or_else(|_| {
-                google_config
-                    .and_then(|c| c.api_key.clone())
-                    .ok_or_else(|| std::env::VarError::NotPresent)
-            })
-            .unwrap_or_default();
-        
-        if !api_key.is_empty() {
-            let model = google_config
-                .and_then(|c| c.default_model.clone())
-                .unwrap_or_else(|| "gemini-1.5-flash".to_string());
-            let mut adapter = maple_llm::adapters::openai_compat::OpenAiCompatAdapter::google(api_key, model);
-            if let Some(google) = google_config {
-                if let Some(base_url) = &google.base_url {
-                    adapter = adapter.with_base_url(base_url.clone());
-                }
-                if let Some(context_length) = google.context_length {
-                    adapter = adapter.with_context_length(context_length);
-                }
-                if let Some(pricing) = &google.pricing {
-                    adapter = adapter.with_pricing(pricing.input, pricing.output);
-                }
-            }
-            router.register_adapter(Box::new(adapter));
-        }
-    }
-    
-    // 设置回退链
-    let mut fallback = vec!["ollama/qwen2.5:7b".to_string()];
-    
-    // 从配置文件加载回退链
-    if let Some(llm_config) = &llm_config {
-        if let Some(chain) = &llm_config.fallback_chain {
-            fallback = chain.clone();
-        }
-    }
-    
-    // 添加已启用的云端模型到回退链
-    if std::env::var("DEEPSEEK_API_KEY").is_ok() || deepseek_enabled {
-        if !fallback.contains(&"deepseek-chat".to_string()) {
-            fallback.push("deepseek-chat".to_string());
-        }
-    }
-    if std::env::var("ANTHROPIC_API_KEY").is_ok() || anthropic_enabled {
-        if !fallback.contains(&"claude-3-5-sonnet-20241022".to_string()) {
-            fallback.push("claude-3-5-sonnet-20241022".to_string());
-        }
-    }
-    if std::env::var("QWEN_API_KEY").is_ok() || qwen_enabled {
-        if !fallback.contains(&"qwen-plus".to_string()) {
-            fallback.push("qwen-plus".to_string());
-        }
-    }
-    if std::env::var("GLM_API_KEY").is_ok() || glm_enabled {
-        if !fallback.contains(&"glm-4".to_string()) {
-            fallback.push("glm-4".to_string());
-        }
-    }
-    if std::env::var("GOOGLE_API_KEY").is_ok() || google_enabled {
-        if !fallback.contains(&"gemini-1.5-flash".to_string()) {
-            fallback.push("gemini-1.5-flash".to_string());
-        }
-    }
-    router.set_fallback_chain(fallback);
-    
-    // 加载路由规则
-    let rules_path = std::env::var("ROUTING_RULES_PATH")
-        .unwrap_or_else(|_| "infra/routing_rules.yaml".to_string());
-    if let Ok(content) = std::fs::read_to_string(&rules_path) {
-        if let Ok(yaml) = serde_yaml::from_str::<serde_json::Value>(&content) {
-            if let Some(rules_arr) = yaml.get("rules").and_then(|r| r.as_array()) {
-                let rules: Vec<maple_llm::router::RoutingRule> = rules_arr.iter()
-                    .filter_map(|r| serde_json::from_value(r.clone()).ok())
-                    .collect();
-                let rules_count = rules.len();
-                router.set_routing_rules(rules);
-                tracing::info!("Loaded {} routing rules from {}", rules_count, rules_path);
-            }
-            if let Some(chain) = yaml.get("fallback_chain").and_then(|c| c.as_array()) {
-                let chain: Vec<String> = chain.iter()
-                    .filter_map(|c| c.as_str().map(|s| s.to_string()))
-                    .collect();
-                router.set_fallback_chain(chain);
-                tracing::info!("Loaded fallback chain from {}", rules_path);
-            }
-        }
-    } else {
-        tracing::info!("No routing_rules.yaml found, using default rules");
-    }
-    
-    // 从配置文件加载路由规则
-    if let Some(llm_config) = &llm_config {
-        if let Some(rules_config) = &llm_config.routing_rules {
-            let rules: Vec<maple_llm::router::RoutingRule> = rules_config.iter()
-                .map(|r| maple_llm::router::RoutingRule {
-                    name: r.name.clone(),
-                    condition: r.condition.clone(),
-                    preferred: r.preferred.clone(),
-                    fallback_to_cloud: r.fallback_to_cloud.unwrap_or(true),
-                })
-                .collect();
-            let rules_count = rules.len();
-            router.set_routing_rules(rules);
-            tracing::info!("Loaded {} routing rules from config file", rules_count);
-        }
-    }
-    
-    Arc::new(router)
-}
-
-async fn register_builtin_skills(skill_registry: &SkillRegistry) {
-    use maple_engine::skill_registry::Skill;
-    use serde_json::Value;
-
-    struct EchoSkill;
-    impl Skill for EchoSkill {
-        fn id(&self) -> &str { "echo" }
-        fn description(&self) -> &str { "Echo back the input" }
-        fn execute(&self, config: &Value) -> anyhow::Result<Value> {
-            Ok(config.clone())
-        }
-    }
-
-    struct WebSearchSkill;
-    impl Skill for WebSearchSkill {
-        fn id(&self) -> &str { "web_search" }
-        fn description(&self) -> &str { "Search the web for information" }
-        fn execute(&self, config: &Value) -> anyhow::Result<Value> {
-            let query = config["query"].as_str().unwrap_or("");
-            let num_results = config["num_results"].as_u64().unwrap_or(5) as usize;
-
-            if query.is_empty() {
-                return Ok(serde_json::json!({"error": "query is required"}));
-            }
-
-            let search_api_key = std::env::var("SEARCH_API_KEY").ok();
-            let search_engine_id = std::env::var("SEARCH_ENGINE_ID").ok();
-
-            if let (Some(api_key), Some(engine_id)) = (search_api_key, search_engine_id) {
-                let rt = tokio::runtime::Handle::current();
-                let _guard = rt.enter();
-                
-                let url = format!(
-                    "https://www.googleapis.com/customsearch/v1?key={}&cx={}&q={}&num={}",
-                    api_key, engine_id, urlencoding::encode(query), num_results
-                );
-
-                let client = reqwest::Client::new();
-                match tokio::task::block_in_place(|| {
-                    rt.block_on(async {
-                        client.get(&url)
-                            .timeout(std::time::Duration::from_secs(10))
-                            .send()
-                            .await
-                    })
-                }) {
-                    Ok(resp) => {
-                        let body = tokio::task::block_in_place(|| {
-                            rt.block_on(async { resp.text().await.unwrap_or_default() })
-                        });
-                        
-                        if let Ok(json) = serde_json::from_str::<Value>(&body) {
-                            let empty: Vec<Value> = vec![];
-                            let items = json["items"].as_array().unwrap_or(&empty);
-                            let results: Vec<Value> = items.iter().take(num_results).map(|item| {
-                                serde_json::json!({
-                                    "title": item["title"].as_str().unwrap_or(""),
-                                    "url": item["link"].as_str().unwrap_or(""),
-                                    "snippet": item["snippet"].as_str().unwrap_or(""),
-                                })
-                            }).collect();
-
-                            return Ok(serde_json::json!({
-                                "query": query,
-                                "results": results,
-                                "source": "google_custom_search",
-                            }));
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("Web search API error: {}", e);
-                    }
-                }
-            }
-
-            let rt = tokio::runtime::Handle::current();
-            let _guard = rt.enter();
-            let ddg_url = format!("https://lite.duckduckgo.com/lite/?q={}", urlencoding::encode(query));
-
-            let client = reqwest::Client::new();
-            let resp = tokio::task::block_in_place(|| {
-                rt.block_on(async {
-                    client.get(&ddg_url)
-                        .header("User-Agent", "Mozilla/5.0 (compatible; MapleOS/1.0)")
-                        .timeout(std::time::Duration::from_secs(10))
-                        .send()
-                        .await
-                })
-            });
-
-            match resp {
-                Ok(response) => {
-                    let html = tokio::task::block_in_place(|| {
-                        rt.block_on(async { response.text().await.unwrap_or_default() })
-                    });
-                    let results = parse_ddg_lite(&html, num_results);
-                    Ok(serde_json::json!({
-                        "query": query,
-                        "results": results,
-                        "source": "duckduckgo_lite",
-                    }))
-                }
-                Err(e) => {
-                    tracing::warn!("DuckDuckGo search error: {}", e);
-                    Ok(serde_json::json!({
-                        "query": query,
-                        "results": [],
-                        "source": "none",
-                        "message": format!("Search unavailable: {}", e),
-                    }))
-                }
-            }
-        }
-    }
-
-    fn parse_ddg_lite(html: &str, max: usize) -> Vec<Value> {
-        let mut results: Vec<Value> = Vec::new();
-        let mut title = String::new();
-        let mut url = String::new();
-        let mut snippet = String::new();
-        let mut in_link = false;
-
-        for line in html.lines() {
-            let trimmed = line.trim();
-            if trimmed.contains("class=\"result__a\"") {
-                in_link = true;
-                if let Some(start) = trimmed.find(">")
-                    && let Some(end) = trimmed.find("</a>")
-                {
-                    title = trimmed[start + 1..end].trim().to_string();
-                }
-                if let Some(href_start) = trimmed.find("href=\"") {
-                    let rest = &trimmed[href_start+6..];
-                    if let Some(href_end) = rest.find("\"") {
-                        url = rest[..href_end].to_string();
-                        if url.starts_with("//") {
-                            url = format!("https:{}", url);
-                        }
-                    }
-                }
-            } else if in_link && trimmed.contains("class=\"result__snippet\"") {
-                if let Some(start) = trimmed.find(">") {
-                    if let Some(end) = trimmed.find("</td>") {
-                        snippet = trimmed[start+1..end].trim().to_string();
-                    } else {
-                        snippet = trimmed[start+1..].trim().to_string();
-                    }
-                }
-                in_link = false;
-                if !title.is_empty() {
-                    results.push(serde_json::json!({
-                        "title": title,
-                        "url": url,
-                        "snippet": snippet,
-                    }));
-                    title.clear(); url.clear(); snippet.clear();
-                }
-                if results.len() >= max { break; }
-            }
-        }
-        results
-    }
-
-    struct CodeExecSkill;
-    impl Skill for CodeExecSkill {
-        fn id(&self) -> &str { "code_execute" }
-        fn description(&self) -> &str { "Execute code in a sandboxed environment" }
-        fn execute(&self, config: &Value) -> anyhow::Result<Value> {
-            let language = config["language"].as_str().unwrap_or("unknown");
-            let code = config["code"].as_str().unwrap_or("");
-            let timeout_secs = config["timeout"].as_u64().unwrap_or(10).min(30);
-            let max_output_bytes = 8192;
-
-            if code.is_empty() {
-                return Ok(serde_json::json!({"error": "code is required"}));
-            }
-
-            match language.to_lowercase().as_str() {
-                "javascript" | "js" => {
-                    let rt = tokio::runtime::Handle::current();
-                    let _guard = rt.enter();
-                    tokio::task::block_in_place(|| {
-                        rt.block_on(async {
-                            let child = tokio::process::Command::new("node")
-                                .arg("-e")
-                                .arg(code)
-                                .stdout(std::process::Stdio::piped())
-                                .stderr(std::process::Stdio::piped())
-                                .spawn()?;
-                            let output = tokio::time::timeout(
-                                std::time::Duration::from_secs(timeout_secs),
-                                child.wait_with_output()
-                            ).await;
-                            match output {
-                                Ok(Ok(out)) => Ok(serde_json::json!({
-                                    "language": "javascript",
-                                    "stdout": truncate_str(&String::from_utf8_lossy(&out.stdout), max_output_bytes),
-                                    "stderr": truncate_str(&String::from_utf8_lossy(&out.stderr), max_output_bytes),
-                                    "exit_code": out.status.code().unwrap_or(-1),
-                                })),
-                                Ok(Err(e)) => Ok(serde_json::json!({"language": "javascript", "error": e.to_string()})),
-                                Err(_) => Ok(serde_json::json!({"language": "javascript", "error": "timeout exceeded", "exit_code": -1})),
-                            }
-                        })
-                    })
-                }
-                "python" | "py" => {
-                    let rt = tokio::runtime::Handle::current();
-                    let _guard = rt.enter();
-                    tokio::task::block_in_place(|| {
-                        rt.block_on(async {
-                            let temp_dir = std::env::temp_dir();
-                            let file_path = temp_dir.join(format!("mapleos_exec_{}.py", uuid::Uuid::new_v4()));
-                            std::fs::write(&file_path, code)?;
-                            let child = tokio::process::Command::new("python3")
-                                .arg(&file_path)
-                                .stdout(std::process::Stdio::piped())
-                                .stderr(std::process::Stdio::piped())
-                                .spawn()?;
-                            let output = tokio::time::timeout(
-                                std::time::Duration::from_secs(timeout_secs),
-                                child.wait_with_output()
-                            ).await;
-                            let _ = std::fs::remove_file(&file_path);
-                            match output {
-                                Ok(Ok(out)) => Ok(serde_json::json!({
-                                    "language": "python",
-                                    "stdout": truncate_str(&String::from_utf8_lossy(&out.stdout), max_output_bytes),
-                                    "stderr": truncate_str(&String::from_utf8_lossy(&out.stderr), max_output_bytes),
-                                    "exit_code": out.status.code().unwrap_or(-1),
-                                })),
-                                Ok(Err(e)) => Ok(serde_json::json!({"language": "python", "error": e.to_string()})),
-                                Err(_) => Ok(serde_json::json!({"language": "python", "error": "timeout exceeded", "exit_code": -1})),
-                            }
-                        })
-                    })
-                }
-                _ => Ok(serde_json::json!({
-                    "error": format!("Unsupported language: {}", language),
-                    "supported": ["javascript", "python"],
-                    "hint": "WASM runtime coming in Phase 3",
-                })),
-            }
-        }
-    }
-
-    fn truncate_str(s: &str, max: usize) -> String {
-        if s.len() <= max { s.to_string() } else { s[..max].to_string() + "...[truncated]" }
-    }
-
-    struct FileOpsSkill;
-    impl Skill for FileOpsSkill {
-        fn id(&self) -> &str { "file_ops" }
-        fn description(&self) -> &str { "Read, write, and list files within workspace" }
-        fn execute(&self, config: &Value) -> anyhow::Result<Value> {
-            let operation = config["operation"].as_str().unwrap_or("list");
-            let path = config["path"].as_str().unwrap_or(".");
-            let content = config["content"].as_str();
-            let max_read_bytes = 65536;
-
-            let workspace_dir = std::env::var("MAPLEOS_WORKSPACE_DIR")
-                .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default().to_string_lossy().to_string());
-            let resolved = std::path::Path::new(path);
-            if resolved.is_absolute() && !resolved.starts_with(&workspace_dir) {
-                return Ok(serde_json::json!({"error": "path outside workspace", "workspace": workspace_dir}));
-            }
-            let safe_path = if resolved.is_absolute() { resolved.to_path_buf() } else { std::path::Path::new(&workspace_dir).join(resolved) };
-
-            match operation {
-                "read" => {
-                    match std::fs::read_to_string(&safe_path) {
-                        Ok(data) => {
-                            let size = data.len();
-                            let truncated = if size > max_read_bytes { data[..max_read_bytes].to_string() + "...[truncated]" } else { data };
-                            Ok(serde_json::json!({
-                                "operation": "read",
-                                "path": path,
-                                "content": truncated,
-                                "size": size,
-                            }))
-                        }
-                        Err(e) => Ok(serde_json::json!({
-                            "operation": "read",
-                            "path": path,
-                            "error": e.to_string(),
-                        })),
-                    }
-                }
-                "write" => {
-                    let data = content.unwrap_or("");
-                    match std::fs::write(&safe_path, data) {
-                        Ok(_) => Ok(serde_json::json!({
-                            "operation": "write",
-                            "path": path,
-                            "bytes_written": data.len(),
-                            "status": "success",
-                        })),
-                        Err(e) => Ok(serde_json::json!({
-                            "operation": "write",
-                            "path": path,
-                            "error": e.to_string(),
-                        })),
-                    }
-                }
-                "list" => {
-                    match std::fs::read_dir(&safe_path) {
-                        Ok(entries) => {
-                            let files: Vec<serde_json::Value> = entries
-                                .filter_map(|e| e.ok())
-                                .map(|e| {
-                                    let metadata = e.metadata().ok();
-                                    serde_json::json!({
-                                        "name": e.file_name().to_string_lossy(),
-                                        "path": e.path().to_string_lossy(),
-                                        "is_dir": metadata.as_ref().map(|m| m.is_dir()).unwrap_or(false),
-                                        "size": metadata.as_ref().map(|m| m.len()).unwrap_or(0),
-                                    })
-                                })
-                                .collect();
-                            Ok(serde_json::json!({
-                                "operation": "list",
-                                "path": path,
-                                "entries": files,
-                                "count": files.len(),
-                            }))
-                        }
-                        Err(e) => Ok(serde_json::json!({
-                            "operation": "list",
-                            "path": path,
-                            "error": e.to_string(),
-                        })),
-                    }
-                }
-                "exists" => {
-                    Ok(serde_json::json!({
-                        "operation": "exists",
-                        "path": path,
-                        "exists": std::path::Path::new(path).exists(),
-                    }))
-                }
-                _ => Ok(serde_json::json!({
-                    "error": format!("Unknown operation: {}", operation),
-                    "supported": ["read", "write", "list", "exists"],
-                })),
-            }
-        }
-    }
-
-    struct HttpRequestSkill;
-    impl Skill for HttpRequestSkill {
-        fn id(&self) -> &str { "http_request" }
-        fn description(&self) -> &str { "Make HTTP requests with timeout and size limits" }
-        fn execute(&self, config: &Value) -> anyhow::Result<Value> {
-            let url = config["url"].as_str().unwrap_or("");
-            let method = config["method"].as_str().unwrap_or("GET");
-            let headers = config["headers"].as_object();
-            let body = config["body"].as_str();
-            let max_response_bytes = 32768;
-            
-            if url.is_empty() {
-                return Ok(serde_json::json!({"error": "url is required"}));
-            }
-
-            let rt = tokio::runtime::Handle::current();
-            let _guard = rt.enter();
-            
-            let client = reqwest::Client::new();
-            let mut req = match method.to_uppercase().as_str() {
-                "POST" => client.post(url),
-                "PUT" => client.put(url),
-                "DELETE" => client.delete(url),
-                "PATCH" => client.patch(url),
-                _ => client.get(url),
-            };
-
-            if let Some(hdrs) = headers {
-                for (k, v) in hdrs {
-                    if let Some(val) = v.as_str() {
-                        req = req.header(k.as_str(), val);
-                    }
-                }
-            }
-
-            if let Some(b) = body {
-                req = req.body(b.to_string());
-            }
-
-            match tokio::task::block_in_place(|| {
-                rt.block_on(async {
-                    req.timeout(std::time::Duration::from_secs(30))
-                        .send()
-                        .await
-                })
-            }) {
-                Ok(resp) => {
-                    let status = resp.status().as_u16();
-                    let body_text = tokio::task::block_in_place(|| {
-                        rt.block_on(async { resp.text().await.unwrap_or_default() })
-                    });
-                    let body_size = body_text.len();
-                    let truncated = if body_size > max_response_bytes { body_text[..max_response_bytes].to_string() + "...[truncated]" } else { body_text };
-                    Ok(serde_json::json!({
-                        "url": url,
-                        "method": method,
-                        "status": status,
-                        "body": truncated,
-                        "body_size": body_size,
-                    }))
-                }
-                Err(e) => Ok(serde_json::json!({
-                    "url": url,
-                    "method": method,
-                    "error": e.to_string(),
-                })),
-            }
-        }
-    }
-
-    skill_registry.register(Box::new(EchoSkill)).await;
-    skill_registry.register(Box::new(WebSearchSkill)).await;
-    skill_registry.register(Box::new(CodeExecSkill)).await;
-    skill_registry.register(Box::new(FileOpsSkill)).await;
-    skill_registry.register(Box::new(HttpRequestSkill)).await;
-
-    tracing::info!("Built-in skills registered: echo, web_search, code_execute, file_ops, http_request");
-}
-
 async fn ws_agent_handler(
     ws: WebSocketUpgrade,
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
@@ -1397,191 +260,6 @@ async fn health_handler() -> impl IntoResponse {
         "version": env!("CARGO_PKG_VERSION"),
     }))
 }
-
-async fn audit_log_middleware(
-    req: axum::http::Request<axum::body::Body>,
-    next: Next,
-) -> axum::response::Response {
-    let method = req.method().clone();
-    let path = req.uri().path().to_string();
-    let query = req.uri().query().map(|q| q.to_string()).unwrap_or_default();
-    let user_agent = req.headers()
-        .get("user-agent")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("unknown")
-        .to_string();
-    let client_ip = req.headers()
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("unknown")
-        .to_string();
-
-    let start = std::time::Instant::now();
-    let response = next.run(req).await;
-    let duration = start.elapsed();
-    let status = response.status().as_u16();
-
-    tracing::info!(
-        method = %method,
-        path = %path,
-        query = %query,
-        status = status,
-        duration_ms = duration.as_millis() as u64,
-        user_agent = %user_agent,
-        client_ip = %client_ip,
-        "API request"
-    );
-
-    response
-}
-
-
-use std::collections::HashMap;
-use tokio::sync::RwLock;
-use std::time::Instant;
-
-#[derive(Clone)]
-pub struct RateLimiter {
-    requests: Arc<RwLock<HashMap<String, Vec<Instant>>>>,
-    max_requests: usize,
-    window_secs: u64,
-}
-
-impl RateLimiter {
-    fn new(max_requests: usize, window_secs: u64) -> Self {
-        Self {
-            requests: Arc::new(RwLock::new(HashMap::new())),
-            max_requests,
-            window_secs,
-        }
-    }
-
-    async fn check(&self, key: &str) -> bool {
-        let mut requests = self.requests.write().await;
-        let now = Instant::now();
-        let window = std::time::Duration::from_secs(self.window_secs);
-
-        let entry = requests.entry(key.to_string()).or_insert_with(Vec::new);
-        entry.retain(|t| now.duration_since(*t) < window);
-
-        if entry.len() >= self.max_requests {
-            false
-        } else {
-            entry.push(now);
-            true
-        }
-    }
-}
-
-async fn rate_limit_middleware(
-    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
-    req: axum::http::Request<axum::body::Body>,
-    next: Next,
-) -> Result<axum::response::Response, axum::http::StatusCode> {
-    let path = req.uri().path();
-    
-    if path == "/health" || path == "/health/deep" || path.starts_with("/ws/") {
-        return Ok(next.run(req).await);
-    }
-
-    let client_ip = req.headers()
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("unknown")
-        .split(',')
-        .next()
-        .unwrap_or("unknown")
-        .trim()
-        .to_string();
-
-    if state.rate_limiter.check(&client_ip).await {
-        Ok(next.run(req).await)
-    } else {
-        Err(axum::http::StatusCode::TOO_MANY_REQUESTS)
-    }
-}
-
-async fn auth_middleware(
-    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
-    req: axum::http::Request<axum::body::Body>,
-    next: Next,
-) -> Result<axum::response::Response, axum::http::StatusCode> {
-    let path = req.uri().path();
-    let method = req.method().clone();
-    
-    if path == "/health" || path == "/health/deep" || path.starts_with("/ws/") || path.starts_with("/api/events") || path.starts_with("/api/auth/") {
-        return Ok(next.run(req).await);
-    }
-
-    let auth_header = req.headers()
-        .get("Authorization")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-
-    let token = auth_header.strip_prefix("Bearer ").unwrap_or_default();
-
-    if token.is_empty() {
-        if state.config.read().await.require_auth {
-            return Err(axum::http::StatusCode::UNAUTHORIZED);
-        }
-        return Ok(next.run(req).await);
-    }
-
-    match state.auth_service.verify_token(token) {
-        Ok(claims) => {
-            let required_permission = get_required_permission(path, &method);
-            if let Some(permission) = required_permission {
-                if !claims.has_permission(&permission) {
-                    tracing::warn!(
-                        user_id = ?claims.user_id,
-                        role = %claims.role,
-                        path = %path,
-                        method = %method,
-                        "Permission denied"
-                    );
-                    return Err(axum::http::StatusCode::FORBIDDEN);
-                }
-            }
-            Ok(next.run(req).await)
-        }
-        Err(_) => Err(axum::http::StatusCode::UNAUTHORIZED),
-    }
-}
-
-fn get_required_permission(path: &str, method: &axum::http::Method) -> Option<maple_gateway::auth::Permission> {
-    use maple_gateway::auth::Permission;
-    
-    match (method.as_str(), path) {
-        ("GET", p) if p.starts_with("/api/workflows") => Some(Permission::ReadWorkflows),
-        ("POST", p) if p.starts_with("/api/workflows") => Some(Permission::WriteWorkflows),
-        ("PUT", p) if p.starts_with("/api/workflows") => Some(Permission::WriteWorkflows),
-        ("DELETE", p) if p.starts_with("/api/workflows") => Some(Permission::DeleteWorkflows),
-        
-        ("GET", p) if p.starts_with("/api/agents") => Some(Permission::ReadAgents),
-        ("POST", p) if p.starts_with("/api/agents") => Some(Permission::WriteAgents),
-        ("DELETE", p) if p.starts_with("/api/agents") => Some(Permission::ManageAgents),
-        
-        ("GET", p) if p.starts_with("/api/sessions") => Some(Permission::ReadSessions),
-        ("DELETE", p) if p.starts_with("/api/sessions") => Some(Permission::DeleteSessions),
-        
-        ("GET", p) if p.starts_with("/api/memories") => Some(Permission::ReadMemories),
-        ("POST", p) if p.starts_with("/api/memories") => Some(Permission::WriteMemories),
-        ("DELETE", p) if p.starts_with("/api/memories") => Some(Permission::DeleteMemories),
-        
-        ("GET", p) if p.starts_with("/api/prompts") => Some(Permission::ReadPrompts),
-        ("POST", p) if p.starts_with("/api/prompts") => Some(Permission::WritePrompts),
-        
-        ("GET", "/api/config") => Some(Permission::ManageConfig),
-        ("PUT", "/api/config") => Some(Permission::ManageConfig),
-        
-        ("GET", "/health/deep") => Some(Permission::ViewMetrics),
-        ("GET", "/api/agents/status") => Some(Permission::ViewMetrics),
-        ("GET", "/api/tasks/stats") => Some(Permission::ViewMetrics),
-        
-        _ => None,
-    }
-}
-
 async fn models_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> impl IntoResponse {
@@ -1665,6 +343,7 @@ async fn chat_stream_handler(
 
     let llm_request = maple_llm::request::LlmRequest::new(enhanced_message, route_key);
     let sid = session_id.clone();
+    let evolver = state.evolver.clone();
 
     let stream = async_stream::stream! {
         if !kb_sources_json.is_empty() {
@@ -1698,6 +377,16 @@ async fn chat_stream_handler(
                             }
                         }
                         let _ = session_store.save_message(&sid, "assistant", &full_content, None, None).await;
+                        // Fire-and-forget: extract knowledge from valuable conversations
+                        let evolver_for_bg = evolver.clone();
+                        let sid_for_bg = sid.clone();
+                        let user_msg_for_bg = req.message.clone();
+                        let assistant_msg_for_bg = full_content.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = evolver_for_bg.on_chat_complete(&sid_for_bg, &user_msg_for_bg, &assistant_msg_for_bg).await {
+                                tracing::warn!(error = %e, "Chat knowledge precipitation failed");
+                            }
+                        });
                         yield Ok(Event::default().event("done").data(serde_json::json!({"done": true}).to_string()));
                     }
                     Err(e) => {
@@ -2876,6 +1565,213 @@ async fn delete_workspace_handler(
     }
 }
 
+// ── Board Task handlers ──
+
+#[derive(serde::Deserialize)]
+struct CreateTaskRequest {
+    title: String,
+    description: Option<String>,
+    status: Option<String>,
+    priority: Option<String>,
+    assignee_name: Option<String>,
+    assignee_avatar: Option<String>,
+    due_date: Option<String>,
+    tags: Option<Vec<String>>,
+}
+
+async fn list_tasks_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::Json<serde_json::Value> {
+    let rows: Vec<(String, String, Option<String>, String, String, Option<String>, Option<String>, Option<String>, String, i64)> =
+        sqlx::query_as("SELECT id, title, description, status, priority, assignee_name, assignee_avatar, due_date, tags, sort_order FROM board_tasks ORDER BY sort_order, created_at")
+            .fetch_all(&state.db)
+            .await
+            .unwrap_or_default();
+
+    let tasks: Vec<serde_json::Value> = rows.into_iter().map(|(id, title, desc, status, priority, assignee_name, assignee_avatar, due_date, tags, _sort)| {
+        let tags_vec: Vec<String> = serde_json::from_str(&tags).unwrap_or_default();
+        serde_json::json!({
+            "id": id,
+            "title": title,
+            "description": desc,
+            "status": status,
+            "priority": priority,
+            "assignee": if let Some(name) = assignee_name {
+                Some(serde_json::json!({"name": name, "avatar": assignee_avatar}))
+            } else { None },
+            "due_date": due_date,
+            "tags": tags_vec,
+        })
+    }).collect();
+
+    axum::Json(serde_json::json!({ "tasks": tasks }))
+}
+
+async fn create_task_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    Json(req): Json<CreateTaskRequest>,
+) -> axum::Json<serde_json::Value> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().timestamp();
+    let status = req.status.unwrap_or_else(|| "todo".to_string());
+    let priority = req.priority.unwrap_or_else(|| "medium".to_string());
+    let tags = serde_json::to_string(&req.tags.unwrap_or_default()).unwrap_or_else(|_| "[]".to_string());
+
+    let _ = sqlx::query(
+        "INSERT INTO board_tasks (id, workspace_id, title, description, status, priority, assignee_name, assignee_avatar, due_date, tags, sort_order, created_at, updated_at) VALUES (?, 'default', ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)"
+    )
+    .bind(&id).bind(&req.title).bind(&req.description).bind(&status).bind(&priority)
+    .bind(&req.assignee_name).bind(&req.assignee_avatar).bind(&req.due_date)
+    .bind(&tags).bind(now).bind(now)
+    .execute(&state.db).await;
+
+    axum::Json(serde_json::json!({ "id": id, "status": status }))
+}
+
+#[derive(serde::Deserialize)]
+struct UpdateTaskRequest {
+    title: Option<String>,
+    description: Option<String>,
+    status: Option<String>,
+    priority: Option<String>,
+    assignee_name: Option<String>,
+    assignee_avatar: Option<String>,
+    due_date: Option<String>,
+    tags: Option<Vec<String>>,
+    sort_order: Option<i64>,
+}
+
+async fn update_task_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(task_id): axum::extract::Path<String>,
+    Json(req): Json<UpdateTaskRequest>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    let now = chrono::Utc::now().timestamp();
+    let mut updates = vec!["updated_at = ?".to_string()];
+    let mut bind_values: Vec<String> = vec![now.to_string()];
+
+    if let Some(v) = &req.title { updates.push("title = ?".to_string()); bind_values.push(v.clone()); }
+    if let Some(v) = &req.description { updates.push("description = ?".to_string()); bind_values.push(v.clone()); }
+    if let Some(v) = &req.status { updates.push("status = ?".to_string()); bind_values.push(v.clone()); }
+    if let Some(v) = &req.priority { updates.push("priority = ?".to_string()); bind_values.push(v.clone()); }
+    if let Some(v) = &req.assignee_name { updates.push("assignee_name = ?".to_string()); bind_values.push(v.clone()); }
+    if let Some(v) = &req.assignee_avatar { updates.push("assignee_avatar = ?".to_string()); bind_values.push(v.clone()); }
+    if let Some(v) = &req.due_date { updates.push("due_date = ?".to_string()); bind_values.push(v.clone()); }
+    if let Some(v) = &req.tags {
+        updates.push("tags = ?".to_string());
+        bind_values.push(serde_json::to_string(v).unwrap_or_else(|_| "[]".to_string()));
+    }
+    if let Some(v) = req.sort_order { updates.push("sort_order = ?".to_string()); bind_values.push(v.to_string()); }
+
+    let sql = format!("UPDATE board_tasks SET {} WHERE id = ?", updates.join(", "));
+    let mut query = sqlx::query(&sql);
+    for val in &bind_values { query = query.bind(val); }
+    query = query.bind(&task_id);
+
+    let result = query.execute(&state.db).await.map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+    if result.rows_affected() > 0 {
+        Ok(axum::Json(serde_json::json!({ "id": task_id, "updated": true })))
+    } else {
+        Err(axum::http::StatusCode::NOT_FOUND)
+    }
+}
+
+async fn delete_task_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(task_id): axum::extract::Path<String>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    let result = sqlx::query("DELETE FROM board_tasks WHERE id = ?")
+        .bind(&task_id).execute(&state.db).await
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+    if result.rows_affected() > 0 {
+        Ok(axum::Json(serde_json::json!({ "id": task_id, "deleted": true })))
+    } else {
+        Err(axum::http::StatusCode::NOT_FOUND)
+    }
+}
+
+// ── Board Comment handlers ──
+
+#[derive(serde::Deserialize)]
+struct CreateCommentRequest {
+    task_id: String,
+    parent_id: Option<String>,
+    author_name: String,
+    author_avatar: Option<String>,
+    author_role: Option<String>,
+    content: String,
+}
+
+async fn list_comments_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(task_id): axum::extract::Path<String>,
+) -> axum::Json<serde_json::Value> {
+    let rows: Vec<(String, Option<String>, String, Option<String>, Option<String>, String, i64, i64)> =
+        sqlx::query_as("SELECT id, parent_id, author_name, author_avatar, author_role, content, likes, created_at FROM board_comments WHERE task_id = ? ORDER BY created_at DESC")
+            .bind(&task_id)
+            .fetch_all(&state.db)
+            .await
+            .unwrap_or_default();
+
+    let comments: Vec<serde_json::Value> = rows.into_iter().map(|(id, parent_id, author_name, author_avatar, author_role, content, likes, created_at)| {
+        serde_json::json!({
+            "id": id,
+            "parent_id": parent_id,
+            "author": { "name": author_name, "avatar": author_avatar, "role": author_role },
+            "content": content,
+            "likes": likes,
+            "created_at": created_at,
+        })
+    }).collect();
+
+    axum::Json(serde_json::json!({ "comments": comments }))
+}
+
+async fn create_comment_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    Json(req): Json<CreateCommentRequest>,
+) -> axum::Json<serde_json::Value> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().timestamp();
+
+    let _ = sqlx::query(
+        "INSERT INTO board_comments (id, task_id, parent_id, author_name, author_avatar, author_role, content, likes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)"
+    )
+    .bind(&id).bind(&req.task_id).bind(&req.parent_id).bind(&req.author_name)
+    .bind(&req.author_avatar).bind(&req.author_role).bind(&req.content).bind(now)
+    .execute(&state.db).await;
+
+    axum::Json(serde_json::json!({ "id": id }))
+}
+
+async fn delete_comment_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(comment_id): axum::extract::Path<String>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    let result = sqlx::query("DELETE FROM board_comments WHERE id = ?")
+        .bind(&comment_id).execute(&state.db).await
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+    if result.rows_affected() > 0 {
+        Ok(axum::Json(serde_json::json!({ "id": comment_id, "deleted": true })))
+    } else {
+        Err(axum::http::StatusCode::NOT_FOUND)
+    }
+}
+
+async fn like_comment_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(comment_id): axum::extract::Path<String>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    let result = sqlx::query("UPDATE board_comments SET likes = likes + 1 WHERE id = ?")
+        .bind(&comment_id).execute(&state.db).await
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+    if result.rows_affected() > 0 {
+        Ok(axum::Json(serde_json::json!({ "id": comment_id, "liked": true })))
+    } else {
+        Err(axum::http::StatusCode::NOT_FOUND)
+    }
+}
+
 async fn deep_health_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> axum::Json<serde_json::Value> {
@@ -3197,12 +2093,12 @@ async fn main() -> anyhow::Result<()> {
     let database_url = &config.database_url;
 
     let pool = sqlx::SqlitePool::connect(database_url).await?;
-    run_migrations(&pool).await?;
+    db::run_migrations(&pool).await?;
 
     let event_bus = Arc::new(EventBus::new());
-    let llm_router = build_llm_router(&config);
+    let llm_router = config::build_llm_router(&config);
     let skill_registry = Arc::new(SkillRegistry::new());
-    register_builtin_skills(&skill_registry).await;
+    skills::register_builtin_skills(&skill_registry).await;
     let hook_runner = Arc::new(HookRunner::new());
     let checkpoint_mgr = Arc::new(CheckpointManager::new(pool.clone()));
     let agent_registry = Arc::new(AgentRegistry::new());
@@ -3233,11 +2129,47 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    let agent_registry_for_handler = agent_registry.clone();
+    let llm_router_for_handler = llm_router.clone();
+    let agent_handler: maple_engine::executor::AgentHandler = Arc::new(move |agent_id: String, goal: String| {
+        let reg = agent_registry_for_handler.clone();
+        let llm = llm_router_for_handler.clone();
+        Box::pin(async move {
+            // Try to dispatch to a connected agent via task channel
+            if let Some(tx) = reg.get_task_channel(&agent_id).await {
+                let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+                let task_id = uuid::Uuid::new_v4().to_string();
+                reg.register_result_channel(&task_id, result_tx).await;
+                let task = maple_agent::registry::AgentTask {
+                    task_id: task_id.clone(),
+                    goal: goal.clone(),
+                    tools: Vec::new(),
+                    role: maple_agent::registry::AgentRole::Executor,
+                    timeout_secs: 120,
+                };
+                tx.send(task).await.map_err(|_| anyhow::anyhow!("Agent channel closed"))?;
+                match tokio::time::timeout(std::time::Duration::from_secs(120), result_rx).await {
+                    Ok(Ok(result)) => return Ok(result),
+                    Ok(Err(_)) => return Err(anyhow::anyhow!("Agent result channel closed")),
+                    Err(_) => return Err(anyhow::anyhow!("Agent {} timed out", agent_id)),
+                }
+            }
+            // Fallback: use LLM with agent context
+            let agent = reg.get_agent(&agent_id).await;
+            let agent_desc = agent.as_ref().map(|a| a.description.as_deref().unwrap_or(&a.name)).unwrap_or("assistant");
+            let prompt = format!("You are an AI agent named '{}'. {}\n\nTask: {}", agent_id, agent_desc, goal);
+            let request = maple_llm::request::LlmRequest::new(&prompt, "default");
+            let adapter = llm.route(&request).await?;
+            let response = adapter.complete(request).await?;
+            Ok(response.text())
+        })
+    });
+
     let node_executor = NodeExecutor::new(
         llm_router.clone(),
         skill_registry.clone(),
         hook_runner.clone(),
-    );
+    ).with_agent_handler(agent_handler);
 
     let workflow_executor = Arc::new(WorkflowExecutor::new(
         event_bus.clone(),
@@ -3287,6 +2219,10 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let memory_store = Arc::new(tokio::sync::Mutex::new(MemoryStore::new(pool.clone())));
+    let evolver = Arc::new(
+        maple_kb::evolver::Evolver::new(llm_router.clone())
+            .with_memory_store(memory_store.clone())
+    );
     let prompt_version_mgr = Arc::new(PromptVersionManager::new(pool.clone()));
     let task_queue = Arc::new(TaskQueueService::new(pool.clone()));
     task_queue.init_schema().await?;
@@ -3350,7 +2286,7 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    let rate_limiter = RateLimiter::new(100, 60);
+    let rate_limiter = state::RateLimiter::new(100, 60);
 
     let state = Arc::new(AppState {
         config: Arc::new(tokio::sync::RwLock::new(config.clone())),
@@ -3370,6 +2306,7 @@ async fn main() -> anyhow::Result<()> {
         indexer: indexer.clone(),
         embedder,
         memory_store: memory_store.clone(),
+        evolver: evolver.clone(),
         prompt_version_mgr: prompt_version_mgr.clone(),
         task_queue: task_queue.clone(),
         mcp_host: Arc::new(McpHostManager::new()),
@@ -3442,6 +2379,13 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/executions/:id", get(get_execution_handler))
         .route("/api/executions/:id/checkpoints", get(get_checkpoints_handler))
         .route("/api/workspaces/:id", get(get_workspace_handler).put(update_workspace_handler).delete(delete_workspace_handler))
+        // Collaboration board APIs
+        .route("/api/board/tasks", get(list_tasks_handler).post(create_task_handler))
+        .route("/api/board/tasks/:id", put(update_task_handler).delete(delete_task_handler))
+        .route("/api/board/tasks/:id/comments", get(list_comments_handler))
+        .route("/api/board/comments", post(create_comment_handler))
+        .route("/api/board/comments/:id", delete(delete_comment_handler))
+        .route("/api/board/comments/:id/like", post(like_comment_handler))
         .route("/api/auth/login", post(login_handler))
         .route("/api/auth/token", post(token_handler))
         .route("/api/auth/register", post(register_handler))
@@ -3475,9 +2419,10 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .merge(rpc_router)
         .merge(state_routes)
+        .layer(middleware::from_fn_with_state(state.clone(), metrics::metrics_middleware))
         .layer(middleware::from_fn_with_state(state.clone(), rate_limit_middleware))
-        .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
-        .layer(middleware::from_fn(audit_log_middleware))
+        .layer(middleware::from_fn_with_state(state.clone(), middleware::auth_middleware))
+        .layer(middleware::from_fn(middleware::audit_log_middleware))
         .layer(cors)
         .layer(TraceLayer::new_for_http());
 

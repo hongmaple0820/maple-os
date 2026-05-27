@@ -177,16 +177,34 @@ impl AppMetrics {
         String::from_utf8(buffer).unwrap()
     }
     
-    /// 更新系统指标
+    /// 更新系统指标 (使用 /proc 或 sysinfo 获取真实值)
     pub fn update_system_metrics(&self) {
-        // 这里可以添加实际的系统指标收集逻辑
-        // 例如：内存使用、CPU使用等
-        
-        // 示例：模拟内存使用
-        self.memory_usage.set(1024.0 * 1024.0 * 100.0); // 100MB
-        
-        // 示例：模拟CPU使用
-        self.cpu_usage.set(25.0); // 25%
+        // Read memory usage from /proc/self/status (Linux) or estimate from process
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+                for line in status.lines() {
+                    if line.starts_with("VmRSS:") {
+                        if let Some(kb_str) = line.split_whitespace().nth(1) {
+                            if let Ok(kb) = kb_str.parse::<f64>() {
+                                self.memory_usage.set(kb * 1024.0); // Convert KB to bytes
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // On non-Linux or if /proc read fails, use a conservative estimate
+        #[cfg(not(target_os = "linux"))]
+        {
+            // Use 50MB as baseline estimate when we can't read real values
+            self.memory_usage.set(1024.0 * 1024.0 * 50.0);
+        }
+
+        // CPU usage requires sampling over time; use 0 as "not yet measured"
+        // A background task should periodically compute delta and update this
+        // For now, leave at 0 to indicate "no data" rather than a fake value
     }
 }
 
@@ -198,21 +216,34 @@ impl Default for AppMetrics {
 
 /// 指标中间件
 pub async fn metrics_middleware(
+    axum::extract::State(state): axum::extract::State<Arc<crate::AppState>>,
     req: axum::http::Request<axum::body::Body>,
     next: axum::middleware::Next,
 ) -> impl axum::response::IntoResponse {
     let start = std::time::Instant::now();
     let method = req.method().clone();
     let path = req.uri().path().to_string();
-    
+
     let response = next.run(req).await;
-    
+
     let duration = start.elapsed();
     let status = response.status().as_u16();
-    
-    // 这里可以添加指标记录逻辑
-    // 例如：记录HTTP请求总数、持续时间等
-    
+
+    // Record HTTP metrics to Prometheus
+    state.metrics.http_requests_total.inc();
+    state.metrics.http_request_duration.observe(duration.as_secs_f64());
+
+    // Log slow requests (> 2s)
+    if duration.as_secs() >= 2 {
+        tracing::warn!(
+            method = %method,
+            path = %path,
+            status = status,
+            duration_ms = duration.as_millis(),
+            "Slow request"
+        );
+    }
+
     response
 }
 

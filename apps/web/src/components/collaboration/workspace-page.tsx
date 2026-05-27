@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   LayoutDashboard,
   KanbanSquare,
@@ -24,24 +24,32 @@ import {
 import KanbanBoard, { Task } from "./kanban-board";
 import OnlineStatus from "./online-status";
 import Comments from "./comments";
+import { mapleApi } from "@/lib/api";
 
 export default function CollaborationWorkspace() {
   const [activeTab, setActiveTab] = useState<"overview" | "kanban" | "team" | "discussions">("kanban");
   const [showTaskDetail, setShowTaskDetail] = useState<Task | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const [taskCounts, setTaskCounts] = useState({ todo: 0, "in-progress": 0, review: 0, done: 0 });
+
+  useEffect(() => {
+    mapleApi<{ tasks: Array<{ status: string }> }>("/api/board/tasks")
+      .then((res) => {
+        const tasks = res.tasks ?? [];
+        const counts = { todo: 0, "in-progress": 0, review: 0, done: 0 };
+        for (const t of tasks) {
+          if (t.status in counts) counts[t.status as keyof typeof counts]++;
+        }
+        setTaskCounts(counts);
+      })
+      .catch(() => {});
+  }, [activeTab]);
 
   const stats = [
-    { label: "待办任务", value: 8, icon: Clock, color: "bg-amber-100 text-amber-700" },
-    { label: "进行中", value: 5, icon: Activity, color: "bg-blue-100 text-blue-700" },
-    { label: "已完成", value: 12, icon: CheckCircle2, color: "bg-emerald-100 text-emerald-700" },
-    { label: "团队效率", value: "87%", icon: TrendingUp, color: "bg-primary/10 text-primary" },
-  ];
-
-  const recentActivities = [
-    { user: "张三", action: "完成了", target: "数据库设计", time: "5分钟前" },
-    { user: "李四", action: "评论了", target: "API 接口文档", time: "12分钟前" },
-    { user: "王五", action: "创建了", target: "用户认证任务", time: "30分钟前" },
-    { user: "赵六", action: "上传了", target: "设计稿 v2.0", time: "1小时前" },
+    { label: "待办任务", value: taskCounts.todo, icon: Clock, color: "bg-amber-100 text-amber-700" },
+    { label: "进行中", value: taskCounts["in-progress"], icon: Activity, color: "bg-blue-100 text-blue-700" },
+    { label: "已完成", value: taskCounts.done, icon: CheckCircle2, color: "bg-emerald-100 text-emerald-700" },
+    { label: "审核中", value: taskCounts.review, icon: TrendingUp, color: "bg-primary/10 text-primary" },
   ];
 
   return (
@@ -308,6 +316,7 @@ export default function CollaborationWorkspace() {
 
                 {/* Comments Section */}
                 <Comments
+                  taskId={showTaskDetail.id}
                   title="任务讨论"
                   placeholder="添加评论..."
                 />

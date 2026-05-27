@@ -1,12 +1,11 @@
 import { View, Text, TextInput, FlatList, StyleSheet } from "react-native";
 import { useState, useEffect } from "react";
-import { mobileRpcCall } from "../../src/lib/api";
+import { mobileRpcCall, mobileSseCall } from "../../src/lib/api";
 
 interface AgentOption { id: string; name: string }
 interface Message { id: string; role: "user" | "assistant"; content: string; timestamp: number }
 
 interface AgentListResult { agents: AgentOption[] }
-interface AgentChatResult { reply: string }
 
 export default function ChatScreen() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -34,22 +33,25 @@ export default function ChatScreen() {
     const assistantMsg: Message = { id: `msg-${Date.now() + 1}`, role: "assistant", content: "", timestamp: Date.now() };
     setMessages((prev) => [...prev, assistantMsg]);
 
-    try {
-      const res = await mobileRpcCall<AgentChatResult>("agent.chat", { message: userMsg.content, agent_id: selectedAgent });
-      setMessages((prev) => {
-        const updated = [...prev];
-        updated[updated.length - 1].content = res.reply ?? "";
-        return updated;
-      });
-    } catch (err) {
-      setMessages((prev) => {
-        const updated = [...prev];
-        updated[updated.length - 1].content = `Error: ${(err as Error).message}`;
-        return updated;
-      });
-    } finally {
-      setStreaming(false);
-    }
+    await mobileSseCall(
+      { message: userMsg.content, agent_id: selectedAgent },
+      (token) => {
+        setMessages((prev) => {
+          const updated = [...prev];
+          updated[updated.length - 1].content += token;
+          return updated;
+        });
+      },
+      (_done) => { setStreaming(false); },
+      (error) => {
+        setMessages((prev) => {
+          const updated = [...prev];
+          updated[updated.length - 1].content = `Error: ${error}`;
+          return updated;
+        });
+        setStreaming(false);
+      },
+    );
   };
 
   const renderMessage = ({ item }: { item: Message }) => (

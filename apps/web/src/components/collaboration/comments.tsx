@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import {
   MessageSquare,
   Send,
@@ -17,6 +17,7 @@ import {
   Check,
   X
 } from "lucide-react";
+import { mapleApi } from "@/lib/api";
 
 export interface Comment {
   id: string;
@@ -41,6 +42,7 @@ export interface Comment {
 
 interface CommentsProps {
   comments?: Comment[];
+  taskId?: string;
   title?: string;
   placeholder?: string;
   onSendComment?: (content: string) => void;
@@ -123,6 +125,7 @@ const getFileIcon = (type: string) => {
 
 export function Comments({
   comments = defaultComments,
+  taskId,
   title = "讨论区",
   placeholder = "发表你的看法...",
   onSendComment,
@@ -132,6 +135,23 @@ export function Comments({
   onLike,
 }: CommentsProps) {
   const [commentList, setCommentList] = useState<Comment[]>(comments);
+
+  useEffect(() => {
+    if (!taskId) return;
+    mapleApi<{ comments: Array<{ id: string; parent_id?: string; author: { name: string; avatar?: string; role?: string }; content: string; likes: number; created_at: number }> }>(
+      `/api/board/tasks/${taskId}/comments`
+    ).then((res) => {
+      const mapped: Comment[] = (res.comments ?? []).map((c) => ({
+        id: c.id,
+        author: c.author,
+        content: c.content,
+        timestamp: new Date(c.created_at * 1000).toLocaleString("zh-CN"),
+        likes: c.likes,
+        replies: [],
+      }));
+      setCommentList(mapped);
+    }).catch(() => {});
+  }, [taskId]);
   const [newComment, setNewComment] = useState("");
   const [replyTo, setReplyTo] = useState<string | null>(null);
   const [replyContent, setReplyContent] = useState("");
@@ -144,7 +164,7 @@ export function Comments({
 
   const handleSend = () => {
     if (!newComment.trim()) return;
-    
+
     const comment: Comment = {
       id: `comment-${Date.now()}`,
       author: {
@@ -156,10 +176,17 @@ export function Comments({
       timestamp: "刚刚",
       likes: 0,
     };
-    
+
     setCommentList([comment, ...commentList]);
     setNewComment("");
     onSendComment?.(newComment);
+
+    if (taskId) {
+      mapleApi("/api/board/comments", {
+        method: "POST",
+        body: { task_id: taskId, author_name: comment.author.name, author_avatar: comment.author.avatar, author_role: comment.author.role, content: comment.content },
+      }).catch(() => {});
+    }
   };
 
   const handleReply = (commentId: string) => {
@@ -205,6 +232,7 @@ export function Comments({
   const handleDelete = (commentId: string) => {
     setCommentList(commentList.filter((c) => c.id !== commentId));
     onDelete?.(commentId);
+    mapleApi(`/api/board/comments/${commentId}`, { method: "DELETE" }).catch(() => {});
   };
 
   const handleLike = (commentId: string) => {
@@ -216,6 +244,7 @@ export function Comments({
       )
     );
     onLike?.(commentId);
+    mapleApi(`/api/board/comments/${commentId}/like`, { method: "POST" }).catch(() => {});
   };
 
   const insertEmoji = (emoji: string) => {

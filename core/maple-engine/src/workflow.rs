@@ -48,6 +48,11 @@ pub enum NodeType {
     Delay {
         duration_secs: u64,
     },
+    Agent {
+        agent_id: String,
+        goal: String,
+        timeout_secs: Option<u64>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
