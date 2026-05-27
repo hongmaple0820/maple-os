@@ -166,11 +166,11 @@ impl NodeExecutor {
     ) -> Result<Value> {
         if let Some(handler) = &self.agent_handler {
             let timeout = timeout_secs.unwrap_or(120);
-            let agent_id = agent_id.to_string();
+            let agent_id_owned = agent_id.to_string();
             let goal = goal.to_string();
             match tokio::time::timeout(
                 std::time::Duration::from_secs(timeout),
-                handler(agent_id, goal),
+                handler(agent_id_owned, goal),
             ).await {
                 Ok(result) => result.map(|s| Value::String(s)),
                 Err(_) => anyhow::bail!("Agent {} timed out after {}s", agent_id, timeout),
