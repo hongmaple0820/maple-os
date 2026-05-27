@@ -12,15 +12,17 @@ use axum::Router;
 use axum::extract::ws::WebSocketUpgrade;
 use axum::response::IntoResponse;
 use axum::response::sse::{Event, Sse};
-use axum::routing::{get, post, delete};
+use axum::routing::{get, post, put, delete};
 use std::convert::Infallible;
-use axum::middleware::{self, Next};
+use axum::middleware::Next;
 
 use state::{AppState, ApiError, ServerConfig};
 use maple_engine::workflow::Workflow;
 use maple_engine::executor::{WorkflowExecutor, NodeExecutor};
 use maple_engine::event_bus::EventBus;
 use maple_engine::skill_registry::SkillRegistry;
+use maple_engine::hooks::HookRunner;
+use maple_engine::checkpoint::CheckpointManager;
 use maple_llm::router::LlmRouter;
 use maple_agent::registry::AgentRegistry;
 use maple_agent::react_loop::{ReactLoop, Session, ToolExecutor, ToolUse, ToolResult};
@@ -41,7 +43,7 @@ use maple_kb::prompt_version::PromptVersionManager;
 use maple_engine::task_queue::TaskQueueService;
 use maple_engine::scheduler::{Scheduler, ScheduledJob};
 use maple_gateway::mcp_host::McpHostManager;
-use maple_llm::embedding::Embedder;
+use maple_llm::embedding::{Embedder, OllamaEmbedder, FallbackEmbedder};
 use maple_collab::workspace::WorkspaceManager;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -2034,51 +2036,6 @@ async fn delete_agent_handler(
     }
 }
 
-#[derive(Clone)]
-pub struct ServerConfig {
-    pub host: String,
-    pub port: u16,
-    pub database_url: String,
-    pub jwt_secret: String,
-    pub require_auth: bool,
-    pub admin_username: String,
-    pub admin_password: String,
-    pub usage_limit_usd: f64,
-    pub log_level: String,
-}
-
-impl ServerConfig {
-    pub fn from_env() -> Self {
-        Self {
-            host: std::env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string()),
-            port: std::env::var("PORT")
-                .unwrap_or_else(|_| "7788".to_string())
-                .parse()
-                .unwrap_or(7788),
-            database_url: std::env::var("DATABASE_URL")
-                .unwrap_or_else(|_| "sqlite:mapleos.db?mode=rwc".to_string()),
-            jwt_secret: std::env::var("JWT_SECRET")
-                .unwrap_or_else(|_| "mapleos-dev-secret-change-me".to_string()),
-            require_auth: std::env::var("REQUIRE_AUTH")
-                .unwrap_or_else(|_| "true".to_string()) == "true",
-            admin_username: std::env::var("ADMIN_USERNAME")
-                .unwrap_or_else(|_| "admin".to_string()),
-            admin_password: std::env::var("ADMIN_PASSWORD")
-                .unwrap_or_else(|_| "mapleos".to_string()),
-            usage_limit_usd: std::env::var("USAGE_LIMIT_USD")
-                .unwrap_or_else(|_| "50.0".to_string())
-                .parse()
-                .unwrap_or(50.0),
-            log_level: std::env::var("LOG_LEVEL")
-                .unwrap_or_else(|_| "mapleos_server=debug,maple_engine=debug,maple_llm=debug".to_string()),
-        }
-    }
-
-    pub fn bind_address(&self) -> String {
-        format!("{}:{}", self.host, self.port)
-    }
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config = ServerConfig::from_env();
@@ -2158,7 +2115,7 @@ async fn main() -> anyhow::Result<()> {
             let agent = reg.get_agent(&agent_id).await;
             let agent_desc = agent.as_ref().map(|a| a.description.as_deref().unwrap_or(&a.name)).unwrap_or("assistant");
             let prompt = format!("You are an AI agent named '{}'. {}\n\nTask: {}", agent_id, agent_desc, goal);
-            let request = maple_llm::request::LlmRequest::new(&prompt, "default");
+            let request = maple_llm::request::LlmRequest::new(prompt, "default");
             let adapter = llm.route(&request).await?;
             let response = adapter.complete(request).await?;
             Ok(response.text())
@@ -2419,10 +2376,10 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .merge(rpc_router)
         .merge(state_routes)
-        .layer(middleware::from_fn_with_state(state.clone(), metrics::metrics_middleware))
-        .layer(middleware::from_fn_with_state(state.clone(), rate_limit_middleware))
-        .layer(middleware::from_fn_with_state(state.clone(), middleware::auth_middleware))
-        .layer(middleware::from_fn(middleware::audit_log_middleware))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), metrics::metrics_middleware))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), middleware::rate_limit_middleware))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), middleware::auth_middleware))
+        .layer(axum::middleware::from_fn(middleware::audit_log_middleware))
         .layer(cors)
         .layer(TraceLayer::new_for_http());
 
