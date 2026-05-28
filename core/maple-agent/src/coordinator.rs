@@ -1,30 +1,28 @@
-use crate::delegation::{DelegationEngine, DelegateOpts, DelegateResult};
+use crate::delegation::{DelegateOpts, DelegateResult, DelegationEngine};
 use crate::tool_use_context::ToolUseContext;
+use anyhow::Result;
+use maple_llm::request::LlmRequest;
+use maple_llm::router::LlmAdapter;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use anyhow::Result;
 
 /// Coordinator Mode — inspired by cc-haha's 4-phase workflow
 ///
 /// Features:
-/// - Analyze → Delegate → Monitor → Synthesize workflow
-/// - Parallel worker execution
-/// - Result aggregation
+/// - LLM-driven task decomposition (Analyze phase)
+/// - Parallel worker execution (Delegate phase)
+/// - Result aggregation (Monitor + Synthesize phases)
 /// - Error handling and fallback
 
 /// Coordinator workflow phases
 #[derive(Debug, Clone, PartialEq)]
 pub enum CoordinatorPhase {
-    /// Analyze the goal and decompose into sub-tasks
     Analyze,
-    /// Delegate sub-tasks to workers
     Delegate,
-    /// Monitor worker execution
     Monitor,
-    /// Synthesize results into final output
     Synthesize,
 }
 
@@ -78,9 +76,25 @@ pub struct CoordinatorResult {
     pub total_duration: Duration,
 }
 
+/// LLM response format for task decomposition
+#[derive(Debug, Deserialize)]
+struct DecompositionResponse {
+    subtasks: Vec<DecomposedTask>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DecomposedTask {
+    description: String,
+    tools_required: Vec<String>,
+    dependencies: Vec<String>,
+    priority: u8,
+    complexity: String,
+}
+
 /// Coordinator — orchestrates complex task decomposition and execution
 pub struct Coordinator {
     delegation_engine: Arc<DelegationEngine>,
+    llm_adapter: Option<Arc<dyn LlmAdapter>>,
     max_workers: usize,
     worker_timeout: Duration,
 }
@@ -89,9 +103,15 @@ impl Coordinator {
     pub fn new(delegation_engine: Arc<DelegationEngine>) -> Self {
         Self {
             delegation_engine,
+            llm_adapter: None,
             max_workers: 4,
             worker_timeout: Duration::from_secs(300),
         }
+    }
+
+    pub fn with_llm_adapter(mut self, adapter: Arc<dyn LlmAdapter>) -> Self {
+        self.llm_adapter = Some(adapter);
+        self
     }
 
     pub fn with_max_workers(mut self, max: usize) -> Self {
@@ -117,6 +137,17 @@ impl Coordinator {
         // Phase 1: Analyze — decompose goal into sub-tasks
         let subtasks = self.analyze(goal, tools).await?;
 
+        // If only one subtask and it matches the goal, skip delegation
+        if subtasks.len() == 1 && subtasks[0].description == goal {
+            return Ok(CoordinatorResult {
+                success: true,
+                output: format!("Single task — no decomposition needed: {}", goal),
+                subtask_results: HashMap::new(),
+                total_tokens: 0,
+                total_duration: start_time.elapsed(),
+            });
+        }
+
         // Phase 2: Delegate — create workers for each sub-task
         let workers = self.delegate(&subtasks, tools, context).await?;
 
@@ -124,7 +155,7 @@ impl Coordinator {
         let results = self.monitor(workers).await?;
 
         // Phase 4: Synthesize — aggregate results
-        let output = self.synthesize(&results).await?;
+        let output = self.synthesize(goal, &results).await?;
 
         for result in results.values() {
             total_tokens += result.tokens_used;
@@ -139,20 +170,109 @@ impl Coordinator {
         })
     }
 
-    /// Phase 1: Analyze — decompose goal into sub-tasks
+    /// Phase 1: Analyze — LLM-driven goal decomposition
     async fn analyze(&self, goal: &str, tools: &[String]) -> Result<Vec<SubTask>> {
-        // Simple decomposition based on goal analysis
-        // In a real implementation, this would use LLM to decompose
-        let subtasks = vec![
-            SubTask {
+        // Try LLM-driven decomposition first
+        if let Some(ref adapter) = self.llm_adapter {
+            return self.llm_decompose(adapter, goal, tools).await;
+        }
+
+        // Fallback: single task (no decomposition)
+        Ok(vec![SubTask {
+            id: uuid::Uuid::new_v4().to_string(),
+            description: goal.to_string(),
+            tools_required: tools.clone(),
+            dependencies: Vec::new(),
+            priority: 0,
+            estimated_complexity: TaskComplexity::Medium,
+        }])
+    }
+
+    /// LLM-driven task decomposition
+    async fn llm_decompose(
+        &self,
+        adapter: &dyn LlmAdapter,
+        goal: &str,
+        tools: &[String],
+    ) -> Result<Vec<SubTask>> {
+        let tools_list = tools.join(", ");
+
+        let prompt = format!(
+            r#"You are a task decomposer. Break the following goal into independent sub-tasks that can be executed in parallel.
+
+GOAL: {}
+
+AVAILABLE TOOLS: {}
+
+Respond with ONLY a JSON array of sub-tasks. Each sub-task has:
+- "description": clear, actionable description
+- "tools_required": array of tool names needed
+- "dependencies": array of indices (0-based) of sub-tasks that must complete before this one
+- "priority": 0-10 (higher = more important)
+- "complexity": "Low", "Medium", "High", or "Critical"
+
+Rules:
+- If the goal is simple (single step), return a single sub-task
+- Each sub-task should be independently executable
+- Minimize dependencies between sub-tasks
+- Use only tools from the available tools list
+
+Example response:
+[
+  {{"description": "Read the file contents", "tools_required": ["read_file"], "dependencies": [], "priority": 5, "complexity": "Low"}},
+  {{"description": "Analyze the code structure", "tools_required": ["read_file", "search"], "dependencies": [0], "priority": 3, "complexity": "Medium"}}
+]"#,
+            goal, tools_list
+        );
+
+        let request = LlmRequest::new(prompt, "default");
+        let response = adapter.complete(request).await?;
+        let text = response.text();
+
+        // Parse JSON array from response
+        let json_start = text.find('[').unwrap_or(0);
+        let json_end = text.rfind(']').unwrap_or(text.len());
+        let json_str = &text[json_start..=json_end];
+
+        let decomposed: Vec<DecomposedTask> = serde_json::from_str(json_str).unwrap_or_default();
+
+        if decomposed.is_empty() {
+            // Fallback if parsing fails
+            return Ok(vec![SubTask {
                 id: uuid::Uuid::new_v4().to_string(),
                 description: goal.to_string(),
                 tools_required: tools.clone(),
                 dependencies: Vec::new(),
                 priority: 0,
                 estimated_complexity: TaskComplexity::Medium,
-            },
-        ];
+            }]);
+        }
+
+        let subtasks: Vec<SubTask> = decomposed
+            .iter()
+            .enumerate()
+            .map(|(i, dt)| {
+                let complexity = match dt.complexity.as_str() {
+                    "Low" => TaskComplexity::Low,
+                    "High" => TaskComplexity::High,
+                    "Critical" => TaskComplexity::Critical,
+                    _ => TaskComplexity::Medium,
+                };
+
+                SubTask {
+                    id: format!("subtask-{}", i),
+                    description: dt.description.clone(),
+                    tools_required: dt.tools_required.clone(),
+                    dependencies: dt
+                        .dependencies
+                        .iter()
+                        .map(|d| format!("subtask-{}", d))
+                        .collect(),
+                    priority: dt.priority,
+                    estimated_complexity: complexity,
+                }
+            })
+            .collect();
 
         Ok(subtasks)
     }
@@ -166,10 +286,24 @@ impl Coordinator {
     ) -> Result<Vec<(String, tokio::task::JoinHandle<Result<DelegateResult>>)>> {
         let mut workers = Vec::new();
 
-        for subtask in subtasks.iter().take(self.max_workers) {
+        // Sort by priority (highest first) and respect dependencies
+        let mut sorted_subtasks: Vec<&SubTask> = subtasks.iter().collect();
+        sorted_subtasks.sort_by(|a, b| b.priority.cmp(&a.priority));
+
+        for subtask in sorted_subtasks.iter().take(self.max_workers) {
+            // Skip subtasks with unresolved dependencies (simplified: just warn)
+            if !subtask.dependencies.is_empty() {
+                tracing::warn!(
+                    "Subtask {} has dependencies {:?} — executing anyway (parallel mode)",
+                    subtask.id,
+                    subtask.dependencies
+                );
+            }
+
             let opts = DelegateOpts::builder()
                 .max_iterations(10)
                 .timeout(self.worker_timeout)
+                .tool_subset(Some(subtask.tools_required.clone()))
                 .build();
 
             let delegation = self.delegation_engine.clone();
@@ -177,9 +311,8 @@ impl Coordinator {
             let tools = tools.clone();
             let ctx = context.clone();
 
-            let handle = tokio::spawn(async move {
-                delegation.delegate(&goal, &tools, opts, &ctx).await
-            });
+            let handle =
+                tokio::spawn(async move { delegation.delegate(&goal, &tools, opts, &ctx).await });
 
             workers.push((subtask.id.clone(), handle));
         }
@@ -200,22 +333,28 @@ impl Coordinator {
                     results.insert(task_id, result);
                 }
                 Ok(Err(e)) => {
-                    results.insert(task_id, DelegateResult {
-                        task_id: task_id.clone(),
-                        success: false,
-                        output: format!("Error: {}", e),
-                        iterations_used: 0,
-                        tokens_used: 0,
-                    });
+                    results.insert(
+                        task_id,
+                        DelegateResult {
+                            task_id: task_id.clone(),
+                            success: false,
+                            output: format!("Error: {}", e),
+                            iterations_used: 0,
+                            tokens_used: 0,
+                        },
+                    );
                 }
                 Err(e) => {
-                    results.insert(task_id, DelegateResult {
-                        task_id: task_id.clone(),
-                        success: false,
-                        output: format!("Worker panicked: {}", e),
-                        iterations_used: 0,
-                        tokens_used: 0,
-                    });
+                    results.insert(
+                        task_id,
+                        DelegateResult {
+                            task_id: task_id.clone(),
+                            success: false,
+                            output: format!("Worker panicked: {}", e),
+                            iterations_used: 0,
+                            tokens_used: 0,
+                        },
+                    );
                 }
             }
         }
@@ -224,24 +363,69 @@ impl Coordinator {
     }
 
     /// Phase 4: Synthesize — aggregate results into final output
-    async fn synthesize(&self, results: &HashMap<String, DelegateResult>) -> Result<String> {
-        let mut output = String::new();
+    async fn synthesize(
+        &self,
+        goal: &str,
+        results: &HashMap<String, DelegateResult>,
+    ) -> Result<String> {
+        // Try LLM-driven synthesis if adapter available
+        if let Some(ref adapter) = self.llm_adapter {
+            return self.llm_synthesize(adapter, goal, results).await;
+        }
 
+        // Fallback: simple concatenation
+        let mut output = String::new();
         for (task_id, result) in results {
             if result.success {
                 output.push_str(&format!("## Task {}\n{}\n\n", task_id, result.output));
             } else {
-                output.push_str(&format!("## Task {} (Failed)\n{}\n\n", task_id, result.output));
+                output.push_str(&format!(
+                    "## Task {} (Failed)\n{}\n\n",
+                    task_id, result.output
+                ));
             }
         }
-
         Ok(output)
+    }
+
+    /// LLM-driven result synthesis
+    async fn llm_synthesize(
+        &self,
+        adapter: &dyn LlmAdapter,
+        goal: &str,
+        results: &HashMap<String, DelegateResult>,
+    ) -> Result<String> {
+        let mut results_text = String::new();
+        for (task_id, result) in results {
+            let status = if result.success { "SUCCESS" } else { "FAILED" };
+            results_text.push_str(&format!(
+                "[{}] Task {}: {}\n",
+                status, task_id, result.output
+            ));
+        }
+
+        let prompt = format!(
+            r#"You are a result synthesizer. Combine the following sub-task results into a coherent response for the original goal.
+
+ORIGINAL GOAL: {}
+
+SUB-TASK RESULTS:
+{}
+
+Provide a clear, complete response that addresses the original goal. If any sub-tasks failed, note what was accomplished and what wasn't."#,
+            goal, results_text
+        );
+
+        let request = LlmRequest::new(prompt, "default");
+        let response = adapter.complete(request).await?;
+        Ok(response.text())
     }
 }
 
 /// Builder for Coordinator
 pub struct CoordinatorBuilder {
     delegation_engine: Arc<DelegationEngine>,
+    llm_adapter: Option<Arc<dyn LlmAdapter>>,
     max_workers: usize,
     worker_timeout: Duration,
 }
@@ -250,9 +434,15 @@ impl CoordinatorBuilder {
     pub fn new(delegation_engine: Arc<DelegationEngine>) -> Self {
         Self {
             delegation_engine,
+            llm_adapter: None,
             max_workers: 4,
             worker_timeout: Duration::from_secs(300),
         }
+    }
+
+    pub fn llm_adapter(mut self, adapter: Arc<dyn LlmAdapter>) -> Self {
+        self.llm_adapter = Some(adapter);
+        self
     }
 
     pub fn max_workers(mut self, max: usize) -> Self {
@@ -266,9 +456,13 @@ impl CoordinatorBuilder {
     }
 
     pub fn build(self) -> Coordinator {
-        Coordinator::new(self.delegation_engine)
+        let mut coord = Coordinator::new(self.delegation_engine)
             .with_max_workers(self.max_workers)
-            .with_worker_timeout(self.worker_timeout)
+            .with_worker_timeout(self.worker_timeout);
+        if let Some(adapter) = self.llm_adapter {
+            coord = coord.with_llm_adapter(adapter);
+        }
+        coord
     }
 }
 

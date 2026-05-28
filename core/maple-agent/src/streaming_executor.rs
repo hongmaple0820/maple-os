@@ -1,8 +1,8 @@
-use crate::react_loop::{ToolUse, ToolResult, ToolExecutor};
+use crate::react_loop::{ToolExecutor, ToolResult, ToolUse};
+use anyhow::Result;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use anyhow::Result;
 
 /// StreamingToolExecutor — inspired by cc-haha's concurrent-safe vs exclusive tool model
 ///
@@ -64,8 +64,12 @@ impl StreamingToolExecutor {
         }
 
         // Default classification based on tool name patterns
-        let exclusive_patterns = ["write", "delete", "execute", "run", "bash", "shell", "computer"];
-        let is_exclusive = exclusive_patterns.iter().any(|p| tool_name.to_lowercase().contains(p));
+        let exclusive_patterns = [
+            "write", "delete", "execute", "run", "bash", "shell", "computer",
+        ];
+        let is_exclusive = exclusive_patterns
+            .iter()
+            .any(|p| tool_name.to_lowercase().contains(p));
 
         if is_exclusive {
             ToolConcurrency::Exclusive
@@ -183,7 +187,9 @@ mod tests {
     #[test]
     fn test_default_classification() {
         // This would require a mock executor, so just test the pattern matching
-        let exclusive_patterns = ["write", "delete", "execute", "run", "bash", "shell", "computer"];
+        let exclusive_patterns = [
+            "write", "delete", "execute", "run", "bash", "shell", "computer",
+        ];
 
         let test_cases = vec![
             ("read_file", false),
@@ -195,8 +201,14 @@ mod tests {
         ];
 
         for (tool_name, expected_exclusive) in test_cases {
-            let is_exclusive = exclusive_patterns.iter().any(|p| tool_name.to_lowercase().contains(p));
-            assert_eq!(is_exclusive, expected_exclusive, "Failed for tool: {}", tool_name);
+            let is_exclusive = exclusive_patterns
+                .iter()
+                .any(|p| tool_name.to_lowercase().contains(p));
+            assert_eq!(
+                is_exclusive, expected_exclusive,
+                "Failed for tool: {}",
+                tool_name
+            );
         }
     }
 }

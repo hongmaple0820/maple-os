@@ -1,6 +1,6 @@
 use crate::react_loop::Session;
-use maple_llm::request::Message;
 use anyhow::Result;
+use maple_llm::request::Message;
 
 pub struct SessionStore {
     db: sqlx::SqlitePool,
@@ -18,7 +18,11 @@ impl SessionStore {
     /// Load session with optional message limit
     /// If max_messages is set, only the most recent N messages are loaded
     /// System prompt is always preserved
-    pub async fn load_session_with_limit(&self, session_id: &str, max_messages: Option<usize>) -> Result<Session> {
+    pub async fn load_session_with_limit(
+        &self,
+        session_id: &str,
+        max_messages: Option<usize>,
+    ) -> Result<Session> {
         let rows = sqlx::query_as::<_, (String, String, String)>(
             "SELECT role, content, metadata FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC"
         )
@@ -27,14 +31,22 @@ impl SessionStore {
         .await?;
 
         if rows.is_empty() {
-            return Ok(Session::new("You are a helpful assistant. Use the provided tools when needed."));
+            return Ok(Session::new(
+                "You are a helpful assistant. Use the provided tools when needed.",
+            ));
         }
 
         let mut messages = Vec::new();
         for (role, content, metadata) in &rows {
             let meta: Option<serde_json::Value> = serde_json::from_str(metadata).ok();
-            let tool_call_id = meta.as_ref().and_then(|m| m["tool_call_id"].as_str()).map(|s| s.to_string());
-            let tool_calls = meta.as_ref().and_then(|m| m["tool_calls"].as_array()).cloned();
+            let tool_call_id = meta
+                .as_ref()
+                .and_then(|m| m["tool_call_id"].as_str())
+                .map(|s| s.to_string());
+            let tool_calls = meta
+                .as_ref()
+                .and_then(|m| m["tool_calls"].as_array())
+                .cloned();
 
             let msg = Message {
                 role: role.clone(),
@@ -66,7 +78,10 @@ impl SessionStore {
             }
         }
 
-        let token_count: usize = messages.iter().map(|m| maple_llm::token_counter::count_message_tokens(&m.content, &m.role)).sum();
+        let token_count: usize = messages
+            .iter()
+            .map(|m| maple_llm::token_counter::count_message_tokens(&m.content, &m.role))
+            .sum();
         Ok(Session {
             messages,
             input_token_count: token_count,
@@ -112,7 +127,8 @@ impl SessionStore {
                 &msg.content,
                 msg.tool_call_id.as_deref(),
                 msg.tool_calls.as_deref(),
-            ).await?;
+            )
+            .await?;
         }
         Ok(())
     }
@@ -125,21 +141,22 @@ impl SessionStore {
         .fetch_all(&self.db)
         .await?;
 
-        Ok(rows.iter().map(|(id, ts)| {
-            serde_json::json!({
-                "session_id": id,
-                "last_active": ts,
+        Ok(rows
+            .iter()
+            .map(|(id, ts)| {
+                serde_json::json!({
+                    "session_id": id,
+                    "last_active": ts,
+                })
             })
-        }).collect())
+            .collect())
     }
 
     pub async fn delete_session(&self, session_id: &str) -> Result<bool> {
-        let result = sqlx::query(
-            "DELETE FROM chat_messages WHERE session_id = ?"
-        )
-        .bind(session_id)
-        .execute(&self.db)
-        .await?;
+        let result = sqlx::query("DELETE FROM chat_messages WHERE session_id = ?")
+            .bind(session_id)
+            .execute(&self.db)
+            .await?;
 
         Ok(result.rows_affected() > 0)
     }
@@ -152,11 +169,14 @@ impl SessionStore {
         .fetch_all(&self.db)
         .await?;
 
-        Ok(rows.into_iter().map(|(role, content, created_at)| SessionMessage {
-            role,
-            content,
-            created_at,
-        }).collect())
+        Ok(rows
+            .into_iter()
+            .map(|(role, content, created_at)| SessionMessage {
+                role,
+                content,
+                created_at,
+            })
+            .collect())
     }
 }
 

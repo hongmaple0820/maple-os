@@ -1,9 +1,9 @@
-use serde::{Deserialize, Serialize};
 use dashmap::DashMap;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 
-use std::time::Instant;
 use anyhow::Result;
+use std::time::Instant;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -115,12 +115,15 @@ impl AgentRegistry {
 
     pub async fn register(&self, schema: AgentSchema) -> Result<()> {
         let id = schema.id.clone();
-        self.agents.insert(id, AgentEntry {
-            schema,
-            status: AgentStatus::Offline,
-            last_heartbeat: Instant::now(),
-            current_task_count: 0,
-        });
+        self.agents.insert(
+            id,
+            AgentEntry {
+                schema,
+                status: AgentStatus::Offline,
+                last_heartbeat: Instant::now(),
+                current_task_count: 0,
+            },
+        );
         Ok(())
     }
 
@@ -140,12 +143,15 @@ impl AgentRegistry {
             triggers: AgentTriggers::default(),
             max_concurrent_tasks: 3,
         };
-        self.agents.insert(id.to_string(), AgentEntry {
-            schema,
-            status,
-            last_heartbeat: Instant::now(),
-            current_task_count: 0,
-        });
+        self.agents.insert(
+            id.to_string(),
+            AgentEntry {
+                schema,
+                status,
+                last_heartbeat: Instant::now(),
+                current_task_count: 0,
+            },
+        );
     }
 
     pub async fn set_online(&self, agent_id: &str) {
@@ -190,9 +196,9 @@ impl AgentRegistry {
     pub async fn find_available(&self, required_tools: &[String]) -> Option<String> {
         for entry in self.agents.iter() {
             if entry.status == AgentStatus::Online {
-                let has_tools = required_tools.iter().all(|t| {
-                    entry.schema.capabilities.tools.contains(t)
-                });
+                let has_tools = required_tools
+                    .iter()
+                    .all(|t| entry.schema.capabilities.tools.contains(t));
                 if has_tools {
                     return Some(entry.schema.id.clone());
                 }
@@ -202,10 +208,9 @@ impl AgentRegistry {
     }
 
     pub async fn list_agents(&self) -> Vec<(String, String, AgentStatus)> {
-        self.agents.iter()
-            .map(|e| {
-                (e.schema.id.clone(), e.schema.name.clone(), e.status.clone())
-            })
+        self.agents
+            .iter()
+            .map(|e| (e.schema.id.clone(), e.schema.name.clone(), e.status.clone()))
             .collect()
     }
 

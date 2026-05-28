@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::time::{Duration, Instant};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
 /// Performance Optimization — caching, token counting optimization, concurrency tuning
@@ -72,11 +72,14 @@ impl<K: Eq + Hash + Clone, V: Clone> LruCache<K, V> {
         }
 
         // Insert new entry
-        self.items.insert(key.clone(), CacheEntry {
-            value,
-            inserted_at: Instant::now(),
-            ttl,
-        });
+        self.items.insert(
+            key.clone(),
+            CacheEntry {
+                value,
+                inserted_at: Instant::now(),
+                ttl,
+            },
+        );
         self.access_order.push(key);
     }
 
@@ -119,11 +122,15 @@ impl ToolResultCache {
         }
     }
 
-    pub fn get(&mut self, tool_name: &str, input: &serde_json::Value) -> Option<(serde_json::Value, bool)> {
+    pub fn get(
+        &mut self,
+        tool_name: &str,
+        input: &serde_json::Value,
+    ) -> Option<(serde_json::Value, bool)> {
         let key = self.build_key(tool_name, input);
-        self.cache.get(&key).map(|entry| {
-            (entry.output.clone(), entry.success)
-        })
+        self.cache
+            .get(&key)
+            .map(|entry| (entry.output.clone(), entry.success))
     }
 
     pub fn insert(
@@ -135,12 +142,16 @@ impl ToolResultCache {
         ttl: Duration,
     ) {
         let key = self.build_key(tool_name, input);
-        self.cache.insert(key, CachedToolResult {
-            output,
-            success,
-            cached_at: Instant::now(),
-            hit_count: 0,
-        }, ttl);
+        self.cache.insert(
+            key,
+            CachedToolResult {
+                output,
+                success,
+                cached_at: Instant::now(),
+                hit_count: 0,
+            },
+            ttl,
+        );
     }
 
     fn build_key(&self, tool_name: &str, input: &serde_json::Value) -> String {
@@ -165,7 +176,8 @@ impl TokenCountCache {
     }
 
     pub fn insert_count(&mut self, text: &str, count: usize) {
-        self.cache.insert(text.to_string(), count, Duration::from_secs(300));
+        self.cache
+            .insert(text.to_string(), count, Duration::from_secs(300));
     }
 }
 
@@ -319,8 +331,12 @@ impl PerformanceMonitor {
             } else {
                 0.0
             },
-            token_count_cache_hit_rate: if metrics.token_count_cache_hits + metrics.token_count_cache_misses > 0 {
-                metrics.token_count_cache_hits as f64 / (metrics.token_count_cache_hits + metrics.token_count_cache_misses) as f64
+            token_count_cache_hit_rate: if metrics.token_count_cache_hits
+                + metrics.token_count_cache_misses
+                > 0
+            {
+                metrics.token_count_cache_hits as f64
+                    / (metrics.token_count_cache_hits + metrics.token_count_cache_misses) as f64
             } else {
                 0.0
             },

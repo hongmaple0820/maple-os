@@ -1,7 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use anyhow::Result;
+use std::collections::{HashMap, HashSet};
 
 /// Security Hardening — inspired by claw-code's 5-level permission system
 ///
@@ -97,7 +97,10 @@ impl SecurityManager {
         }
     }
 
-    pub fn with_approval_callback(mut self, callback: Box<dyn Fn(&str, &Value) -> bool + Send + Sync>) -> Self {
+    pub fn with_approval_callback(
+        mut self,
+        callback: Box<dyn Fn(&str, &Value) -> bool + Send + Sync>,
+    ) -> Self {
         self.approval_callback = Some(callback);
         self
     }
@@ -160,11 +163,8 @@ impl SecurityManager {
     fn get_required_security_level(&self, tool_name: &str, _input: &Value) -> SecurityLevel {
         // Dangerous commands require DangerFullAccess
         let dangerous_commands = [
-            "rm", "rmdir", "del", "format", "mkfs", "dd",
-            "shutdown", "reboot", "halt", "init",
-            "chmod", "chown", "chgrp",
-            "sudo", "su", "doas",
-            "curl", "wget", "nc", "netcat",
+            "rm", "rmdir", "del", "format", "mkfs", "dd", "shutdown", "reboot", "halt", "init",
+            "chmod", "chown", "chgrp", "sudo", "su", "doas", "curl", "wget", "nc", "netcat",
         ];
 
         if dangerous_commands.iter().any(|cmd| tool_name.contains(cmd)) {
@@ -173,8 +173,8 @@ impl SecurityManager {
 
         // Write operations require WorkspaceWrite
         let write_commands = [
-            "write", "create", "update", "delete", "move", "rename",
-            "execute", "run", "bash", "shell",
+            "write", "create", "update", "delete", "move", "rename", "execute", "run", "bash",
+            "shell",
         ];
 
         if write_commands.iter().any(|cmd| tool_name.contains(cmd)) {
@@ -187,7 +187,10 @@ impl SecurityManager {
 
     /// Check if a tool requires approval
     fn requires_approval(&self, tool_name: &str) -> bool {
-        self.policy.require_approval_for.iter().any(|t| tool_name.contains(t))
+        self.policy
+            .require_approval_for
+            .iter()
+            .any(|t| tool_name.contains(t))
     }
 
     /// Extract path from tool input
@@ -228,9 +231,11 @@ impl SecurityManager {
 
         // Check allowed paths (if list is not empty)
         if !self.policy.allowed_paths.is_empty() {
-            return self.policy.allowed_paths.iter().any(|allowed| {
-                path.starts_with(allowed) || allowed == "."
-            });
+            return self
+                .policy
+                .allowed_paths
+                .iter()
+                .any(|allowed| path.starts_with(allowed) || allowed == ".");
         }
 
         true
@@ -289,10 +294,22 @@ impl SecurityManager {
 
         // Dangerous commands
         let dangerous = [
-            "rm -rf", "rm -r", "rmdir", "del /s", "format", "mkfs",
-            "dd if=", "shutdown", "reboot", "halt",
-            "sudo", "su -", "doas",
-            "> /dev/", "chmod 777", "chown root",
+            "rm -rf",
+            "rm -r",
+            "rmdir",
+            "del /s",
+            "format",
+            "mkfs",
+            "dd if=",
+            "shutdown",
+            "reboot",
+            "halt",
+            "sudo",
+            "su -",
+            "doas",
+            "> /dev/",
+            "chmod 777",
+            "chown root",
         ];
 
         if dangerous.iter().any(|cmd| command_lower.contains(cmd)) {
@@ -301,8 +318,7 @@ impl SecurityManager {
 
         // Write commands
         let write_cmds = [
-            "mv ", "cp ", "mkdir ", "touch ", "echo ", "cat >",
-            "tee ", "sed -i", "awk -i",
+            "mv ", "cp ", "mkdir ", "touch ", "echo ", "cat >", "tee ", "sed -i", "awk -i",
         ];
 
         if write_cmds.iter().any(|cmd| command_lower.contains(cmd)) {
@@ -311,8 +327,7 @@ impl SecurityManager {
 
         // Read commands
         let read_cmds = [
-            "ls ", "cat ", "head ", "tail ", "grep ", "find ",
-            "wc ", "sort ", "uniq ", "diff ",
+            "ls ", "cat ", "head ", "tail ", "grep ", "find ", "wc ", "sort ", "uniq ", "diff ",
         ];
 
         if read_cmds.iter().any(|cmd| command_lower.starts_with(cmd)) {

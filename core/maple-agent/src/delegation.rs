@@ -1,11 +1,11 @@
+use crate::react_loop::{ReactLoop, Session, ToolExecutor, ToolResult, ToolUse};
 use crate::registry::{AgentRegistry, AgentRole, AgentTask};
-use crate::react_loop::{ReactLoop, ToolExecutor, Session, ToolUse, ToolResult};
 use crate::tool_use_context::ToolUseContext;
+use anyhow::Result;
 use maple_llm::request::ToolDefinition;
 use maple_llm::router::LlmAdapter;
 use std::sync::Arc;
 use std::time::Duration;
-use anyhow::Result;
 
 /// Agent Delegation — inspired by hermes-agent's delegate_task + claw-code's TaskPacket
 ///
@@ -109,8 +109,7 @@ impl DelegationEngine {
         let mut session = Session::new(&system_prompt);
 
         // Create ReAct loop for sub-agent
-        let react_loop = ReactLoop::new(opts.max_iterations)
-            .with_max_concurrent_tools(2); // Limit concurrency for sub-agents
+        let react_loop = ReactLoop::new(opts.max_iterations).with_max_concurrent_tools(2); // Limit concurrency for sub-agents
 
         // Execute with timeout
         let result = tokio::time::timeout(
@@ -122,7 +121,8 @@ impl DelegationEngine {
                 goal,
                 tool_defs,
             ),
-        ).await;
+        )
+        .await;
 
         match result {
             Ok(Ok(summary)) => Ok(DelegateResult {
@@ -149,16 +149,18 @@ impl DelegationEngine {
     ) -> Result<String> {
         let child_tools = match role {
             AgentRole::Orchestrator => parent_tools.to_vec(),
-            AgentRole::Leaf => {
-                parent_tools.iter()
-                    .filter(|t| !self.excluded_tools.contains(t))
-                    .cloned()
-                    .collect()
-            }
+            AgentRole::Leaf => parent_tools
+                .iter()
+                .filter(|t| !self.excluded_tools.contains(t))
+                .cloned()
+                .collect(),
             _ => parent_tools.to_vec(),
         };
 
-        let agent = self.agent_registry.find_available(&child_tools).await
+        let agent = self
+            .agent_registry
+            .find_available(&child_tools)
+            .await
             .ok_or_else(|| anyhow::anyhow!("No available agent for delegation"))?;
 
         let task_id = uuid::Uuid::new_v4().to_string();
@@ -173,20 +175,24 @@ impl DelegationEngine {
         };
 
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-        self.agent_registry.register_result_channel(&task_id, result_tx).await;
+        self.agent_registry
+            .register_result_channel(&task_id, result_tx)
+            .await;
 
-        let tx = self.agent_registry.get_task_channel(&agent).await
+        let tx = self
+            .agent_registry
+            .get_task_channel(&agent)
+            .await
             .ok_or_else(|| anyhow::anyhow!("Agent {} has no task channel", agent))?;
 
-        tx.send(child_task).await
+        tx.send(child_task)
+            .await
             .map_err(|_| anyhow::anyhow!("Failed to send task to agent {}", agent))?;
 
-        let result = tokio::time::timeout(
-            Duration::from_secs(timeout_secs),
-            result_rx,
-        ).await
-        .map_err(|_| anyhow::anyhow!("Task {} timed out after {}s", task_id, timeout_secs))?
-        .map_err(|_| anyhow::anyhow!("Task {} result channel closed", task_id))?;
+        let result = tokio::time::timeout(Duration::from_secs(timeout_secs), result_rx)
+            .await
+            .map_err(|_| anyhow::anyhow!("Task {} timed out after {}s", task_id, timeout_secs))?
+            .map_err(|_| anyhow::anyhow!("Task {} result channel closed", task_id))?;
 
         Ok(result)
     }
@@ -199,7 +205,8 @@ impl DelegationEngine {
         }
 
         // Filter out excluded tools
-        parent_tools.iter()
+        parent_tools
+            .iter()
             .filter(|t| !self.excluded_tools.contains(t))
             .cloned()
             .collect()
@@ -209,16 +216,17 @@ impl DelegationEngine {
     fn create_tool_definitions(&self, tool_names: &[String]) -> Vec<ToolDefinition> {
         // In a real implementation, this would look up tool definitions from a registry
         // For now, create placeholder definitions
-        tool_names.iter().map(|name| {
-            ToolDefinition {
+        tool_names
+            .iter()
+            .map(|name| ToolDefinition {
                 name: name.clone(),
                 description: format!("Tool: {}", name),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {}
                 }),
-            }
-        }).collect()
+            })
+            .collect()
     }
 }
 
@@ -305,7 +313,8 @@ mod tests {
 
         let excluded = vec!["delegate".to_string(), "approve".to_string()];
 
-        let filtered: Vec<String> = parent_tools.iter()
+        let filtered: Vec<String> = parent_tools
+            .iter()
             .filter(|t| !excluded.contains(t))
             .cloned()
             .collect();

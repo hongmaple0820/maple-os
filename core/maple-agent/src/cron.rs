@@ -1,9 +1,9 @@
-use std::path::PathBuf;
-use std::time::{Duration, SystemTime};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::path::PathBuf;
+use std::time::{Duration, SystemTime};
 use tokio::fs;
-use anyhow::Result;
 
 /// Cron Tasks — inspired by cc-haha's file-backed cron system
 ///
@@ -49,25 +49,13 @@ pub struct CronJob {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CronTask {
     /// Execute a tool
-    ExecuteTool {
-        tool_name: String,
-        input: Value,
-    },
+    ExecuteTool { tool_name: String, input: Value },
     /// Send a message
-    SendMessage {
-        target: String,
-        message: String,
-    },
+    SendMessage { target: String, message: String },
     /// Run a script
-    RunScript {
-        script: String,
-        args: Vec<String>,
-    },
+    RunScript { script: String, args: Vec<String> },
     /// Custom task
-    Custom {
-        task_type: String,
-        data: Value,
-    },
+    Custom { task_type: String, data: Value },
 }
 
 /// Cron expression (simplified)
@@ -107,7 +95,9 @@ impl CronExpression {
     pub fn parse(expr: &str) -> Result<Self> {
         let parts: Vec<&str> = expr.split_whitespace().collect();
         if parts.len() != 5 {
-            return Err(anyhow::anyhow!("Invalid cron expression: expected 5 fields"));
+            return Err(anyhow::anyhow!(
+                "Invalid cron expression: expected 5 fields"
+            ));
         }
 
         Ok(Self {
@@ -159,18 +149,23 @@ impl CronExpression {
 
         let value: u8 = s.parse()?;
         if value < min || value > max {
-            return Err(anyhow::anyhow!("Value {} out of range [{}, {}]", value, min, max));
+            return Err(anyhow::anyhow!(
+                "Value {} out of range [{}, {}]",
+                value,
+                min,
+                max
+            ));
         }
         Ok(CronField::Value(value))
     }
 
     /// Check if current time matches this expression
     pub fn matches(&self, minute: u8, hour: u8, day: u8, month: u8, weekday: u8) -> bool {
-        self.field_matches(&self.minute, minute, 0, 59) &&
-        self.field_matches(&self.hour, hour, 0, 23) &&
-        self.field_matches(&self.day, day, 1, 31) &&
-        self.field_matches(&self.month, month, 1, 12) &&
-        self.field_matches(&self.weekday, weekday, 0, 6)
+        self.field_matches(&self.minute, minute, 0, 59)
+            && self.field_matches(&self.hour, hour, 0, 23)
+            && self.field_matches(&self.day, day, 1, 31)
+            && self.field_matches(&self.month, month, 1, 12)
+            && self.field_matches(&self.weekday, weekday, 0, 6)
     }
 
     fn field_matches(&self, field: &CronField, value: u8, _min: u8, _max: u8) -> bool {
@@ -186,11 +181,65 @@ impl CronExpression {
         }
     }
 
-    /// Calculate next run time
+    /// Calculate next run time based on cron fields
+    /// Searches forward from `after` up to 366 days to find the next matching minute.
     pub fn next_run_time(&self, after: SystemTime) -> Option<SystemTime> {
-        // Simplified: just add 1 minute for now
-        // Real implementation would calculate based on cron fields
-        Some(after + Duration::from_secs(60))
+        // Start from the next minute boundary
+        let after_secs = after.duration_since(SystemTime::UNIX_EPOCH).ok()?.as_secs();
+        let start_minute = (after_secs / 60) + 1; // next minute boundary
+
+        // Search up to 366 days worth of minutes
+        let max_minutes = 366 * 24 * 60;
+
+        for offset in 0..max_minutes {
+            let candidate_secs = (start_minute + offset) * 60;
+            let (minute, hour, day, month, weekday) = Self::timestamp_to_fields(candidate_secs);
+
+            if self.matches(minute, hour, day, month, weekday) {
+                return Some(SystemTime::UNIX_EPOCH + Duration::from_secs(candidate_secs));
+            }
+        }
+
+        None
+    }
+
+    /// Convert a Unix timestamp (seconds) to cron field values (UTC)
+    /// Returns (minute, hour, day, month, weekday)
+    fn timestamp_to_fields(secs: u64) -> (u8, u8, u8, u8, u8) {
+        let minutes_total = secs / 60;
+        let minute = (minutes_total % 60) as u8;
+
+        let hours_total = minutes_total / 60;
+        let hour = (hours_total % 24) as u8;
+
+        let days_total = hours_total / 24;
+
+        // Calculate date from days since Unix epoch (1970-01-01 = day 0)
+        // Using a simplified algorithm for date calculation
+        let (year, month, day) = Self::days_to_ymd(days_total);
+
+        // Calculate day of week (1970-01-01 was a Thursday = 4)
+        let weekday = ((days_total + 4) % 7) as u8;
+
+        (minute, hour, day, month, weekday)
+    }
+
+    /// Convert days since Unix epoch to (year, month, day)
+    fn days_to_ymd(days: u64) -> (u16, u8, u8) {
+        // Simplified civil calendar calculation
+        // Based on Howard Hinnant's algorithm
+        let z = days + 719468;
+        let era = z / 146097;
+        let doe = z - era * 146097;
+        let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+        let y = yoe as u16 + era as u16 * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = (doy - (153 * mp + 2) / 5 + 1) as u8;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 } as u8;
+        let y = if m <= 2 { y + 1 } else { y };
+
+        (y, m, d)
     }
 }
 
@@ -250,7 +299,10 @@ impl CronScheduler {
     /// Add a new job
     pub async fn add_job(&mut self, job: CronJob) -> Result<()> {
         if self.jobs.len() >= MAX_JOBS {
-            return Err(anyhow::anyhow!("Maximum number of jobs ({}) reached", MAX_JOBS));
+            return Err(anyhow::anyhow!(
+                "Maximum number of jobs ({}) reached",
+                MAX_JOBS
+            ));
         }
 
         // Check for duplicate ID
@@ -292,10 +344,13 @@ impl CronScheduler {
 
     /// Get jobs due for execution
     pub fn get_due_jobs(&self, now: SystemTime) -> Vec<&CronJob> {
-        let duration_since_epoch = now.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
+        let duration_since_epoch = now
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default();
         let current_timestamp = duration_since_epoch.as_secs();
 
-        self.jobs.iter()
+        self.jobs
+            .iter()
             .filter(|job| job.enabled)
             .filter(|job| {
                 if let Some(next_run) = job.next_run {
@@ -314,7 +369,7 @@ impl CronScheduler {
                 SystemTime::now()
                     .duration_since(SystemTime::UNIX_EPOCH)
                     .unwrap_or_default()
-                    .as_secs()
+                    .as_secs(),
             );
             job.run_count += 1;
 
@@ -429,5 +484,47 @@ mod tests {
         assert_eq!(job.id, "morning-lint");
         assert_eq!(job.job_type, CronJobType::Durable);
         assert_eq!(job.max_runs, Some(100));
+    }
+
+    #[test]
+    fn test_next_run_time_every_5_minutes() {
+        let expr = CronExpression::parse("*/5 * * * *").unwrap();
+
+        // At 12:03:00, next run should be 12:05:00
+        let after = SystemTime::UNIX_EPOCH + Duration::from_secs(12 * 3600 + 3 * 60);
+        let next = expr.next_run_time(after).unwrap();
+        let next_secs = next
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert_eq!(next_secs, 12 * 3600 + 5 * 60);
+    }
+
+    #[test]
+    fn test_next_run_time_specific_hour() {
+        let expr = CronExpression::parse("0 9 * * *").unwrap();
+
+        // At 08:00, next run should be 09:00
+        let after = SystemTime::UNIX_EPOCH + Duration::from_secs(8 * 3600);
+        let next = expr.next_run_time(after).unwrap();
+        let next_secs = next
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert_eq!(next_secs, 9 * 3600);
+    }
+
+    #[test]
+    fn test_next_run_time_after_target_hour() {
+        let expr = CronExpression::parse("0 9 * * *").unwrap();
+
+        // At 09:30, next run should be next day 09:00
+        let after = SystemTime::UNIX_EPOCH + Duration::from_secs(9 * 3600 + 30 * 60);
+        let next = expr.next_run_time(after).unwrap();
+        let next_secs = next
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert_eq!(next_secs, 24 * 3600 + 9 * 3600);
     }
 }

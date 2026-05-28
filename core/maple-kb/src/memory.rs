@@ -1,6 +1,6 @@
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use anyhow::Result;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -18,7 +18,6 @@ impl MemoryType {
             MemoryType::Semantic => "semantic",
         }
     }
-
 }
 
 impl std::str::FromStr for MemoryType {
@@ -91,7 +90,12 @@ impl MemoryStore {
         }
     }
 
-pub async fn search_by_type(&self, memory_type: &MemoryType, keyword: &str, limit: usize) -> Result<Vec<MemoryEntry>> {
+    pub async fn search_by_type(
+        &self,
+        memory_type: &MemoryType,
+        keyword: &str,
+        limit: usize,
+    ) -> Result<Vec<MemoryEntry>> {
         let rows = sqlx::query_as::<_, (String, String, String, String, i64, i32)>(
             "SELECT id, memory_type, content, metadata, created_at, access_count FROM memories WHERE memory_type = ? AND content LIKE ? ORDER BY created_at DESC LIMIT ?"
         )
@@ -101,10 +105,21 @@ pub async fn search_by_type(&self, memory_type: &MemoryType, keyword: &str, limi
         .fetch_all(&self.db)
         .await?;
 
-        let entries: Vec<MemoryEntry> = rows.into_iter().map(|(id, mt, content, metadata, created_at, access_count)| {
-            let metadata_map: HashMap<String, String> = serde_json::from_str(&metadata).unwrap_or_default();
-            MemoryEntry { id, memory_type: mt.parse::<MemoryType>().unwrap_or(MemoryType::Working), content, metadata: metadata_map, created_at, access_count: access_count as u32 }
-        }).collect();
+        let entries: Vec<MemoryEntry> = rows
+            .into_iter()
+            .map(|(id, mt, content, metadata, created_at, access_count)| {
+                let metadata_map: HashMap<String, String> =
+                    serde_json::from_str(&metadata).unwrap_or_default();
+                MemoryEntry {
+                    id,
+                    memory_type: mt.parse::<MemoryType>().unwrap_or(MemoryType::Working),
+                    content,
+                    metadata: metadata_map,
+                    created_at,
+                    access_count: access_count as u32,
+                }
+            })
+            .collect();
         Ok(entries)
     }
 
@@ -116,10 +131,20 @@ pub async fn search_by_type(&self, memory_type: &MemoryType, keyword: &str, limi
         .fetch_optional(&self.db)
         .await?;
 
-        Ok(row.map(|(id, mt, content, metadata, created_at, access_count)| {
-            let metadata_map: HashMap<String, String> = serde_json::from_str(&metadata).unwrap_or_default();
-            MemoryEntry { id, memory_type: mt.parse::<MemoryType>().unwrap_or(MemoryType::Working), content, metadata: metadata_map, created_at, access_count: access_count as u32 }
-        }))
+        Ok(
+            row.map(|(id, mt, content, metadata, created_at, access_count)| {
+                let metadata_map: HashMap<String, String> =
+                    serde_json::from_str(&metadata).unwrap_or_default();
+                MemoryEntry {
+                    id,
+                    memory_type: mt.parse::<MemoryType>().unwrap_or(MemoryType::Working),
+                    content,
+                    metadata: metadata_map,
+                    created_at,
+                    access_count: access_count as u32,
+                }
+            }),
+        )
     }
 
     pub async fn delete(&mut self, id: &str) -> Result<()> {
@@ -127,6 +152,20 @@ pub async fn search_by_type(&self, memory_type: &MemoryType, keyword: &str, limi
             .bind(id)
             .execute(&self.db)
             .await?;
+        Ok(())
+    }
+
+    pub async fn increment_access(&mut self, id: &str) -> Result<()> {
+        sqlx::query("UPDATE memories SET access_count = access_count + 1 WHERE id = ?")
+            .bind(id)
+            .execute(&self.db)
+            .await?;
+        // Update in-memory cache too
+        for map in [&mut self.working, &mut self.episodic, &mut self.semantic] {
+            if let Some(entry) = map.get_mut(id) {
+                entry.access_count += 1;
+            }
+        }
         Ok(())
     }
 
@@ -138,7 +177,8 @@ pub async fn search_by_type(&self, memory_type: &MemoryType, keyword: &str, limi
         .await?;
 
         for (id, mt, content, metadata, created_at, access_count) in rows {
-            let metadata_map: HashMap<String, String> = serde_json::from_str(&metadata).unwrap_or_default();
+            let metadata_map: HashMap<String, String> =
+                serde_json::from_str(&metadata).unwrap_or_default();
             let entry = MemoryEntry {
                 id,
                 memory_type: mt.parse::<MemoryType>().unwrap_or(MemoryType::Working),

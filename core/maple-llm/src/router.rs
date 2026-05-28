@@ -1,14 +1,14 @@
+use crate::error::{ClassifiedError, LlmError};
 use crate::response::LlmResponse;
 use crate::stream::LlmStream;
 use crate::usage::UsageTracker;
-use crate::error::{LlmError, ClassifiedError};
 use crate::{LlmRequest, PrivacyLevel};
+use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use anyhow::Result;
 
 #[async_trait]
 pub trait LlmAdapter: Send + Sync {
@@ -18,8 +18,20 @@ pub trait LlmAdapter: Send + Sync {
     fn max_context_length(&self) -> usize;
     fn cost_per_1k_tokens(&self) -> (f64, f64);
     fn name(&self) -> &str;
-    fn supports_vision(&self) -> bool { false }
-    fn supports_function_calling(&self) -> bool { true }
+    fn supports_vision(&self) -> bool {
+        false
+    }
+    fn supports_function_calling(&self) -> bool {
+        true
+    }
+}
+
+/// Trait for external provider health checking — allows HealthMonitor (in maple-agent)
+/// to feed health data into LlmRouter without creating a circular dependency.
+#[async_trait]
+pub trait ProviderHealthChecker: Send + Sync {
+    async fn is_provider_available(&self, provider_id: &str) -> bool;
+    async fn record_provider_result(&self, provider_id: &str, success: bool, latency_ms: u64);
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,6 +60,7 @@ pub struct LlmRouter {
     health: RwLock<HashMap<String, AdapterHealth>>,
     max_consecutive_errors: u32,
     circuit_breaker_duration: std::time::Duration,
+    external_health_checker: Option<Arc<dyn ProviderHealthChecker>>,
 }
 
 impl LlmRouter {
@@ -60,7 +73,14 @@ impl LlmRouter {
             health: RwLock::new(HashMap::new()),
             max_consecutive_errors: 5,
             circuit_breaker_duration: std::time::Duration::from_secs(60),
+            external_health_checker: None,
         }
+    }
+
+    /// Set an external provider health checker (e.g., HealthMonitor from maple-agent)
+    pub fn with_health_checker(mut self, checker: Arc<dyn ProviderHealthChecker>) -> Self {
+        self.external_health_checker = Some(checker);
+        self
     }
 
     pub fn register_adapter(&mut self, adapter: Box<dyn LlmAdapter>) {
@@ -86,12 +106,14 @@ impl LlmRouter {
         }
 
         if req.privacy_level == PrivacyLevel::Sensitive {
-            return self.get_local_adapter()
+            return self
+                .get_local_adapter()
                 .ok_or_else(|| anyhow::anyhow!("No local model available for sensitive data"));
         }
 
         if self.usage_tracker.daily_budget_exceeded().await {
-            return self.get_local_adapter()
+            return self
+                .get_local_adapter()
                 .ok_or_else(|| anyhow::anyhow!("Daily budget exceeded"));
         }
 
@@ -119,7 +141,8 @@ impl LlmRouter {
     }
 
     fn get_local_adapter(&self) -> Option<&dyn LlmAdapter> {
-        self.adapters.iter()
+        self.adapters
+            .iter()
             .find(|(k, _)| k.starts_with("ollama/"))
             .map(|(_, v)| v.as_ref())
     }
@@ -129,6 +152,7 @@ impl LlmRouter {
             return false;
         }
 
+        // Check internal circuit breaker
         let health = self.health.read().await;
         if let Some(adapter_health) = health.get(model_id) {
             if adapter_health.is_circuit_open {
@@ -139,6 +163,15 @@ impl LlmRouter {
                 }
             }
         }
+        drop(health);
+
+        // Check external health checker (HealthMonitor)
+        if let Some(ref checker) = self.external_health_checker {
+            if !checker.is_provider_available(model_id).await {
+                return false;
+            }
+        }
+
         true
     }
 
@@ -158,9 +191,14 @@ impl LlmRouter {
 
         if adapter_health.consecutive_errors >= self.max_consecutive_errors {
             adapter_health.is_circuit_open = true;
-            adapter_health.circuit_open_until = Some(
-                std::time::Instant::now() + self.circuit_breaker_duration,
-            );
+            adapter_health.circuit_open_until =
+                Some(std::time::Instant::now() + self.circuit_breaker_duration);
+        }
+        drop(health);
+
+        // Forward to external health checker
+        if let Some(ref checker) = self.external_health_checker {
+            checker.record_provider_result(model_id, false, 0).await;
         }
     }
 
@@ -172,6 +210,12 @@ impl LlmRouter {
             adapter_health.last_error = None;
             adapter_health.is_circuit_open = false;
             adapter_health.circuit_open_until = None;
+        }
+        drop(health);
+
+        // Forward to external health checker
+        if let Some(ref checker) = self.external_health_checker {
+            checker.record_provider_result(model_id, true, 0).await;
         }
     }
 
@@ -209,7 +253,9 @@ impl RoutingRule {
         if cond.contains("task.has_image == true") && req.has_image {
             return true;
         }
-        if cond.contains("task.privacy_level == 'sensitive'") && req.privacy_level == PrivacyLevel::Sensitive {
+        if cond.contains("task.privacy_level == 'sensitive'")
+            && req.privacy_level == PrivacyLevel::Sensitive
+        {
             return true;
         }
         false
@@ -219,7 +265,7 @@ impl RoutingRule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::request::{LlmRequest, TaskType, Priority};
+    use crate::request::{LlmRequest, Priority, TaskType};
 
     #[test]
     fn test_routing_rule_matches_task_type() {
@@ -232,9 +278,9 @@ mod tests {
 
         let mut req = LlmRequest::new("Write a function".to_string(), "default");
         req.task_type = TaskType::CodeGeneration;
-        
+
         assert!(rule.matches(&req));
-        
+
         req.task_type = TaskType::General;
         assert!(!rule.matches(&req));
     }
@@ -250,9 +296,9 @@ mod tests {
 
         let mut req = LlmRequest::new("Urgent task".to_string(), "default");
         req.priority = Priority::Speed;
-        
+
         assert!(rule.matches(&req));
-        
+
         req.priority = Priority::Cost;
         assert!(!rule.matches(&req));
     }
@@ -268,9 +314,9 @@ mod tests {
 
         let mut req = LlmRequest::new("Describe this image".to_string(), "default");
         req.has_image = true;
-        
+
         assert!(rule.matches(&req));
-        
+
         req.has_image = false;
         assert!(!rule.matches(&req));
     }
@@ -286,9 +332,9 @@ mod tests {
 
         let mut req = LlmRequest::new("Private data".to_string(), "default");
         req.privacy_level = PrivacyLevel::Sensitive;
-        
+
         assert!(rule.matches(&req));
-        
+
         req.privacy_level = PrivacyLevel::Public;
         assert!(!rule.matches(&req));
     }
@@ -310,7 +356,7 @@ mod tests {
     fn test_llm_router_creation() {
         let usage_tracker = Arc::new(UsageTracker::new(100.0));
         let router = LlmRouter::new(usage_tracker);
-        
+
         assert!(router.adapters.is_empty());
         assert!(router.routing_rules.is_empty());
         assert!(router.fallback_chain.is_empty());
@@ -320,37 +366,37 @@ mod tests {
     fn test_llm_router_register_adapter() {
         let usage_tracker = Arc::new(UsageTracker::new(100.0));
         let mut router = LlmRouter::new(usage_tracker);
-        
+
         // 创建一个模拟适配器
         struct MockAdapter;
-        
+
         #[async_trait]
         impl LlmAdapter for MockAdapter {
             async fn complete(&self, _req: LlmRequest) -> Result<LlmResponse> {
                 Ok(LlmResponse::new("test".to_string(), 10, 5))
             }
-            
+
             async fn stream(&self, _req: LlmRequest) -> Result<Box<dyn LlmStream>> {
                 todo!()
             }
-            
+
             fn count_tokens(&self, text: &str) -> usize {
                 crate::token_counter::count_tokens(text)
             }
-            
+
             fn max_context_length(&self) -> usize {
                 4096
             }
-            
+
             fn cost_per_1k_tokens(&self) -> (f64, f64) {
                 (0.001, 0.002)
             }
-            
+
             fn name(&self) -> &str {
                 "mock-model"
             }
         }
-        
+
         router.register_adapter(Box::new(MockAdapter));
         assert_eq!(router.adapters.len(), 1);
         assert!(router.adapters.contains_key("mock-model"));

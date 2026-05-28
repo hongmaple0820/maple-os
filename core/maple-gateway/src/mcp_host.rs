@@ -1,13 +1,13 @@
+use anyhow::Result;
+use dashmap::DashMap;
+use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::process::Stdio;
-use dashmap::DashMap;
-use anyhow::Result;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::Message;
-use futures::{SinkExt, StreamExt};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServerConfig {
@@ -38,7 +38,10 @@ struct ToolRoute {
     raw_name: String,
 }
 
-type WsSink = futures::stream::SplitSink<tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, Message>;
+type WsSink = futures::stream::SplitSink<
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    Message,
+>;
 
 struct McpServerInstance {
     name: String,
@@ -114,9 +117,13 @@ impl McpHostManager {
                     anyhow::anyhow!("Failed to spawn MCP server '{}': {}", config.name, e)
                 })?;
 
-                let stdin = child.stdin.take()
+                let stdin = child
+                    .stdin
+                    .take()
                     .ok_or_else(|| anyhow::anyhow!("Failed to get stdin"))?;
-                let stdout = child.stdout.take()
+                let stdout = child
+                    .stdout
+                    .take()
                     .ok_or_else(|| anyhow::anyhow!("Failed to get stdout"))?;
                 let stderr = child.stderr.take();
 
@@ -145,16 +152,23 @@ impl McpHostManager {
                     })
                 });
 
-                let init_request = self.jsonrpc_request("initialize", serde_json::json!({
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "clientInfo": { "name": "mapleos", "version": env!("CARGO_PKG_VERSION") }
-                }));
+                let init_request = self.jsonrpc_request(
+                    "initialize",
+                    serde_json::json!({
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {},
+                        "clientInfo": { "name": "mapleos", "version": env!("CARGO_PKG_VERSION") }
+                    }),
+                );
 
-                self.send_jsonrpc_stdio(&mut stdin_writer, &init_request).await?;
+                self.send_jsonrpc_stdio(&mut stdin_writer, &init_request)
+                    .await?;
                 let _init_response = self.read_jsonrpc_response(&mut reader).await;
 
-                let tools = match self.discover_tools_stdio(&mut stdin_writer, &mut reader).await {
+                let tools = match self
+                    .discover_tools_stdio(&mut stdin_writer, &mut reader)
+                    .await
+                {
                     Ok(t) => {
                         tracing::info!(server = %config.name, tool_count = t.len(), "Discovered MCP tools");
                         t
@@ -167,60 +181,79 @@ impl McpHostManager {
 
                 self.register_tools(&config.name, &tools);
 
-                self.servers.insert(config.name.clone(), Mutex::new(McpServerInstance {
-                    name: config.name.clone(),
-                    transport: config.transport.clone(),
-                    tools,
-                    status: McpServerStatus::Ready,
-                    child: Some(child),
-                    stdin: Some(stdin_writer),
-                    stdout_reader: Some(Mutex::new(reader)),
-                    ws_writer: None,
-                    _stderr_handle: stderr_handle,
-                }));
+                self.servers.insert(
+                    config.name.clone(),
+                    Mutex::new(McpServerInstance {
+                        name: config.name.clone(),
+                        transport: config.transport.clone(),
+                        tools,
+                        status: McpServerStatus::Ready,
+                        child: Some(child),
+                        stdin: Some(stdin_writer),
+                        stdout_reader: Some(Mutex::new(reader)),
+                        ws_writer: None,
+                        _stderr_handle: stderr_handle,
+                    }),
+                );
             }
             McpTransportConfig::Http { url } => {
                 let client = reqwest::Client::new();
-                let tools = self.discover_tools_http_or_warn(&client, url, &config.name).await;
+                let tools = self
+                    .discover_tools_http_or_warn(&client, url, &config.name)
+                    .await;
 
                 self.register_tools(&config.name, &tools);
 
-                self.servers.insert(config.name.clone(), Mutex::new(McpServerInstance {
-                    name: config.name.clone(),
-                    transport: config.transport.clone(),
-                    tools,
-                    status: McpServerStatus::Ready,
-                    child: None,
-                    stdin: None,
-                    stdout_reader: None,
-                    ws_writer: None,
-                    _stderr_handle: None,
-                }));
+                self.servers.insert(
+                    config.name.clone(),
+                    Mutex::new(McpServerInstance {
+                        name: config.name.clone(),
+                        transport: config.transport.clone(),
+                        tools,
+                        status: McpServerStatus::Ready,
+                        child: None,
+                        stdin: None,
+                        stdout_reader: None,
+                        ws_writer: None,
+                        _stderr_handle: None,
+                    }),
+                );
             }
             McpTransportConfig::WebSocket { url } => {
                 tracing::info!(server = %config.name, url = %url, "Connecting MCP WebSocket server");
 
-                let (ws_stream, _) = tokio_tungstenite::connect_async(url).await
-                    .map_err(|e| anyhow::anyhow!("Failed to connect MCP WS '{}': {}", config.name, e))?;
+                let (ws_stream, _) = tokio_tungstenite::connect_async(url).await.map_err(|e| {
+                    anyhow::anyhow!("Failed to connect MCP WS '{}': {}", config.name, e)
+                })?;
 
                 let (mut write, mut read) = ws_stream.split();
 
-                let init_request = self.jsonrpc_request("initialize", serde_json::json!({
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "clientInfo": { "name": "mapleos", "version": env!("CARGO_PKG_VERSION") }
-                }));
+                let init_request = self.jsonrpc_request(
+                    "initialize",
+                    serde_json::json!({
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {},
+                        "clientInfo": { "name": "mapleos", "version": env!("CARGO_PKG_VERSION") }
+                    }),
+                );
                 let init_json = serde_json::to_string(&init_request)?;
-                write.send(Message::Text(init_json)).await
+                write
+                    .send(Message::Text(init_json))
+                    .await
                     .map_err(|e| anyhow::anyhow!("WS send init failed: {}", e))?;
                 let _ = Self::read_ws_json_response(&mut read).await;
 
-                let notification = serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
-                write.send(Message::Text(serde_json::to_string(&notification)?)).await
+                let notification =
+                    serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
+                write
+                    .send(Message::Text(serde_json::to_string(&notification)?))
+                    .await
                     .map_err(|e| anyhow::anyhow!("WS send notification failed: {}", e))?;
 
                 let tools_request = self.jsonrpc_request("tools/list", serde_json::json!({}));
-                write.send(Message::Text(serde_json::to_string(&tools_request)?)).await
+                write
+                    .send(Message::Text(serde_json::to_string(&tools_request)?))
+                    .await
                     .map_err(|e| anyhow::anyhow!("WS tools/list failed: {}", e))?;
 
                 let tools = match Self::read_ws_json_response(&mut read).await {
@@ -231,17 +264,20 @@ impl McpHostManager {
                 tracing::info!(server = %config.name, tool_count = tools.len(), "Discovered MCP tools via WS");
                 self.register_tools(&config.name, &tools);
 
-                self.servers.insert(config.name.clone(), Mutex::new(McpServerInstance {
-                    name: config.name.clone(),
-                    transport: config.transport.clone(),
-                    tools,
-                    status: McpServerStatus::Ready,
-                    child: None,
-                    stdin: None,
-                    stdout_reader: None,
-                    ws_writer: Some(Mutex::new(write)),
-                    _stderr_handle: None,
-                }));
+                self.servers.insert(
+                    config.name.clone(),
+                    Mutex::new(McpServerInstance {
+                        name: config.name.clone(),
+                        transport: config.transport.clone(),
+                        tools,
+                        status: McpServerStatus::Ready,
+                        child: None,
+                        stdin: None,
+                        stdout_reader: None,
+                        ws_writer: Some(Mutex::new(write)),
+                        _stderr_handle: None,
+                    }),
+                );
             }
         }
 
@@ -259,8 +295,15 @@ impl McpHostManager {
         Ok(())
     }
 
-    pub async fn call_tool(&self, server_name: &str, tool_name: &str, args: Value) -> Result<Value> {
-        let instance_ref = self.servers.get(server_name)
+    pub async fn call_tool(
+        &self,
+        server_name: &str,
+        tool_name: &str,
+        args: Value,
+    ) -> Result<Value> {
+        let instance_ref = self
+            .servers
+            .get(server_name)
             .ok_or_else(|| anyhow::anyhow!("MCP server not found: {}", server_name))?;
 
         let transport = {
@@ -271,15 +314,20 @@ impl McpHostManager {
             inst.transport.clone()
         };
 
-        let request = self.jsonrpc_request("tools/call", serde_json::json!({
-            "name": tool_name,
-            "arguments": args,
-        }));
+        let request = self.jsonrpc_request(
+            "tools/call",
+            serde_json::json!({
+                "name": tool_name,
+                "arguments": args,
+            }),
+        );
 
         match &transport {
             McpTransportConfig::Stdio { .. } => {
                 let mut inst = instance_ref.lock().await;
-                let stdin = inst.stdin.as_mut()
+                let stdin = inst
+                    .stdin
+                    .as_mut()
                     .ok_or_else(|| anyhow::anyhow!("MCP server {} has no stdin", server_name))?;
 
                 self.send_jsonrpc_stdio(stdin, &request).await?;
@@ -289,11 +337,16 @@ impl McpHostManager {
                     match self.read_jsonrpc_response(&mut reader).await {
                         Some(json) => {
                             if let Some(error) = json.get("error") {
-                                anyhow::bail!("MCP tool error: {}", error["message"].as_str().unwrap_or("unknown"));
+                                anyhow::bail!(
+                                    "MCP tool error: {}",
+                                    error["message"].as_str().unwrap_or("unknown")
+                                );
                             }
                             Ok(json["result"].clone())
                         }
-                        None => Ok(serde_json::json!({"tool": tool_name, "status": "sent_no_response"})),
+                        None => {
+                            Ok(serde_json::json!({"tool": tool_name, "status": "sent_no_response"}))
+                        }
                     }
                 } else {
                     Ok(serde_json::json!({"tool": tool_name, "status": "sent_via_stdio"}))
@@ -318,10 +371,15 @@ impl McpHostManager {
             McpTransportConfig::WebSocket { .. } => {
                 let instance = instance_ref.lock().await;
                 if instance.ws_writer.is_none() {
-                    return Err(anyhow::anyhow!("MCP server {} has no WebSocket connection", server_name));
+                    return Err(anyhow::anyhow!(
+                        "MCP server {} has no WebSocket connection",
+                        server_name
+                    ));
                 }
                 let mut writer = instance.ws_writer.as_ref().unwrap().lock().await;
-                writer.send(Message::Text(serde_json::to_string(&request)?)).await
+                writer
+                    .send(Message::Text(serde_json::to_string(&request)?))
+                    .await
                     .map_err(|e| anyhow::anyhow!("WS send tool call failed: {}", e))?;
 
                 Ok(serde_json::json!({"tool": tool_name, "status": "sent_via_ws"}))
@@ -330,7 +388,8 @@ impl McpHostManager {
     }
 
     pub fn list_servers(&self) -> Vec<(String, McpServerStatus, usize)> {
-        self.servers.iter()
+        self.servers
+            .iter()
             .filter_map(|entry| {
                 let inst = entry.value().try_lock().ok()?;
                 Some((inst.name.clone(), inst.status.clone(), inst.tools.len()))
@@ -339,13 +398,40 @@ impl McpHostManager {
     }
 
     pub fn list_tools(&self) -> Vec<(String, String)> {
-        self.tool_index.iter()
+        self.tool_index
+            .iter()
             .map(|entry| (entry.key().clone(), entry.value().server_name.clone()))
             .collect()
     }
 
+    /// Convert all discovered MCP tools to LLM ToolDefinitions
+    /// Qualified names follow the pattern: mcp__{server_name}__{tool_name}
+    pub fn as_tool_definitions(&self) -> Vec<maple_llm::request::ToolDefinition> {
+        let mut defs = Vec::new();
+        for entry in &self.servers {
+            if let Ok(inst) = entry.value().try_lock() {
+                for tool in &inst.tools {
+                    let qualified_name = format!("mcp__{}__{}", inst.name, tool.name);
+                    defs.push(maple_llm::request::ToolDefinition {
+                        name: qualified_name,
+                        description: tool.description.clone().unwrap_or_default(),
+                        parameters: tool.input_schema.clone(),
+                    });
+                }
+            }
+        }
+        defs
+    }
+
+    /// Resolve a qualified tool name (mcp__server__tool) to (server_name, raw_tool_name)
+    pub fn resolve_tool_name(&self, qualified_name: &str) -> Option<(String, String)> {
+        let route = self.tool_index.get(qualified_name)?;
+        Some((route.server_name.clone(), route.raw_name.clone()))
+    }
+
     fn next_id(&self) -> u64 {
-        self.next_request_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        self.next_request_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
 
     fn jsonrpc_request(&self, method: &str, params: Value) -> Value {
@@ -360,15 +446,19 @@ impl McpHostManager {
     fn register_tools(&self, server_name: &str, tools: &[McpTool]) {
         for tool in tools {
             let qualified_name = format!("mcp__{}__{}", server_name, tool.name);
-            self.tool_index.insert(qualified_name, ToolRoute {
-                server_name: server_name.to_string(),
-                raw_name: tool.name.clone(),
-            });
+            self.tool_index.insert(
+                qualified_name,
+                ToolRoute {
+                    server_name: server_name.to_string(),
+                    raw_name: tool.name.clone(),
+                },
+            );
         }
     }
 
     fn parse_tools_from_response(json: &Value) -> Vec<McpTool> {
-        json["result"]["tools"].as_array()
+        json["result"]["tools"]
+            .as_array()
             .cloned()
             .unwrap_or_default()
             .iter()
@@ -376,19 +466,32 @@ impl McpHostManager {
                 let name = t["name"].as_str()?.to_string();
                 let description = t["description"].as_str().map(|s| s.to_string());
                 let input_schema = t["inputSchema"].clone();
-                Some(McpTool { name, description, input_schema })
+                Some(McpTool {
+                    name,
+                    description,
+                    input_schema,
+                })
             })
             .collect()
     }
 
-    async fn send_jsonrpc_stdio(&self, stdin: &mut tokio::process::ChildStdin, request: &Value) -> Result<()> {
+    async fn send_jsonrpc_stdio(
+        &self,
+        stdin: &mut tokio::process::ChildStdin,
+        request: &Value,
+    ) -> Result<()> {
         let json = serde_json::to_string(request)?;
-        stdin.write_all(format!("Content-Length: {}\r\n\r\n{}", json.len(), json).as_bytes()).await?;
+        stdin
+            .write_all(format!("Content-Length: {}\r\n\r\n{}", json.len(), json).as_bytes())
+            .await?;
         stdin.flush().await?;
         Ok(())
     }
 
-    async fn read_jsonrpc_response(&self, reader: &mut BufReader<tokio::process::ChildStdout>) -> Option<Value> {
+    async fn read_jsonrpc_response(
+        &self,
+        reader: &mut BufReader<tokio::process::ChildStdout>,
+    ) -> Option<Value> {
         let mut header_line = String::new();
         let mut content_length: usize = 0;
 
@@ -398,7 +501,9 @@ impl McpHostManager {
                 Ok(0) | Err(_) => return None,
                 Ok(_) => {
                     let line = header_line.trim();
-                    if line.is_empty() { break; }
+                    if line.is_empty() {
+                        break;
+                    }
                     if let Some(length_str) = line.strip_prefix("Content-Length:") {
                         content_length = length_str.trim().parse().unwrap_or(0);
                     }
@@ -406,7 +511,9 @@ impl McpHostManager {
             }
         }
 
-        if content_length == 0 { return None; }
+        if content_length == 0 {
+            return None;
+        }
 
         let mut buffer = vec![0u8; content_length];
         match reader.read_exact(&mut buffer).await {
@@ -420,7 +527,8 @@ impl McpHostManager {
         stdin: &mut tokio::process::ChildStdin,
         reader: &mut BufReader<tokio::process::ChildStdout>,
     ) -> Result<Vec<McpTool>> {
-        let notification = serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
+        let notification =
+            serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
         self.send_jsonrpc_stdio(stdin, &notification).await?;
 
         let tools_request = self.jsonrpc_request("tools/list", serde_json::json!({}));
@@ -432,8 +540,14 @@ impl McpHostManager {
         }
     }
 
-    async fn discover_tools_http_or_warn(&self, client: &reqwest::Client, base_url: &str, server_name: &str) -> Vec<McpTool> {
-        let request = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}});
+    async fn discover_tools_http_or_warn(
+        &self,
+        client: &reqwest::Client,
+        base_url: &str,
+        server_name: &str,
+    ) -> Vec<McpTool> {
+        let request =
+            serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}});
         match client
             .post(format!("{}/mcp", base_url))
             .json(&request)
@@ -444,7 +558,11 @@ impl McpHostManager {
             Ok(resp) if resp.status().is_success() => {
                 let json: Value = resp.json().await.unwrap_or_default();
                 let tools = Self::parse_tools_from_response(&json);
-                tracing::info!(server = server_name, tool_count = tools.len(), "Discovered MCP tools via HTTP");
+                tracing::info!(
+                    server = server_name,
+                    tool_count = tools.len(),
+                    "Discovered MCP tools via HTTP"
+                );
                 tools
             }
             Ok(resp) => {
@@ -479,6 +597,8 @@ impl McpHostManager {
                 }
             }
             None
-        }).await.unwrap_or(None)
+        })
+        .await
+        .unwrap_or(None)
     }
 }

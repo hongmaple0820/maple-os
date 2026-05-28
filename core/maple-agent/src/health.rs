@@ -1,8 +1,8 @@
-use std::collections::HashMap;
-use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::RwLock;
 
 /// Health Monitoring — provider circuit breaker + agent heartbeat + tool statistics
 ///
@@ -127,8 +127,9 @@ impl HealthMonitor {
         error: Option<String>,
     ) {
         let mut providers = self.providers.write().await;
-        let health = providers.entry(provider_id.to_string()).or_insert_with(|| {
-            ProviderHealth {
+        let health = providers
+            .entry(provider_id.to_string())
+            .or_insert_with(|| ProviderHealth {
                 provider_id: provider_id.to_string(),
                 healthy: true,
                 consecutive_failures: 0,
@@ -141,14 +142,14 @@ impl HealthMonitor {
                 successful_requests: 0,
                 failed_requests: 0,
                 avg_latency_ms: 0.0,
-            }
-        });
+            });
 
         health.total_requests += 1;
 
         // Update average latency
         let total_latency = health.avg_latency_ms * (health.total_requests - 1) as f64;
-        health.avg_latency_ms = (total_latency + latency.as_millis() as f64) / health.total_requests as f64;
+        health.avg_latency_ms =
+            (total_latency + latency.as_millis() as f64) / health.total_requests as f64;
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -175,9 +176,8 @@ impl HealthMonitor {
             // Open circuit if threshold exceeded
             if health.consecutive_failures >= self.circuit_breaker_config.failure_threshold {
                 health.circuit_open = true;
-                health.circuit_open_until = Some(
-                    now + self.circuit_breaker_config.recovery_timeout.as_secs()
-                );
+                health.circuit_open_until =
+                    Some(now + self.circuit_breaker_config.recovery_timeout.as_secs());
             }
         }
 
@@ -213,8 +213,9 @@ impl HealthMonitor {
         active_tasks: u32,
     ) {
         let mut agents = self.agents.write().await;
-        let health = agents.entry(agent_id.to_string()).or_insert_with(|| {
-            AgentHealth {
+        let health = agents
+            .entry(agent_id.to_string())
+            .or_insert_with(|| AgentHealth {
                 agent_id: agent_id.to_string(),
                 healthy: true,
                 last_heartbeat: 0,
@@ -222,8 +223,7 @@ impl HealthMonitor {
                 active_tasks: 0,
                 completed_tasks: 0,
                 failed_tasks: 0,
-            }
-        });
+            });
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -257,8 +257,9 @@ impl HealthMonitor {
         error: Option<String>,
     ) {
         let mut tools = self.tools.write().await;
-        let stats = tools.entry(tool_name.to_string()).or_insert_with(|| {
-            ToolStats {
+        let stats = tools
+            .entry(tool_name.to_string())
+            .or_insert_with(|| ToolStats {
                 tool_name: tool_name.to_string(),
                 total_calls: 0,
                 successful_calls: 0,
@@ -266,14 +267,14 @@ impl HealthMonitor {
                 avg_duration_ms: 0.0,
                 last_called: None,
                 last_error: None,
-            }
-        });
+            });
 
         stats.total_calls += 1;
 
         // Update average duration
         let total_duration = stats.avg_duration_ms * (stats.total_calls - 1) as f64;
-        stats.avg_duration_ms = (total_duration + duration.as_millis() as f64) / stats.total_calls as f64;
+        stats.avg_duration_ms =
+            (total_duration + duration.as_millis() as f64) / stats.total_calls as f64;
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -311,8 +312,8 @@ impl HealthMonitor {
             }
         }
 
-        let healthy = providers.values().all(|p| p.healthy) &&
-                     agents_checked.values().all(|a| a.healthy);
+        let healthy =
+            providers.values().all(|p| p.healthy) && agents_checked.values().all(|a| a.healthy);
 
         HealthCheckResult {
             healthy,
@@ -358,12 +359,9 @@ mod tests {
         let monitor = HealthMonitor::new();
 
         // Record successful request
-        monitor.record_provider_request(
-            "openai",
-            true,
-            Duration::from_millis(100),
-            None,
-        ).await;
+        monitor
+            .record_provider_request("openai", true, Duration::from_millis(100), None)
+            .await;
 
         let health = monitor.get_provider_health("openai").await.unwrap();
         assert!(health.healthy);
@@ -373,21 +371,22 @@ mod tests {
 
     #[tokio::test]
     async fn test_circuit_breaker() {
-        let monitor = HealthMonitor::new()
-            .with_circuit_breaker_config(CircuitBreakerConfig {
-                failure_threshold: 3,
-                recovery_timeout: Duration::from_secs(60),
-                half_open_max_requests: 1,
-            });
+        let monitor = HealthMonitor::new().with_circuit_breaker_config(CircuitBreakerConfig {
+            failure_threshold: 3,
+            recovery_timeout: Duration::from_secs(60),
+            half_open_max_requests: 1,
+        });
 
         // Record failures to trigger circuit breaker
         for _ in 0..3 {
-            monitor.record_provider_request(
-                "openai",
-                false,
-                Duration::from_millis(100),
-                Some("Error".to_string()),
-            ).await;
+            monitor
+                .record_provider_request(
+                    "openai",
+                    false,
+                    Duration::from_millis(100),
+                    Some("Error".to_string()),
+                )
+                .await;
         }
 
         let health = monitor.get_provider_health("openai").await.unwrap();
@@ -399,12 +398,9 @@ mod tests {
     async fn test_tool_stats() {
         let monitor = HealthMonitor::new();
 
-        monitor.record_tool_execution(
-            "read_file",
-            true,
-            Duration::from_millis(50),
-            None,
-        ).await;
+        monitor
+            .record_tool_execution("read_file", true, Duration::from_millis(50), None)
+            .await;
 
         let stats = monitor.get_tool_stats("read_file").await.unwrap();
         assert_eq!(stats.total_calls, 1);

@@ -1,8 +1,7 @@
+use maple_llm::request::LlmRequest;
 use maple_llm::request::Message;
 use maple_llm::router::LlmRouter;
-use maple_llm::request::LlmRequest;
 use std::sync::Arc;
-
 
 pub struct ConversationManager {
     max_context_tokens: usize,
@@ -35,7 +34,10 @@ impl ConversationManager {
         }
 
         let system_msg = messages.iter().find(|m| m.role == "system").cloned();
-        let non_system = messages.iter().filter(|m| m.role != "system").collect::<Vec<&Message>>();
+        let non_system = messages
+            .iter()
+            .filter(|m| m.role != "system")
+            .collect::<Vec<&Message>>();
 
         if non_system.len() <= 4 {
             return messages.to_vec();
@@ -67,7 +69,8 @@ impl ConversationManager {
 
     async fn generate_summary(&self, messages: &[&Message]) -> String {
         if let Some(router) = &self.llm_router {
-            let conversation_text = messages.iter()
+            let conversation_text = messages
+                .iter()
                 .map(|m| format!("{}: {}", m.role, m.content))
                 .collect::<Vec<String>>()
                 .join("\n");
@@ -80,15 +83,13 @@ impl ConversationManager {
             let request = LlmRequest::quick_qa(&prompt);
 
             match router.route(&request).await {
-                Ok(adapter) => {
-                    match adapter.complete(request).await {
-                        Ok(response) => response.text(),
-                        Err(e) => {
-                            tracing::warn!("LLM summary generation failed: {}", e);
-                            self.fallback_summary(messages)
-                        }
+                Ok(adapter) => match adapter.complete(request).await {
+                    Ok(response) => response.text(),
+                    Err(e) => {
+                        tracing::warn!("LLM summary generation failed: {}", e);
+                        self.fallback_summary(messages)
                     }
-                }
+                },
                 Err(e) => {
                     tracing::warn!("LLM router failed for summary: {}", e);
                     self.fallback_summary(messages)
@@ -109,7 +110,11 @@ impl ConversationManager {
                 key_points.push(format!("{}: {}", msg.role, content));
             }
         }
-        format!("Earlier conversation had {} exchanges. Key points:\n{}", messages.len(), key_points.join("\n"))
+        format!(
+            "Earlier conversation had {} exchanges. Key points:\n{}",
+            messages.len(),
+            key_points.join("\n")
+        )
     }
 
     pub fn estimate_tokens(&self, messages: &[Message]) -> usize {
@@ -141,8 +146,12 @@ mod tests {
     fn test_needs_compaction() {
         let mgr = ConversationManager::new(50);
         let messages = vec![
-            Message::user("This is a very long message that should exceed the token limit when combined with other messages and more text here"),
-            Message::assistant("And this is also a pretty long response that adds to the total with additional content"),
+            Message::user(
+                "This is a very long message that should exceed the token limit when combined with other messages and more text here",
+            ),
+            Message::assistant(
+                "And this is also a pretty long response that adds to the total with additional content",
+            ),
         ];
         assert!(mgr.needs_compaction(&messages));
     }
@@ -150,10 +159,7 @@ mod tests {
     #[test]
     fn test_estimate_tokens() {
         let mgr = ConversationManager::new(4096);
-        let messages = vec![
-            Message::user("Hello world"),
-            Message::assistant("Hi there"),
-        ];
+        let messages = vec![Message::user("Hello world"), Message::assistant("Hi there")];
         let tokens = mgr.estimate_tokens(&messages);
         assert!(tokens > 0);
         assert!(tokens < 100);

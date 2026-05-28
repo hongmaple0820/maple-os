@@ -1,6 +1,6 @@
-use std::path::PathBuf;
-use std::collections::HashMap;
 use serde_json::Value;
+use std::collections::HashMap;
+use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
 
 /// ToolUseContext — unified dependency injection for all tool executions
@@ -70,7 +70,7 @@ impl Default for FeatureFlags {
         Self {
             enable_network: true,
             enable_file_system: true,
-            enable_shell: false,        // Disabled by default for safety
+            enable_shell: false, // Disabled by default for safety
             enable_browser: false,
             enable_computer_use: false,
             enable_delegation: true,

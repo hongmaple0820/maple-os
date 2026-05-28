@@ -1,9 +1,9 @@
-use std::collections::{HashMap, HashSet, BinaryHeap};
-use std::cmp::Reverse;
-use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::time::{Duration, Instant};
+use tokio::sync::mpsc;
 
 /// Trigger System — inspired by golutra's TriggerBus + TriggerScheduler
 ///
@@ -193,9 +193,7 @@ impl TriggerScheduler {
                 TriggerStage::Debounce { delay_ms } => {
                     Instant::now() + Duration::from_millis(*delay_ms)
                 }
-                TriggerStage::PostReadyTick => {
-                    Instant::now() + Duration::from_millis(100)
-                }
+                TriggerStage::PostReadyTick => Instant::now() + Duration::from_millis(100),
                 TriggerStage::ChatPendingForce => Instant::now(),
             };
 
@@ -309,7 +307,10 @@ impl TriggerBus {
     }
 
     /// Publish an event
-    pub async fn publish(&self, event: TriggerEvent) -> Result<(), mpsc::error::SendError<TriggerEvent>> {
+    pub async fn publish(
+        &self,
+        event: TriggerEvent,
+    ) -> Result<(), mpsc::error::SendError<TriggerEvent>> {
         self.sender.send(event).await
     }
 
@@ -400,11 +401,9 @@ mod tests {
 
     #[test]
     fn test_trigger_deduplication() {
-        let mut scheduler = TriggerScheduler::new()
-            .with_dedup_window(Duration::from_secs(5));
+        let mut scheduler = TriggerScheduler::new().with_dedup_window(Duration::from_secs(5));
 
-        let rule = TriggerRuleBuilder::new("test", "Test Rule", "file_changed")
-            .build();
+        let rule = TriggerRuleBuilder::new("test", "Test Rule", "file_changed").build();
         scheduler.register_rule(rule);
 
         let event = TriggerEvent::FileChanged {

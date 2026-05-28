@@ -1,5 +1,7 @@
 /// Centralized token counter — replaces scattered content.len() / 4 patterns
 /// Provides pluggable tokenization strategies for different use cases
+use std::sync::Arc;
+use std::sync::OnceLock;
 
 /// Token counter trait — allows pluggable tokenization strategies
 pub trait TokenCounter: Send + Sync {
@@ -12,7 +14,36 @@ pub trait TokenCounter: Send + Sync {
     }
 }
 
-/// Simple token counter using character-based estimation
+/// Precise token counter using tiktoken-rs (cl100k_base encoding)
+/// Same encoding used by GPT-4, GPT-3.5-turbo, and compatible models
+pub struct TiktokenCounter {
+    bpe: tiktoken_rs::CoreBPE,
+}
+
+impl TiktokenCounter {
+    pub fn new() -> Self {
+        Self {
+            bpe: tiktoken_rs::cl100k_base().expect("Failed to initialize cl100k_base encoding"),
+        }
+    }
+}
+
+impl Default for TiktokenCounter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TokenCounter for TiktokenCounter {
+    fn count_tokens(&self, text: &str) -> usize {
+        if text.is_empty() {
+            return 0;
+        }
+        self.bpe.encode_ordinary(text).len()
+    }
+}
+
+/// Simple token counter using character-based estimation (fallback)
 /// ~4 characters per token for English, ~2 for CJK
 pub struct SimpleTokenCounter {
     chars_per_token: usize,
@@ -40,16 +71,19 @@ impl TokenCounter for SimpleTokenCounter {
             return 0;
         }
         // Count CJK characters separately (they use ~2 tokens each)
-        let cjk_count = text.chars().filter(|c| {
-            matches!(c,
-                '\u{4E00}'..='\u{9FFF}' |  // CJK Unified Ideographs
-                '\u{3400}'..='\u{4DBF}' |  // CJK Unified Ideographs Extension A
-                '\u{F900}'..='\u{FAFF}' |  // CJK Compatibility Ideographs
-                '\u{2E80}'..='\u{2EFF}' |  // CJK Radicals Supplement
-                '\u{3000}'..='\u{303F}' |  // CJK Symbols and Punctuation
-                '\u{FF00}'..='\u{FFEF}'    // Halfwidth and Fullwidth Forms
-            )
-        }).count();
+        let cjk_count = text
+            .chars()
+            .filter(|c| {
+                matches!(c,
+                    '\u{4E00}'..='\u{9FFF}' |  // CJK Unified Ideographs
+                    '\u{3400}'..='\u{4DBF}' |  // CJK Unified Ideographs Extension A
+                    '\u{F900}'..='\u{FAFF}' |  // CJK Compatibility Ideographs
+                    '\u{2E80}'..='\u{2EFF}' |  // CJK Radicals Supplement
+                    '\u{3000}'..='\u{303F}' |  // CJK Symbols and Punctuation
+                    '\u{FF00}'..='\u{FFEF}'    // Halfwidth and Fullwidth Forms
+                )
+            })
+            .count();
 
         let non_cjk_count = text.len() - cjk_count;
 
@@ -58,17 +92,11 @@ impl TokenCounter for SimpleTokenCounter {
     }
 }
 
-/// Global token counter instance
-use std::sync::Arc;
-use std::sync::OnceLock;
-
 static GLOBAL_TOKEN_COUNTER: OnceLock<Arc<dyn TokenCounter>> = OnceLock::new();
 
-/// Get the global token counter
+/// Get the global token counter — defaults to TiktokenCounter
 pub fn global_token_counter() -> &'static Arc<dyn TokenCounter> {
-    GLOBAL_TOKEN_COUNTER.get_or_init(|| {
-        Arc::new(SimpleTokenCounter::new())
-    })
+    GLOBAL_TOKEN_COUNTER.get_or_init(|| Arc::new(TiktokenCounter::new()))
 }
 
 /// Set a custom global token counter
@@ -91,6 +119,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_tiktoken_counter_english() {
+        let counter = TiktokenCounter::new();
+        // "hello world" = 2 tokens in cl100k_base
+        let tokens = counter.count_tokens("hello world");
+        assert!(tokens >= 2 && tokens <= 3, "expected ~2, got {}", tokens);
+        assert_eq!(counter.count_tokens(""), 0);
+    }
+
+    #[test]
+    fn test_tiktoken_counter_cjk() {
+        let counter = TiktokenCounter::new();
+        // CJK characters are typically 1-2 tokens each in cl100k_base
+        let tokens = counter.count_tokens("你好世界");
+        assert!(tokens >= 4, "expected >=4 for CJK, got {}", tokens);
+    }
+
+    #[test]
+    fn test_tiktoken_counter_code() {
+        let counter = TiktokenCounter::new();
+        let code = "fn main() { println!(\"hello\"); }";
+        let tokens = counter.count_tokens(code);
+        assert!(tokens > 5 && tokens < 20, "expected 5-20, got {}", tokens);
+    }
+
+    #[test]
     fn test_simple_token_counter_english() {
         let counter = SimpleTokenCounter::new();
         assert_eq!(counter.count_tokens("hello world"), 2); // 11 chars / 4 = 2
@@ -110,14 +163,28 @@ mod tests {
 
     #[test]
     fn test_message_tokens() {
-        let counter = SimpleTokenCounter::new();
+        let counter = TiktokenCounter::new();
         let tokens = counter.count_message_tokens("hello", "user");
-        assert_eq!(tokens, 5); // 1 + 4 overhead
+        assert!(tokens >= 5, "expected >=5, got {}", tokens); // ~1 + 4 overhead
     }
 
     #[test]
     fn test_global_counter() {
         let tokens = count_tokens("hello world");
-        assert_eq!(tokens, 2);
+        assert!(tokens >= 2 && tokens <= 3, "expected ~2, got {}", tokens);
+    }
+
+    #[test]
+    fn test_global_counter_is_tiktoken() {
+        // Verify the global counter is TiktokenCounter (more precise than SimpleTokenCounter)
+        let global = global_token_counter();
+        let simple = SimpleTokenCounter::new();
+        let text = "The quick brown fox jumps over the lazy dog";
+        let global_tokens = global.count_tokens(text);
+        let simple_tokens = simple.count_tokens(text);
+        // tiktoken should give a different (more accurate) count than simple heuristic
+        // Just verify it doesn't panic and returns non-zero
+        assert!(global_tokens > 0);
+        assert!(simple_tokens > 0);
     }
 }

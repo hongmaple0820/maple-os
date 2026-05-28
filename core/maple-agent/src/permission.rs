@@ -1,6 +1,6 @@
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use anyhow::Result;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -25,7 +25,10 @@ impl PermissionPolicy {
                 let read_only_tools = ["read", "search", "list", "get", "query"];
                 let is_read = read_only_tools.iter().any(|t| tool_name.contains(t));
                 if !is_read {
-                    anyhow::bail!("Permission denied: {} not allowed in read-only mode", tool_name);
+                    anyhow::bail!(
+                        "Permission denied: {} not allowed in read-only mode",
+                        tool_name
+                    );
                 }
             }
             PermissionLevel::Write => {

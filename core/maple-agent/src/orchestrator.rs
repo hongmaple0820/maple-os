@@ -1,7 +1,7 @@
+use crate::delegation::DelegationEngine;
 use crate::registry::{AgentRegistry, AgentRole};
-use crate::delegate::DelegateEngine;
-use std::sync::Arc;
 use dashmap::DashMap;
+use std::sync::Arc;
 use tokio::sync::watch;
 
 use anyhow::Result;
@@ -23,13 +23,13 @@ pub struct ExecutionPlan {
 
 pub struct Orchestrator {
     registry: Arc<AgentRegistry>,
-    delegate: Arc<DelegateEngine>,
+    delegate: Arc<DelegationEngine>,
     max_sub_tasks: usize,
     approval_channels: Arc<DashMap<String, watch::Sender<bool>>>,
 }
 
 impl Orchestrator {
-    pub fn new(registry: Arc<AgentRegistry>, delegate: Arc<DelegateEngine>) -> Self {
+    pub fn new(registry: Arc<AgentRegistry>, delegate: Arc<DelegationEngine>) -> Self {
         Self {
             registry,
             delegate,
@@ -47,12 +47,18 @@ impl Orchestrator {
         let plan = self.create_plan(goal, tools).await?;
 
         if plan.steps.is_empty() {
-            return self.delegate.delegate(goal, AgentRole::Executor, tools).await;
+            return self
+                .delegate
+                .delegate_to_agent(goal, AgentRole::Executor, tools)
+                .await;
         }
 
         if plan.steps.len() == 1 {
             let step = &plan.steps[0];
-            return self.delegate.delegate(&step.description, AgentRole::Executor, &step.required_tools).await;
+            return self
+                .delegate
+                .delegate_to_agent(&step.description, AgentRole::Executor, &step.required_tools)
+                .await;
         }
 
         self.execute_plan(&plan).await
@@ -60,7 +66,8 @@ impl Orchestrator {
 
     pub async fn create_plan(&self, goal: &str, tools: &[String]) -> Result<ExecutionPlan> {
         let available_agents = self.registry.list_agents().await;
-        let online_agents: Vec<(String, String, crate::registry::AgentStatus)> = available_agents.iter()
+        let online_agents: Vec<(String, String, crate::registry::AgentStatus)> = available_agents
+            .iter()
             .filter(|(_, _, s)| *s == crate::registry::AgentStatus::Online)
             .cloned()
             .collect();
@@ -79,9 +86,11 @@ impl Orchestrator {
         }
 
         let mut sub_tasks = self.decompose_goal(goal, tools);
-        
+
         for step in &mut sub_tasks {
-            step.assigned_agent = self.find_best_agent(&step.required_tools, &online_agents).await;
+            step.assigned_agent = self
+                .find_best_agent(&step.required_tools, &online_agents)
+                .await;
         }
 
         Ok(ExecutionPlan {
@@ -106,10 +115,16 @@ impl Orchestrator {
             let agent = self.registry.get_agent(agent_id).await;
             if let Some(agent_info) = agent {
                 let capabilities = &agent_info.capabilities;
-                let score = required_tools.iter()
-                    .filter(|tool| capabilities.tools.iter().any(|cap| cap.contains(tool.as_str()) || tool.contains(cap.as_str())))
+                let score = required_tools
+                    .iter()
+                    .filter(|tool| {
+                        capabilities
+                            .tools
+                            .iter()
+                            .any(|cap| cap.contains(tool.as_str()) || tool.contains(cap.as_str()))
+                    })
                     .count();
-                
+
                 if score > best_score {
                     best_score = score;
                     best_agent = Some(agent_id.clone());
@@ -165,7 +180,13 @@ impl Orchestrator {
 
     fn extract_task_keywords(&self, goal: &str) -> Vec<String> {
         let sequential_indicators = ["then", "after", "next", "sequentially", "step by step"];
-        let parallel_indicators = ["parallel", "simultaneously", "concurrently", "at the same time", "independently"];
+        let parallel_indicators = [
+            "parallel",
+            "simultaneously",
+            "concurrently",
+            "at the same time",
+            "independently",
+        ];
 
         let goal_lower = goal.to_lowercase();
         let mut keywords = Vec::new();
@@ -188,8 +209,10 @@ impl Orchestrator {
     }
 
     async fn execute_plan(&self, plan: &ExecutionPlan) -> Result<String> {
-        let mut results: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-        let mut completed_steps: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut results: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        let mut completed_steps: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
 
         let mut remaining: Vec<&PlanStep> = plan.steps.iter().collect();
         let max_iterations = remaining.len() * 2;
@@ -198,8 +221,13 @@ impl Orchestrator {
         while !remaining.is_empty() && iteration < max_iterations {
             iteration += 1;
 
-            let ready: Vec<&PlanStep> = remaining.iter()
-                .filter(|step| step.depends_on.iter().all(|dep| completed_steps.contains(dep)))
+            let ready: Vec<&PlanStep> = remaining
+                .iter()
+                .filter(|step| {
+                    step.depends_on
+                        .iter()
+                        .all(|dep| completed_steps.contains(dep))
+                })
                 .copied()
                 .collect();
 
@@ -207,7 +235,8 @@ impl Orchestrator {
                 anyhow::bail!("Deadlock detected in execution plan - no steps are ready");
             }
 
-            let mut concurrent_handles: Vec<tokio::task::JoinHandle<Result<(String, String)>>> = Vec::new();
+            let mut concurrent_handles: Vec<tokio::task::JoinHandle<Result<(String, String)>>> =
+                Vec::new();
 
             for step in &ready {
                 let step_id = step.step_id.clone();
@@ -215,12 +244,17 @@ impl Orchestrator {
                 let required_tools = step.required_tools.clone();
                 let delegate = self.delegate.clone();
 
-                let has_unmet_deps = step.depends_on.iter().any(|dep| !completed_steps.contains(dep));
+                let has_unmet_deps = step
+                    .depends_on
+                    .iter()
+                    .any(|dep| !completed_steps.contains(dep));
                 if has_unmet_deps {
                     continue;
                 }
 
-                let dep_results: Vec<String> = step.depends_on.iter()
+                let dep_results: Vec<String> = step
+                    .depends_on
+                    .iter()
                     .filter_map(|dep| results.get(dep))
                     .cloned()
                     .collect();
@@ -228,11 +262,21 @@ impl Orchestrator {
                 let enriched_description = if dep_results.is_empty() {
                     description.clone()
                 } else {
-                    format!("{}\n\nContext from previous steps:\n{}", description, dep_results.join("\n---\n"))
+                    format!(
+                        "{}\n\nContext from previous steps:\n{}",
+                        description,
+                        dep_results.join("\n---\n")
+                    )
                 };
 
                 concurrent_handles.push(tokio::spawn(async move {
-                    let result = delegate.delegate(&enriched_description, AgentRole::Executor, &required_tools).await;
+                    let result = delegate
+                        .delegate_to_agent(
+                            &enriched_description,
+                            AgentRole::Executor,
+                            &required_tools,
+                        )
+                        .await;
                     result.map(|r| (step_id, r))
                 }));
             }
@@ -262,12 +306,18 @@ impl Orchestrator {
             return Ok(agg_result.clone());
         }
 
-        let final_results: Vec<String> = plan.steps.iter()
+        let final_results: Vec<String> = plan
+            .steps
+            .iter()
             .filter_map(|step| results.get(&step.step_id))
             .cloned()
             .collect();
 
-        Ok(format!("Plan execution completed with {} steps:\n{}", final_results.len(), final_results.join("\n\n---\n\n")))
+        Ok(format!(
+            "Plan execution completed with {} steps:\n{}",
+            final_results.len(),
+            final_results.join("\n\n---\n\n")
+        ))
     }
 
     pub async fn resolve_approval(&self, approval_id: &str, approved: bool) -> bool {
