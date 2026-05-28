@@ -48,6 +48,11 @@ pub enum NodeType {
     Delay {
         duration_secs: u64,
     },
+    Agent {
+        agent_id: String,
+        goal: String,
+        timeout_secs: Option<u64>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,6 +126,154 @@ impl BackoffStrategy {
                 let secs = base_secs * 2u64.saturating_pow(attempt as u32 - 1);
                 std::time::Duration::from_secs(secs)
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_workflow_creation() {
+        let workflow = Workflow {
+            id: "test-workflow".to_string(),
+            name: "Test Workflow".to_string(),
+            description: None,
+            version: 1,
+            trigger: TriggerConfig::Manual,
+            variables: HashMap::new(),
+            nodes: vec![],
+            hooks: HookConfig::default(),
+        };
+
+        assert_eq!(workflow.id, "test-workflow");
+        assert_eq!(workflow.name, "Test Workflow");
+        assert_eq!(workflow.version, 1);
+        assert!(workflow.nodes.is_empty());
+    }
+
+    #[test]
+    fn test_workflow_node_creation() {
+        let node = WorkflowNode {
+            id: "node-1".to_string(),
+            name: "LLM Call".to_string(),
+            node_type: NodeType::Llm {
+                model_route: "auto".to_string(),
+                prompt_ref: "default".to_string(),
+                temperature: Some(0.7),
+            },
+            depends_on: vec![],
+            condition: None,
+            retry: RetryConfig::default(),
+            timeout_secs: Some(300),
+        };
+
+        assert_eq!(node.id, "node-1");
+        assert_eq!(node.name, "LLM Call");
+        assert!(node.condition.is_none());
+        assert_eq!(node.timeout_secs, Some(300));
+    }
+
+    #[test]
+    fn test_workflow_parse_definition() {
+        let yaml = r#"
+id: test-workflow
+name: Test Workflow
+version: 1
+nodes:
+  - id: node-1
+    name: LLM Call
+    node_type:
+      type: llm
+      model_route: auto
+      prompt_ref: default
+      temperature: 0.7
+trigger:
+  type: manual
+"#;
+
+        let workflow = Workflow::parse_yaml(yaml).unwrap();
+        assert_eq!(workflow.id, "test-workflow");
+        assert_eq!(workflow.name, "Test Workflow");
+        assert_eq!(workflow.version, 1);
+        assert_eq!(workflow.nodes.len(), 1);
+        
+        let node = &workflow.nodes[0];
+        assert_eq!(node.id, "node-1");
+        assert_eq!(node.name, "LLM Call");
+        
+        if let NodeType::Llm { model_route, prompt_ref, temperature } = &node.node_type {
+            assert_eq!(model_route, "auto");
+            assert_eq!(prompt_ref, "default");
+            assert_eq!(*temperature, Some(0.7));
+        } else {
+            panic!("Expected LLM node type");
+        }
+    }
+
+    #[test]
+    fn test_workflow_parse_invalid_yaml() {
+        let yaml = "invalid: yaml: content: [";
+        let result = Workflow::parse_yaml(yaml);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_node_type_variants() {
+        let llm_node = NodeType::Llm {
+            model_route: "auto".to_string(),
+            prompt_ref: "default".to_string(),
+            temperature: None,
+        };
+
+        let tool_node = NodeType::Tool {
+            skill_id: "web_search".to_string(),
+            config: json!({}),
+        };
+
+        let condition_node = NodeType::Condition {
+            expression: "true".to_string(),
+            branches: vec![],
+        };
+
+        assert!(matches!(llm_node, NodeType::Llm { .. }));
+        assert!(matches!(tool_node, NodeType::Tool { .. }));
+        assert!(matches!(condition_node, NodeType::Condition { .. }));
+    }
+
+    #[test]
+    fn test_trigger_config() {
+        let trigger = TriggerConfig::Manual;
+        assert!(matches!(trigger, TriggerConfig::Manual));
+    }
+
+    #[test]
+    fn test_workflow_execution_status() {
+        let statuses = vec![
+            ExecStatus::Pending,
+            ExecStatus::Running,
+            ExecStatus::Completed,
+            ExecStatus::Failed,
+            ExecStatus::Cancelled,
+        ];
+
+        for status in statuses {
+            let exec = WorkflowExecution {
+                exec_id: Uuid::new_v4(),
+                workflow_id: "test".to_string(),
+                workflow_version: 1,
+                status: status.clone(),
+                context: HashMap::new(),
+                checkpoints: Vec::new(),
+                started_at: Utc::now(),
+                completed_at: None,
+                agent_id: None,
+                error: None,
+            };
+
+            assert_eq!(exec.status, status);
         }
     }
 }

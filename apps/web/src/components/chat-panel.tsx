@@ -107,6 +107,8 @@ export function ChatPanel() {
   const [selectedAgent, setSelectedAgent] = useState<string>("");
   const [currentSession, setCurrentSession] = useState<string>("");
   const [sessionList, setSessionList] = useState<{ id: string; title: string; created_at: number }[]>([]);
+  const [models, setModels] = useState<string[]>([]);
+  const [selectedModel, setSelectedModel] = useState<string>("auto");
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -118,7 +120,14 @@ export function ChatPanel() {
         if (list.length > 0 && !selectedAgent) setSelectedAgent(list[0].id);
       } catch { setAgents([]); }
     };
+    const loadModels = async () => {
+      try {
+        const r = await mapleApi<{ models: string[] }>("/api/models");
+        setModels(r.models ?? []);
+      } catch { setModels([]); }
+    };
     loadAgents();
+    loadModels();
     loadSessions();
   }, []);
 
@@ -132,6 +141,24 @@ export function ChatPanel() {
   const newSession = () => {
     setMessages([]);
     setCurrentSession("");
+  };
+
+  const loadSessionMessages = async (sessionId: string) => {
+    if (!sessionId) { setMessages([]); return; }
+    try {
+      const res = await mapleApi<{ messages: { role: string; content: string; created_at: number }[] }>(
+        `/api/sessions/${sessionId}/messages`
+      );
+      const loaded: ChatMessage[] = (res.messages ?? []).map((m, i) => ({
+        id: `loaded-${i}`,
+        role: m.role as "user" | "assistant",
+        content: m.content,
+        timestamp: m.created_at * 1000,
+      }));
+      setMessages(loaded);
+    } catch {
+      setMessages([]);
+    }
   };
 
   useEffect(() => { scrollRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
@@ -162,7 +189,7 @@ export function ChatPanel() {
       const res = await fetch(`/api/maple/api/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: userMsg.content, agent_id: selectedAgent, session_id: sessionId }),
+        body: JSON.stringify({ message: userMsg.content, agent_id: selectedAgent, session_id: sessionId, model: selectedModel }),
       });
       if (!res.ok) throw new Error(`请求失败: ${res.status}`);
 
@@ -254,6 +281,16 @@ export function ChatPanel() {
               {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
             </select>
           )}
+          {models.length > 0 && (
+            <select
+              value={selectedModel}
+              onChange={(e) => setSelectedModel(e.target.value)}
+              className="h-7 rounded border bg-background text-[12px] px-2 font-mono"
+            >
+              <option value="auto">自动选择</option>
+              {models.map((m) => <option key={m} value={m}>{m}</option>)}
+            </select>
+          )}
         </div>
         <div className="flex items-center gap-2">
           {isStreaming && <Spinner className="w-4 h-4" />}
@@ -261,7 +298,7 @@ export function ChatPanel() {
           {sessionList.length > 1 && (
             <select
               value={currentSession}
-              onChange={(e) => { setCurrentSession(e.target.value); setMessages([]); }}
+              onChange={(e) => { const sid = e.target.value; setCurrentSession(sid); loadSessionMessages(sid); }}
               className="h-7 rounded border bg-background text-[11px] px-1"
             >
               <option value="">新建对话</option>

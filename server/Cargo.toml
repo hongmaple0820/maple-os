@@ -6,6 +6,9 @@ edition.workspace = true
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = "0.9"
+toml = { workspace = true }
+bcrypt = { workspace = true }
 tokio = { workspace = true }
 axum = { workspace = true }
 tracing = { workspace = true }
@@ -29,5 +32,5 @@ reqwest = { workspace = true }
 urlencoding = { workspace = true }
 async-stream = "0.3"
 tokio-stream = "0.1"
-serde_yaml = "0.9"
-bcrypt = { workspace = true }
+prometheus = { workspace = true }
+dashmap = { workspace = true }

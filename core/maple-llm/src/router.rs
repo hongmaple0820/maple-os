@@ -60,6 +60,14 @@ impl LlmRouter {
     }
 
     pub async fn route(&self, req: &LlmRequest) -> Result<&dyn LlmAdapter> {
+        if let Some(adapter) = self.adapters.get(&req.requested_model)
+            && !req.requested_model.is_empty()
+            && req.requested_model != "default"
+            && req.requested_model != "auto"
+        {
+            return Ok(adapter.as_ref());
+        }
+
         if req.privacy_level == PrivacyLevel::Sensitive {
             return self.get_local_adapter()
                 .ok_or_else(|| anyhow::anyhow!("No local model available for sensitive data"));
@@ -111,8 +119,14 @@ impl LlmRouter {
 impl RoutingRule {
     pub fn matches(&self, req: &LlmRequest) -> bool {
         let cond = &self.condition;
-        let task_type = format!("{:?}", req.task_type).to_lowercase();
-        let priority = format!("{:?}", req.priority).to_lowercase();
+        let task_type = serde_json::to_string(&req.task_type)
+            .unwrap_or_default()
+            .trim_matches('"')
+            .to_string();
+        let priority = serde_json::to_string(&req.priority)
+            .unwrap_or_default()
+            .trim_matches('"')
+            .to_string();
 
         if cond.contains(&format!("task.type == '{}'", task_type)) {
             return true;
@@ -127,5 +141,146 @@ impl RoutingRule {
             return true;
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::request::{LlmRequest, TaskType, Priority};
+
+    #[test]
+    fn test_routing_rule_matches_task_type() {
+        let rule = RoutingRule {
+            name: "code-tasks".to_string(),
+            condition: "task.type == 'code_generation'".to_string(),
+            preferred: vec!["deepseek-coder".to_string()],
+            fallback_to_cloud: true,
+        };
+
+        let mut req = LlmRequest::new("Write a function".to_string(), "default");
+        req.task_type = TaskType::CodeGeneration;
+        
+        assert!(rule.matches(&req));
+        
+        req.task_type = TaskType::General;
+        assert!(!rule.matches(&req));
+    }
+
+    #[test]
+    fn test_routing_rule_matches_priority() {
+        let rule = RoutingRule {
+            name: "high-priority".to_string(),
+            condition: "task.priority == 'speed'".to_string(),
+            preferred: vec!["gpt-4o".to_string()],
+            fallback_to_cloud: true,
+        };
+
+        let mut req = LlmRequest::new("Urgent task".to_string(), "default");
+        req.priority = Priority::Speed;
+        
+        assert!(rule.matches(&req));
+        
+        req.priority = Priority::Cost;
+        assert!(!rule.matches(&req));
+    }
+
+    #[test]
+    fn test_routing_rule_matches_image() {
+        let rule = RoutingRule {
+            name: "vision-tasks".to_string(),
+            condition: "task.has_image == true".to_string(),
+            preferred: vec!["claude-3-5-sonnet-20241022".to_string()],
+            fallback_to_cloud: true,
+        };
+
+        let mut req = LlmRequest::new("Describe this image".to_string(), "default");
+        req.has_image = true;
+        
+        assert!(rule.matches(&req));
+        
+        req.has_image = false;
+        assert!(!rule.matches(&req));
+    }
+
+    #[test]
+    fn test_routing_rule_matches_privacy() {
+        let rule = RoutingRule {
+            name: "privacy-sensitive".to_string(),
+            condition: "task.privacy_level == 'sensitive'".to_string(),
+            preferred: vec!["ollama/qwen2.5:7b".to_string()],
+            fallback_to_cloud: false,
+        };
+
+        let mut req = LlmRequest::new("Private data".to_string(), "default");
+        req.privacy_level = PrivacyLevel::Sensitive;
+        
+        assert!(rule.matches(&req));
+        
+        req.privacy_level = PrivacyLevel::Public;
+        assert!(!rule.matches(&req));
+    }
+
+    #[test]
+    fn test_routing_rule_no_match() {
+        let rule = RoutingRule {
+            name: "code-tasks".to_string(),
+            condition: "task.type == 'code_generation'".to_string(),
+            preferred: vec!["deepseek-coder".to_string()],
+            fallback_to_cloud: true,
+        };
+
+        let req = LlmRequest::new("Chat message".to_string(), "default");
+        assert!(!rule.matches(&req));
+    }
+
+    #[test]
+    fn test_llm_router_creation() {
+        let usage_tracker = Arc::new(UsageTracker::new(100.0));
+        let router = LlmRouter::new(usage_tracker);
+        
+        assert!(router.adapters.is_empty());
+        assert!(router.routing_rules.is_empty());
+        assert!(router.fallback_chain.is_empty());
+    }
+
+    #[test]
+    fn test_llm_router_register_adapter() {
+        let usage_tracker = Arc::new(UsageTracker::new(100.0));
+        let mut router = LlmRouter::new(usage_tracker);
+        
+        // 创建一个模拟适配器
+        struct MockAdapter;
+        
+        #[async_trait]
+        impl LlmAdapter for MockAdapter {
+            async fn complete(&self, _req: LlmRequest) -> Result<LlmResponse> {
+                Ok(LlmResponse::new("test".to_string(), 10, 5))
+            }
+            
+            async fn stream(&self, _req: LlmRequest) -> Result<Box<dyn LlmStream>> {
+                todo!()
+            }
+            
+            fn count_tokens(&self, text: &str) -> usize {
+                text.len() / 4
+            }
+            
+            fn max_context_length(&self) -> usize {
+                4096
+            }
+            
+            fn cost_per_1k_tokens(&self) -> (f64, f64) {
+                (0.001, 0.002)
+            }
+            
+            fn name(&self) -> &str {
+                "mock-model"
+            }
+        }
+        
+        router.register_adapter(Box::new(MockAdapter));
+        assert_eq!(router.adapters.len(), 1);
+        assert!(router.adapters.contains_key("mock-model"));
     }
 }

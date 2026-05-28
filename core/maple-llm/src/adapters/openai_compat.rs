@@ -8,6 +8,7 @@ use anyhow::Result;
 pub struct OpenAiCompatAdapter {
     client: reqwest::Client,
     base_url: String,
+    api_path: String,
     api_key: String,
     model: String,
     pricing: (f64, f64),
@@ -18,7 +19,20 @@ impl OpenAiCompatAdapter {
     pub fn new(base_url: String, api_key: String, model: String) -> Self {
         Self {
             client: reqwest::Client::new(),
+            base_url: base_url.clone(),
+            api_path: "/v1/chat/completions".to_string(),
+            api_key,
+            model,
+            pricing: (0.001, 0.002),
+            context_length: 128_000,
+        }
+    }
+
+    pub fn new_with_path(base_url: String, api_path: String, api_key: String, model: String) -> Self {
+        Self {
+            client: reqwest::Client::new(),
             base_url,
+            api_path,
             api_key,
             model,
             pricing: (0.001, 0.002),
@@ -36,6 +50,16 @@ impl OpenAiCompatAdapter {
         self
     }
 
+    pub fn with_base_url(mut self, url: String) -> Self {
+        self.base_url = url;
+        self
+    }
+
+    pub fn with_api_path(mut self, path: String) -> Self {
+        self.api_path = path;
+        self
+    }
+
     pub fn deepseek(api_key: String) -> Self {
         Self::new(
             "https://api.deepseek.com".to_string(),
@@ -48,7 +72,7 @@ impl OpenAiCompatAdapter {
 
     pub fn qwen(api_key: String) -> Self {
         Self::new(
-            "https://dashscope.aliyuncs.com/compatible-mode/v1".to_string(),
+            "https://dashscope.aliyuncs.com/compatible-mode".to_string(),
             api_key,
             "qwen-plus".to_string(),
         )
@@ -57,8 +81,9 @@ impl OpenAiCompatAdapter {
     }
 
     pub fn glm(api_key: String) -> Self {
-        Self::new(
-            "https://open.bigmodel.cn/api/paas/v4".to_string(),
+        Self::new_with_path(
+            "https://open.bigmodel.cn/api/paas".to_string(),
+            "/v4/chat/completions".to_string(),
             api_key,
             "glm-4".to_string(),
         )
@@ -72,6 +97,17 @@ impl OpenAiCompatAdapter {
             api_key,
             model,
         )
+    }
+
+    pub fn google(api_key: String, model: String) -> Self {
+        Self::new_with_path(
+            "https://generativelanguage.googleapis.com/v1beta/openai".to_string(),
+            "/chat/completions".to_string(),
+            api_key,
+            model,
+        )
+        .with_pricing(0.00125, 0.005)
+        .with_context_length(1_000_000)
     }
 
     fn build_messages(&self, req: &LlmRequest) -> Vec<serde_json::Value> {
@@ -122,7 +158,7 @@ impl LlmAdapter for OpenAiCompatAdapter {
         }
 
         let resp = self.client
-            .post(format!("{}/v1/chat/completions", self.base_url))
+            .post(format!("{}{}", self.base_url, self.api_path))
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
             .json(&body)
@@ -165,7 +201,7 @@ impl LlmAdapter for OpenAiCompatAdapter {
         });
 
         let resp = self.client
-            .post(format!("{}/v1/chat/completions", self.base_url))
+            .post(format!("{}{}", self.base_url, self.api_path))
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
             .json(&body)

@@ -76,6 +76,62 @@ export async function mobileRestCall(path: string, body: Record<string, unknown>
 
 export { BASE_URL };
 
+/**
+ * SSE streaming call for chat — reads Server-Sent Events from /api/chat/stream
+ * and calls onToken for each token received.
+ */
+export async function mobileSseCall(
+  body: Record<string, unknown>,
+  onToken: (token: string) => void,
+  onDone: (data: { model?: string; session_id?: string; kb_sources?: unknown[] }) => void,
+  onError: (error: string) => void,
+): Promise<void> {
+  const token = await AsyncStorage.getItem(TOKEN_KEY);
+  try {
+    const res = await fetch(`${BASE_URL}/api/chat/stream`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      onError(`HTTP ${res.status}`);
+      return;
+    }
+
+    const text = await res.text();
+    const lines = text.split("\n");
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue;
+      const data = line.slice(6).trim();
+      if (data === "[DONE]") break;
+      try {
+        const parsed = JSON.parse(data);
+        if (parsed.token) {
+          onToken(parsed.token);
+        }
+        if (parsed.done) {
+          onDone({
+            model: parsed.model,
+            session_id: parsed.session_id,
+            kb_sources: parsed.kb_sources,
+          });
+        }
+        if (parsed.error) {
+          onError(parsed.error);
+        }
+      } catch {
+        // Skip malformed lines
+      }
+    }
+  } catch (err) {
+    onError((err as Error).message);
+  }
+}
+
 async function tryMobileRefreshToken(): Promise<boolean> {
   const refreshToken = await AsyncStorage.getItem(REFRESH_TOKEN_KEY);
   if (!refreshToken) return false;

@@ -107,10 +107,11 @@ pub struct LlmRequest {
     pub has_image: bool,
     pub estimated_tokens: usize,
     pub tools: Option<Vec<ToolDefinition>>,
+    pub requested_model: String,
 }
 
 impl LlmRequest {
-    pub fn new(prompt: String, _model_route: &str) -> Self {
+    pub fn new(prompt: String, model_route: &str) -> Self {
         Self {
             messages: vec![Message::user(&prompt)],
             task_type: TaskType::General,
@@ -121,6 +122,7 @@ impl LlmRequest {
             has_image: false,
             estimated_tokens: prompt.len() / 4,
             tools: None,
+            requested_model: model_route.to_string(),
         }
     }
 
@@ -135,6 +137,7 @@ impl LlmRequest {
             has_image: false,
             estimated_tokens: prompt.len() / 4,
             tools: None,
+            requested_model: "default".to_string(),
         }
     }
 

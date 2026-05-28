@@ -179,7 +179,13 @@ export class WorkflowBuilder {
     return { ...this.workflow, nodes: [...this.workflow.nodes] };
   }
 
-  toYaml(): string {
+  /** Serialize workflow definition as JSON string */
+  toJson(): string {
     return JSON.stringify(this.workflow, null, 2);
+  }
+
+  /** @deprecated Use toJson() — this method outputs JSON, not YAML */
+  toYaml(): string {
+    return this.toJson();
   }
 }
