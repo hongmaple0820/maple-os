@@ -14,6 +14,7 @@ pub mod registry;
 pub mod security;
 pub mod session_store;
 pub mod streaming_executor;
+pub mod tool_registry;
 pub mod tool_use_context;
 pub mod trigger;
 
@@ -43,5 +44,6 @@ pub use session_store::SessionStore;
 pub use streaming_executor::{
     StreamingToolExecutor, StreamingToolExecutorBuilder, ToolConcurrency, ToolMetadata,
 };
+pub use tool_registry::ToolRegistry;
 pub use tool_use_context::{FeatureFlags, PermissionLevel, ToolUseContext, ToolUseContextBuilder};
 pub use trigger::{TriggerBus, TriggerEvent, TriggerRule, TriggerScheduler, TriggerStage};

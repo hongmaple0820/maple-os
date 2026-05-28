@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-
 pub struct UsageTracker {
     daily_limit_usd: f64,
     current_usage: Arc<RwLock<DailyUsage>>,
@@ -36,6 +35,10 @@ impl UsageTracker {
 
     pub async fn get_usage(&self) -> (f64, u64, u64) {
         let usage = self.current_usage.read().await;
-        (usage.total_usd, usage.total_input_tokens, usage.total_output_tokens)
+        (
+            usage.total_usd,
+            usage.total_input_tokens,
+            usage.total_output_tokens,
+        )
     }
 }

@@ -1,10 +1,10 @@
-use crate::router::LlmAdapter;
+use crate::error::LlmError;
 use crate::request::LlmRequest;
 use crate::response::LlmResponse;
+use crate::router::LlmAdapter;
 use crate::stream::{LlmStream, StreamChunk};
-use crate::error::LlmError;
-use async_trait::async_trait;
 use anyhow::Result;
+use async_trait::async_trait;
 
 pub struct AnthropicAdapter {
     client: reqwest::Client,
@@ -40,12 +40,16 @@ impl AnthropicAdapter {
 #[async_trait]
 impl LlmAdapter for AnthropicAdapter {
     async fn complete(&self, req: LlmRequest) -> Result<LlmResponse> {
-        let messages: Vec<serde_json::Value> = req.messages.iter().map(|m| {
-            serde_json::json!({
-                "role": m.role,
-                "content": m.content,
+        let messages: Vec<serde_json::Value> = req
+            .messages
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "role": m.role,
+                    "content": m.content,
+                })
             })
-        }).collect();
+            .collect();
 
         let mut body = serde_json::json!({
             "model": self.model,
@@ -58,17 +62,21 @@ impl LlmAdapter for AnthropicAdapter {
         }
 
         if let Some(ref tools) = req.tools {
-            let anthropic_tools: Vec<serde_json::Value> = tools.iter().map(|t| {
-                serde_json::json!({
-                    "name": t.name,
-                    "description": t.description,
-                    "input_schema": t.parameters,
+            let anthropic_tools: Vec<serde_json::Value> = tools
+                .iter()
+                .map(|t| {
+                    serde_json::json!({
+                        "name": t.name,
+                        "description": t.description,
+                        "input_schema": t.parameters,
+                    })
                 })
-            }).collect();
+                .collect();
             body["tools"] = serde_json::json!(anthropic_tools);
         }
 
-        let resp = self.client
+        let resp = self
+            .client
             .post(format!("{}/v1/messages", self.base_url))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
@@ -120,12 +128,16 @@ impl LlmAdapter for AnthropicAdapter {
     }
 
     async fn stream(&self, req: LlmRequest) -> Result<Box<dyn LlmStream>> {
-        let messages: Vec<serde_json::Value> = req.messages.iter().map(|m| {
-            serde_json::json!({
-                "role": m.role,
-                "content": m.content,
+        let messages: Vec<serde_json::Value> = req
+            .messages
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "role": m.role,
+                    "content": m.content,
+                })
             })
-        }).collect();
+            .collect();
 
         let body = serde_json::json!({
             "model": self.model,
@@ -134,7 +146,8 @@ impl LlmAdapter for AnthropicAdapter {
             "stream": true,
         });
 
-        let resp = self.client
+        let resp = self
+            .client
             .post(format!("{}/v1/messages", self.base_url))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
@@ -150,7 +163,10 @@ impl LlmAdapter for AnthropicAdapter {
             return Err(anyhow::anyhow!(llm_err));
         }
 
-        Ok(Box::new(crate::stream::LiveSseStream::new(resp, crate::stream::SseFormat::Anthropic)))
+        Ok(Box::new(crate::stream::LiveSseStream::new(
+            resp,
+            crate::stream::SseFormat::Anthropic,
+        )))
     }
 
     fn count_tokens(&self, text: &str) -> usize {
@@ -218,7 +234,9 @@ impl AnthropicSseStream {
                                 });
                             }
                         }
-                        "message_stop" if chunks.last().is_none_or(|c| c.finish_reason.is_none()) => {
+                        "message_stop"
+                            if chunks.last().is_none_or(|c| c.finish_reason.is_none()) =>
+                        {
                             chunks.push(StreamChunk {
                                 delta: String::new(),
                                 finish_reason: Some("end_turn".to_string()),
@@ -231,7 +249,10 @@ impl AnthropicSseStream {
             }
         }
 
-        Self { chunks, position: 0 }
+        Self {
+            chunks,
+            position: 0,
+        }
     }
 
     pub fn empty() -> Self {

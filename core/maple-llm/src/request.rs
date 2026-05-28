@@ -60,7 +60,11 @@ impl Message {
     pub fn assistant_with_tool_calls(content: &str, tool_calls: Vec<serde_json::Value>) -> Self {
         Self {
             role: "assistant".to_string(),
-            content: if content.is_empty() { " ".to_string() } else { content.to_string() },
+            content: if content.is_empty() {
+                " ".to_string()
+            } else {
+                content.to_string()
+            },
             tool_call_id: None,
             tool_calls: Some(tool_calls),
         }
@@ -193,9 +197,12 @@ mod tests {
 
     #[test]
     fn test_message_assistant_with_tool_calls() {
-        let m = Message::assistant_with_tool_calls("", vec![
-            serde_json::json!({"id": "call_1", "function": {"name": "test", "arguments": "{}"}}),
-        ]);
+        let m = Message::assistant_with_tool_calls(
+            "",
+            vec![
+                serde_json::json!({"id": "call_1", "function": {"name": "test", "arguments": "{}"}}),
+            ],
+        );
         assert_eq!(m.role, "assistant");
         assert!(m.tool_calls.is_some());
         assert!(m.content == " ");

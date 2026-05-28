@@ -1,27 +1,27 @@
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use maple_engine::event_bus::EventBus;
-use maple_engine::executor::WorkflowExecutor;
-use maple_engine::skill_registry::SkillRegistry;
-use maple_engine::task_queue::TaskQueueService;
-use maple_engine::scheduler::Scheduler;
-use maple_engine::hooks::HookRunner;
-use maple_engine::checkpoint::CheckpointManager;
-use maple_llm::router::LlmRouter;
 use maple_agent::registry::AgentRegistry;
 use maple_agent::session_store::SessionStore;
+use maple_collab::workspace::WorkspaceManager;
+use maple_engine::checkpoint::CheckpointManager;
+use maple_engine::event_bus::EventBus;
+use maple_engine::executor::WorkflowExecutor;
+use maple_engine::hooks::HookRunner;
+use maple_engine::scheduler::Scheduler;
+use maple_engine::skill_registry::SkillRegistry;
+use maple_engine::task_queue::TaskQueueService;
 use maple_gateway::auth::AuthService;
 use maple_gateway::mcp_host::McpHostManager;
-use maple_sync::sync_engine::SyncEngine;
-use maple_kb::memory::MemoryStore;
-use maple_kb::evolver::Evolver;
-use maple_kb::prompt_version::PromptVersionManager;
-use maple_collab::workspace::WorkspaceManager;
-use maple_kb::retriever::HybridRetriever;
 use maple_kb::bm25::BM25Searcher;
-use maple_kb::vector_store::VectorSearch;
+use maple_kb::evolver::Evolver;
 use maple_kb::indexer::Indexer;
+use maple_kb::memory::MemoryStore;
+use maple_kb::prompt_version::PromptVersionManager;
+use maple_kb::retriever::HybridRetriever;
+use maple_kb::vector_store::VectorSearch;
 use maple_llm::embedding::Embedder;
+use maple_llm::router::LlmRouter;
+use maple_sync::sync_engine::SyncEngine;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 #[derive(Debug, Serialize)]
 pub struct ApiError {
@@ -41,7 +41,11 @@ impl ApiError {
         }
     }
 
-    pub fn with_details(error: impl Into<String>, code: impl Into<String>, details: serde_json::Value) -> Self {
+    pub fn with_details(
+        error: impl Into<String>,
+        code: impl Into<String>,
+        details: serde_json::Value,
+    ) -> Self {
         Self {
             error: error.into(),
             code: code.into(),
@@ -99,7 +103,8 @@ impl AppState {
 
 #[derive(Clone)]
 pub struct RateLimiter {
-    pub requests: Arc<tokio::sync::RwLock<std::collections::HashMap<String, Vec<std::time::Instant>>>>,
+    pub requests:
+        Arc<tokio::sync::RwLock<std::collections::HashMap<String, Vec<std::time::Instant>>>>,
     pub max_requests: usize,
     pub window_secs: u64,
 }
@@ -155,18 +160,18 @@ impl ServerConfig {
                 .unwrap_or_else(|_| "sqlite:mapleos.db?mode=rwc".to_string()),
             jwt_secret: std::env::var("JWT_SECRET")
                 .unwrap_or_else(|_| "mapleos-dev-secret-change-me".to_string()),
-            require_auth: std::env::var("REQUIRE_AUTH")
-                .unwrap_or_else(|_| "true".to_string()) == "true",
-            admin_username: std::env::var("ADMIN_USERNAME")
-                .unwrap_or_else(|_| "admin".to_string()),
+            require_auth: std::env::var("REQUIRE_AUTH").unwrap_or_else(|_| "true".to_string())
+                == "true",
+            admin_username: std::env::var("ADMIN_USERNAME").unwrap_or_else(|_| "admin".to_string()),
             admin_password: std::env::var("ADMIN_PASSWORD")
                 .unwrap_or_else(|_| "mapleos".to_string()),
             usage_limit_usd: std::env::var("USAGE_LIMIT_USD")
                 .unwrap_or_else(|_| "50.0".to_string())
                 .parse()
                 .unwrap_or(50.0),
-            log_level: std::env::var("LOG_LEVEL")
-                .unwrap_or_else(|_| "mapleos_server=debug,maple_engine=debug,maple_llm=debug".to_string()),
+            log_level: std::env::var("LOG_LEVEL").unwrap_or_else(|_| {
+                "mapleos_server=debug,maple_engine=debug,maple_llm=debug".to_string()
+            }),
         }
     }
 

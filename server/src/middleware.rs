@@ -1,11 +1,11 @@
+use crate::state::{AppState, RateLimiter};
+use axum::extract::State;
+use axum::middleware::Next;
+use maple_gateway::auth::Permission;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use std::time::Instant;
-use axum::middleware::Next;
-use axum::extract::State;
-use crate::state::{AppState, RateLimiter};
-use maple_gateway::auth::Permission;
+use tokio::sync::RwLock;
 
 pub async fn audit_log_middleware(
     req: axum::http::Request<axum::body::Body>,
@@ -14,12 +14,14 @@ pub async fn audit_log_middleware(
     let method = req.method().clone();
     let path = req.uri().path().to_string();
     let query = req.uri().query().map(|q| q.to_string()).unwrap_or_default();
-    let user_agent = req.headers()
+    let user_agent = req
+        .headers()
         .get("user-agent")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("unknown")
         .to_string();
-    let client_ip = req.headers()
+    let client_ip = req
+        .headers()
         .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("unknown")
@@ -55,7 +57,8 @@ pub async fn rate_limit_middleware(
         return Ok(next.run(req).await);
     }
 
-    let client_ip = req.headers()
+    let client_ip = req
+        .headers()
         .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("unknown")
@@ -80,11 +83,17 @@ pub async fn auth_middleware(
     let path = req.uri().path();
     let method = req.method().clone();
 
-    if path == "/health" || path == "/health/deep" || path.starts_with("/ws/") || path.starts_with("/api/events") || path.starts_with("/api/auth/") {
+    if path == "/health"
+        || path == "/health/deep"
+        || path.starts_with("/ws/")
+        || path.starts_with("/api/events")
+        || path.starts_with("/api/auth/")
+    {
         return Ok(next.run(req).await);
     }
 
-    let auth_header = req.headers()
+    let auth_header = req
+        .headers()
         .get("Authorization")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
@@ -119,7 +128,10 @@ pub async fn auth_middleware(
     }
 }
 
-pub(crate) fn get_required_permission(path: &str, method: &axum::http::Method) -> Option<Permission> {
+pub(crate) fn get_required_permission(
+    path: &str,
+    method: &axum::http::Method,
+) -> Option<Permission> {
     match (method.as_str(), path) {
         ("GET", p) if p.starts_with("/api/workflows") => Some(Permission::ReadWorkflows),
         ("POST", p) if p.starts_with("/api/workflows") => Some(Permission::WriteWorkflows),

@@ -82,15 +82,9 @@ impl CodeSandbox {
             .stderr(std::process::Stdio::piped())
             // Clear environment, only inject essentials
             .env_clear()
-            .env(
-                "PATH",
-                std::env::var("PATH").unwrap_or_default(),
-            )
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", sandbox_dir.to_string_lossy().to_string())
-            .env(
-                "TEMP",
-                std::env::temp_dir().to_string_lossy().to_string(),
-            )
+            .env("TEMP", std::env::temp_dir().to_string_lossy().to_string())
             .env("NODE_ENV", "sandbox");
 
         self.run_with_timeout(cmd).await
@@ -106,15 +100,9 @@ impl CodeSandbox {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .env_clear()
-            .env(
-                "PATH",
-                std::env::var("PATH").unwrap_or_default(),
-            )
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", sandbox_dir.to_string_lossy().to_string())
-            .env(
-                "TEMP",
-                std::env::temp_dir().to_string_lossy().to_string(),
-            )
+            .env("TEMP", std::env::temp_dir().to_string_lossy().to_string())
             .env("PYTHONDONTWRITEBYTECODE", "1")
             .env("PYTHONUNBUFFERED", "1");
 
@@ -192,14 +180,14 @@ pub fn validate_path(path: &Path, workspace_dir: &str) -> anyhow::Result<PathBuf
     };
 
     // Canonicalize to resolve symlinks and ../
-    let canon_target = target.canonicalize().map_err(|e| {
-        anyhow::anyhow!("Cannot resolve path '{}': {}", path.display(), e)
-    })?;
+    let canon_target = target
+        .canonicalize()
+        .map_err(|e| anyhow::anyhow!("Cannot resolve path '{}': {}", path.display(), e))?;
 
     // Canonicalize workspace root
-    let canon_root = workspace_root.canonicalize().map_err(|e| {
-        anyhow::anyhow!("Cannot resolve workspace dir '{}': {}", workspace_dir, e)
-    })?;
+    let canon_root = workspace_root
+        .canonicalize()
+        .map_err(|e| anyhow::anyhow!("Cannot resolve workspace dir '{}': {}", workspace_dir, e))?;
 
     // Ensure target is within workspace
     if !canon_target.starts_with(&canon_root) {

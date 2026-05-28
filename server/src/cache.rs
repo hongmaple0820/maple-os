@@ -1,8 +1,8 @@
+use dashmap::DashMap;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use dashmap::DashMap;
 use tokio::sync::RwLock;
 
 /// 缓存条目
@@ -79,7 +79,7 @@ where
         if self.store.len() >= self.max_size {
             self.cleanup();
         }
-        
+
         // 如果仍然已满，删除最旧的条目
         if self.store.len() >= self.max_size {
             if let Some(oldest_key) = self.find_oldest_key() {
@@ -163,10 +163,10 @@ pub struct AppCache {
 impl AppCache {
     pub fn new() -> Self {
         Self {
-            config: Cache::new(Duration::from_secs(300), 100),      // 5分钟TTL
-            models: Cache::new(Duration::from_secs(60), 100),       // 1分钟TTL
-            agents: Cache::new(Duration::from_secs(30), 100),       // 30秒TTL
-            kb_search: Cache::new(Duration::from_secs(120), 1000),  // 2分钟TTL，最多1000条
+            config: Cache::new(Duration::from_secs(300), 100), // 5分钟TTL
+            models: Cache::new(Duration::from_secs(60), 100),  // 1分钟TTL
+            agents: Cache::new(Duration::from_secs(30), 100),  // 30秒TTL
+            kb_search: Cache::new(Duration::from_secs(120), 1000), // 2分钟TTL，最多1000条
             llm_response: Cache::new(Duration::from_secs(600), 500), // 10分钟TTL，最多500条
         }
     }
@@ -204,11 +204,11 @@ mod tests {
     #[test]
     fn test_cache_basic_operations() {
         let cache = Cache::new(Duration::from_secs(60), 100);
-        
+
         // 插入和获取
         cache.insert("key1".to_string(), "value1".to_string());
         assert_eq!(cache.get(&"key1".to_string()), Some("value1".to_string()));
-        
+
         // 删除
         cache.remove(&"key1".to_string());
         assert_eq!(cache.get(&"key1".to_string()), None);
@@ -217,10 +217,10 @@ mod tests {
     #[test]
     fn test_cache_expiration() {
         let cache = Cache::new(Duration::from_millis(10), 100);
-        
+
         cache.insert("key1".to_string(), "value1".to_string());
         assert_eq!(cache.get(&"key1".to_string()), Some("value1".to_string()));
-        
+
         // 等待过期
         std::thread::sleep(Duration::from_millis(20));
         assert_eq!(cache.get(&"key1".to_string()), None);
@@ -229,11 +229,11 @@ mod tests {
     #[test]
     fn test_cache_max_size() {
         let cache = Cache::new(Duration::from_secs(60), 2);
-        
+
         cache.insert("key1".to_string(), "value1".to_string());
         cache.insert("key2".to_string(), "value2".to_string());
         cache.insert("key3".to_string(), "value3".to_string());
-        
+
         // 缓存应该只包含2个条目
         assert!(cache.len() <= 2);
     }
@@ -241,12 +241,17 @@ mod tests {
     #[tokio::test]
     async fn test_cache_get_or_insert() {
         let cache = Cache::new(Duration::from_secs(60), 100);
-        
-        let value = cache.get_or_insert_with("key1".to_string(), || async {
-            "computed_value".to_string()
-        }).await;
-        
+
+        let value = cache
+            .get_or_insert_with("key1".to_string(), || async {
+                "computed_value".to_string()
+            })
+            .await;
+
         assert_eq!(value, "computed_value");
-        assert_eq!(cache.get(&"key1".to_string()), Some("computed_value".to_string()));
+        assert_eq!(
+            cache.get(&"key1".to_string()),
+            Some("computed_value".to_string())
+        );
     }
 }

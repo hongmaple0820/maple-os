@@ -54,7 +54,10 @@ impl OpenAiStream {
             });
         }
 
-        Self { chunks, position: 0 }
+        Self {
+            chunks,
+            position: 0,
+        }
     }
 
     pub fn empty() -> Self {

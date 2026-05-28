@@ -1,9 +1,9 @@
-use serde::Deserialize;
-use std::sync::Arc;
+use crate::state::ServerConfig;
+use maple_llm::adapters::ollama::OllamaAdapter;
 use maple_llm::router::LlmRouter;
 use maple_llm::usage::UsageTracker;
-use maple_llm::adapters::ollama::OllamaAdapter;
-use crate::state::ServerConfig;
+use serde::Deserialize;
+use std::sync::Arc;
 
 #[derive(Debug, Deserialize)]
 pub struct LlmConfig {
@@ -67,18 +67,16 @@ pub fn load_llm_config() -> Option<LlmConfig> {
     }
 
     match std::fs::read_to_string(config_path) {
-        Ok(content) => {
-            match toml::from_str::<LlmConfig>(&content) {
-                Ok(config) => {
-                    tracing::info!("Loaded LLM config from config/llm.toml");
-                    Some(config)
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to parse LLM config: {}", e);
-                    None
-                }
+        Ok(content) => match toml::from_str::<LlmConfig>(&content) {
+            Ok(config) => {
+                tracing::info!("Loaded LLM config from config/llm.toml");
+                Some(config)
             }
-        }
+            Err(e) => {
+                tracing::warn!("Failed to parse LLM config: {}", e);
+                None
+            }
+        },
         Err(e) => {
             tracing::warn!("Failed to read LLM config file: {}", e);
             None
@@ -103,8 +101,14 @@ pub fn build_llm_router(config: &ServerConfig) -> Arc<LlmRouter> {
             let adapter = OllamaAdapter::new(model).with_base_url(base_url);
             router.register_adapter(Box::new(adapter));
         } else if let Some(ollama) = ollama_config {
-            let base_url = ollama.base_url.clone().unwrap_or_else(|| "http://127.0.0.1:11434".to_string());
-            let models = ollama.models.clone().unwrap_or_else(|| vec!["qwen2.5:7b".to_string()]);
+            let base_url = ollama
+                .base_url
+                .clone()
+                .unwrap_or_else(|| "http://127.0.0.1:11434".to_string());
+            let models = ollama
+                .models
+                .clone()
+                .unwrap_or_else(|| vec!["qwen2.5:7b".to_string()]);
             for model in models {
                 let adapter = OllamaAdapter::new(model.clone()).with_base_url(base_url.clone());
                 router.register_adapter(Box::new(adapter));
@@ -129,7 +133,8 @@ pub fn build_llm_router(config: &ServerConfig) -> Arc<LlmRouter> {
             .unwrap_or_default();
 
         if !api_key.is_empty() {
-            let mut adapter = maple_llm::adapters::openai_compat::OpenAiCompatAdapter::deepseek(api_key);
+            let mut adapter =
+                maple_llm::adapters::openai_compat::OpenAiCompatAdapter::deepseek(api_key);
             if let Some(deepseek) = deepseek_config {
                 if let Some(base_url) = &deepseek.base_url {
                     adapter = adapter.with_base_url(base_url.clone());
@@ -186,7 +191,8 @@ pub fn build_llm_router(config: &ServerConfig) -> Arc<LlmRouter> {
             .unwrap_or_default();
 
         if !api_key.is_empty() {
-            let mut adapter = maple_llm::adapters::openai_compat::OpenAiCompatAdapter::qwen(api_key);
+            let mut adapter =
+                maple_llm::adapters::openai_compat::OpenAiCompatAdapter::qwen(api_key);
             if let Some(qwen) = qwen_config {
                 if let Some(base_url) = &qwen.base_url {
                     adapter = adapter.with_base_url(base_url.clone());
@@ -249,7 +255,8 @@ pub fn build_llm_router(config: &ServerConfig) -> Arc<LlmRouter> {
             let model = openai_config
                 .and_then(|c| c.default_model.clone())
                 .unwrap_or_else(|| "gpt-4o-mini".to_string());
-            let mut adapter = maple_llm::adapters::openai_compat::OpenAiCompatAdapter::openai(api_key, model);
+            let mut adapter =
+                maple_llm::adapters::openai_compat::OpenAiCompatAdapter::openai(api_key, model);
             if let Some(openai) = openai_config {
                 if let Some(base_url) = &openai.base_url {
                     adapter = adapter.with_base_url(base_url.clone());
@@ -282,7 +289,8 @@ pub fn build_llm_router(config: &ServerConfig) -> Arc<LlmRouter> {
             let model = google_config
                 .and_then(|c| c.default_model.clone())
                 .unwrap_or_else(|| "gemini-1.5-flash".to_string());
-            let mut adapter = maple_llm::adapters::openai_compat::OpenAiCompatAdapter::google(api_key, model);
+            let mut adapter =
+                maple_llm::adapters::openai_compat::OpenAiCompatAdapter::google(api_key, model);
             if let Some(google) = google_config {
                 if let Some(base_url) = &google.base_url {
                     adapter = adapter.with_base_url(base_url.clone());
@@ -342,7 +350,8 @@ pub fn build_llm_router(config: &ServerConfig) -> Arc<LlmRouter> {
     if let Ok(content) = std::fs::read_to_string(&rules_path) {
         if let Ok(yaml) = serde_yaml::from_str::<serde_json::Value>(&content) {
             if let Some(rules_arr) = yaml.get("rules").and_then(|r| r.as_array()) {
-                let rules: Vec<maple_llm::router::RoutingRule> = rules_arr.iter()
+                let rules: Vec<maple_llm::router::RoutingRule> = rules_arr
+                    .iter()
                     .filter_map(|r| serde_json::from_value(r.clone()).ok())
                     .collect();
                 let rules_count = rules.len();
@@ -350,7 +359,8 @@ pub fn build_llm_router(config: &ServerConfig) -> Arc<LlmRouter> {
                 tracing::info!("Loaded {} routing rules from {}", rules_count, rules_path);
             }
             if let Some(chain) = yaml.get("fallback_chain").and_then(|c| c.as_array()) {
-                let chain: Vec<String> = chain.iter()
+                let chain: Vec<String> = chain
+                    .iter()
                     .filter_map(|c| c.as_str().map(|s| s.to_string()))
                     .collect();
                 router.set_fallback_chain(chain);
@@ -364,7 +374,8 @@ pub fn build_llm_router(config: &ServerConfig) -> Arc<LlmRouter> {
     // 从配置文件加载路由规则
     if let Some(llm_config) = &llm_config {
         if let Some(rules_config) = &llm_config.routing_rules {
-            let rules: Vec<maple_llm::router::RoutingRule> = rules_config.iter()
+            let rules: Vec<maple_llm::router::RoutingRule> = rules_config
+                .iter()
                 .map(|r| maple_llm::router::RoutingRule {
                     name: r.name.clone(),
                     condition: r.condition.clone(),

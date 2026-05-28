@@ -17,3 +17,4 @@ reqwest = { workspace = true }
 futures = { workspace = true }
 dashmap = { workspace = true }
 tiktoken-rs = { workspace = true }
+maple-macro = { workspace = true }

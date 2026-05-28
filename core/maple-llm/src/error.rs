@@ -11,10 +11,7 @@ pub enum LlmError {
     },
 
     /// 401/403: Authentication failed — rotate credential or fail
-    AuthFailed {
-        provider: String,
-        message: String,
-    },
+    AuthFailed { provider: String, message: String },
 
     /// Context too long — compress and retry
     ContextTooLong {
@@ -23,10 +20,7 @@ pub enum LlmError {
     },
 
     /// 503/529: Model overloaded — fallback to another provider
-    ModelOverloaded {
-        provider: String,
-        model: String,
-    },
+    ModelOverloaded { provider: String, model: String },
 
     /// Network/timeout errors — retryable
     NetworkError {
@@ -35,14 +29,10 @@ pub enum LlmError {
     },
 
     /// 400: Invalid request — fix and retry
-    InvalidRequest {
-        message: String,
-    },
+    InvalidRequest { message: String },
 
     /// 402: Quota exceeded — fallback or alert
-    QuotaExceeded {
-        provider: String,
-    },
+    QuotaExceeded { provider: String },
 
     /// 5xx: Server error — retryable
     ServerError {
@@ -253,7 +243,10 @@ impl LlmError {
 impl std::fmt::Display for LlmError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LlmError::RateLimited { provider, retry_after } => {
+            LlmError::RateLimited {
+                provider,
+                retry_after,
+            } => {
                 write!(f, "Rate limited by {}", provider)?;
                 if let Some(after) = retry_after {
                     write!(f, " (retry after {}s)", after.as_secs())?;
@@ -263,8 +256,15 @@ impl std::fmt::Display for LlmError {
             LlmError::AuthFailed { provider, message } => {
                 write!(f, "Auth failed for {}: {}", provider, message)
             }
-            LlmError::ContextTooLong { current_tokens, max_tokens } => {
-                write!(f, "Context too long: {} tokens (max {})", current_tokens, max_tokens)
+            LlmError::ContextTooLong {
+                current_tokens,
+                max_tokens,
+            } => {
+                write!(
+                    f,
+                    "Context too long: {} tokens (max {})",
+                    current_tokens, max_tokens
+                )
             }
             LlmError::ModelOverloaded { provider, model } => {
                 write!(f, "Model overloaded: {}/{}", provider, model)
@@ -278,13 +278,19 @@ impl std::fmt::Display for LlmError {
             LlmError::QuotaExceeded { provider } => {
                 write!(f, "Quota exceeded for {}", provider)
             }
-            LlmError::ServerError { status, provider, .. } => {
+            LlmError::ServerError {
+                status, provider, ..
+            } => {
                 write!(f, "Server error {} from {}", status, provider)
             }
-            LlmError::ClientError { status, provider, .. } => {
+            LlmError::ClientError {
+                status, provider, ..
+            } => {
                 write!(f, "Client error {} from {}", status, provider)
             }
-            LlmError::Unknown { status, provider, .. } => {
+            LlmError::Unknown {
+                status, provider, ..
+            } => {
                 write!(f, "Unknown error {} from {}", status, provider)
             }
         }
@@ -318,7 +324,11 @@ mod tests {
 
     #[test]
     fn test_classify_context_too_long() {
-        let err = LlmError::classify(400, "context_length_exceeded: maximum context length is 128000", "openai");
+        let err = LlmError::classify(
+            400,
+            "context_length_exceeded: maximum context length is 128000",
+            "openai",
+        );
         assert!(matches!(err, LlmError::ContextTooLong { .. }));
         let decision = err.classify_decision();
         assert!(decision.retryable);
@@ -352,9 +362,6 @@ mod tests {
             LlmError::parse_retry_after("Please wait 60 seconds"),
             Some(Duration::from_secs(60))
         );
-        assert_eq!(
-            LlmError::parse_retry_after("Some other error"),
-            None
-        );
+        assert_eq!(LlmError::parse_retry_after("Some other error"), None);
     }
 }

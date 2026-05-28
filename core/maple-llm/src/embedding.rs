@@ -47,7 +47,8 @@ impl Embedder for OllamaEmbedder {
             "prompt": text,
         });
 
-        let resp = self.client
+        let resp = self
+            .client
             .post(format!("{}/api/embeddings", self.base_url))
             .header("Content-Type", "application/json")
             .json(&body)
@@ -61,7 +62,8 @@ impl Embedder for OllamaEmbedder {
         }
 
         let json: serde_json::Value = resp.json().await?;
-        let embedding = json["embedding"].as_array()
+        let embedding = json["embedding"]
+            .as_array()
             .ok_or_else(|| anyhow::anyhow!("No embedding in Ollama response"))?
             .iter()
             .filter_map(|v| v.as_f64().map(|f| f as f32))
