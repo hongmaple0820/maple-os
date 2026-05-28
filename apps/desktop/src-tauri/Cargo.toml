@@ -3,7 +3,14 @@ name = "mapleos-desktop"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
 [workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = ["devtools"] }

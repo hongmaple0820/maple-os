@@ -8,7 +8,9 @@
     "lint": "turbo lint",
     "typecheck": "turbo typecheck",
     "test:e2e": "playwright test",
-    "test:e2e:ui": "playwright test --ui"
+    "test:e2e:ui": "playwright test --ui",
+    "desktop:dev": "pnpm --filter=mapleos-desktop dev",
+    "desktop:build": "pnpm --filter=mapleos-desktop build"
   },
   "devDependencies": {
     "@playwright/test": "^1.60.0",
