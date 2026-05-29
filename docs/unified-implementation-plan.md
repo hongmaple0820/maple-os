@@ -716,11 +716,11 @@ Phase 5:                                                ▼
 
 1. **并发工具执行**（1 天）— 直接复制 rig 的 `buffer_unordered` 模式
 2. **Hook System 接入 ReAct 循环**（1 天）— 已有代码，只需注入
-3. **Token 计数替换**（0.5 天）— `content.len() / 4` → `tiktoken-rs`
+3. **Token 计数替换**（0.5 天）— `content.len() / 4` → `tiktoken-rs` ✅ 已完成
 4. **Session 加载窗口限制**（0.5 天）— 添加 `max_messages` 参数
 5. **null-args 归一化**（1 小时）— 生产可靠性
 
-**总计：3 天可完成 5 个快速收益**
+**总计：3 天可完成 5 个快速收益（已完成 1/5）**
 
 ---
 
@@ -750,10 +750,11 @@ Phase 5:                                                ▼
 
 ## 下一步行动
 
-1. **立即开始**：Phase 1.4 并发工具执行（1 天，无依赖）
-2. **本周内**：Phase 1.1 ProviderProfile + 1.3 Hook System
-3. **下周**：Phase 1.2 统一 Tool Trait
-4. **持续**：按 Phase 顺序推进
+1. **已完成**：Token 计数精确化 (tiktoken-rs) + `#[tool]` 派生宏 + ToolRegistry 语义搜索
+2. **立即开始**：Phase 1.4 并发工具执行（1 天，无依赖）
+3. **本周内**：Phase 1.1 ProviderProfile + 1.3 Hook System
+4. **下周**：Phase 1.2 统一 Tool Trait
+5. **持续**：按 Phase 顺序推进
 
 ---
 

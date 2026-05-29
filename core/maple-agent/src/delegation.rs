@@ -109,7 +109,7 @@ impl DelegationEngine {
         let mut session = Session::new(&system_prompt);
 
         // Create ReAct loop for sub-agent
-        let react_loop = ReactLoop::new(opts.max_iterations).with_max_concurrent_tools(2); // Limit concurrency for sub-agents
+        let mut react_loop = ReactLoop::new(opts.max_iterations).with_max_concurrent_tools(2); // Limit concurrency for sub-agents
 
         // Execute with timeout
         let result = tokio::time::timeout(

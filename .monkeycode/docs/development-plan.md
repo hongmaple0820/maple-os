@@ -4,17 +4,17 @@
 
 ---
 
-## Phase 1: 闭环修复 (1-2 周)
+## Phase 1: 闭环修复 ✅ 已完成 (2026-05-26)
 
-目标: 消灭所有阻断端到端使用的缺陷，让产品基本跑通。
+> 5月24日标记的 7 个 P0 阻断性问题已全部修复，5 个闭环断点已全部走通。详见 `product-status-audit.md`。
 
-| # | 任务 | 涉及模块 | 预估 | 优先级 |
-|---|---|---|---|---|
-| 1.1 | Chat SSE 流式输出 | Rust backend + Web chat-panel | 1d | P0 |
-| 1.2 | Workflow SSE 实时节点状态 | Rust EventBus + Web workflow-manager | 1d | P0 |
-| 1.3 | Chat→Knowledge 交叉引用 | Web chat-panel + knowledge-manager | 0.5d | P0 |
-| 1.4 | memory_search_handler 接口对齐 | Rust /api/memories/search (前端传 query+limit, 后端期望 keyword+memory_type+limit) | 0.5d | P0 |
-| 1.5 | kb_search_handler 补充 source_type | Rust /api/kb/search 结果缺少 source_type 字段 | 0.5d | P1 |
+| # | 任务 | 涉及模块 | 状态 |
+|---|---|---|---|
+| 1.1 | Chat SSE 流式输出 | Rust backend + Web chat-panel | ✅ 已完成 |
+| 1.2 | Workflow SSE 实时节点状态 | Rust EventBus + Web workflow-manager | ✅ 已完成 |
+| 1.3 | Chat→Knowledge 交叉引用 | Web chat-panel + knowledge-manager | ✅ 已完成 |
+| 1.4 | memory_search_handler 接口对齐 | Rust /api/memories/search | ✅ 已完成 |
+| 1.5 | kb_search_handler 补充 source_type | Rust /api/kb/search | ✅ 已完成 |
 
 **1.1 Chat SSE 流式输出**
 

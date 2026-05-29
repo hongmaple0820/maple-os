@@ -315,20 +315,24 @@ MapleOS's unique position: **the only Rust-native, full-stack agent OS with visu
 
 ### Priority Roadmap
 
+> **版本说明**: 此路线图使用 v0.x 版本号，与 README 中的 Phase 1-3 为不同维度。Phase 对应产品阶段，v0.x 对应功能里程碑。
+
 **v0.4.0 — Foundation (2-3 weeks)**
-- ProviderProfile refactor for `maple-llm` (declarative provider config)
-- Error classifier with structured failover reasons (22 categories)
-- IterationBudget with grace call for cost control
-- Cache token tracking in LLM usage metrics
-- Thinking block support in message types
+- [x] Token 计数精确化 — tiktoken-rs (cl100k_base) 已集成 ✅
+- [x] `#[tool]` 派生宏 — 声明式工具定义 ✅
+- [ ] ProviderProfile refactor for `maple-llm` (declarative provider config)
+- [ ] Error classifier with structured failover reasons (22 categories)
+- [ ] IterationBudget with grace call for cost control
+- [ ] Cache token tracking in LLM usage metrics
+- [ ] Thinking block support in message types
 
 **v0.5.0 — Agent Runtime (3-4 weeks)**
-- Context Compressor (token-budget, head/tail protection, structured summaries)
-- Self-registering tool registry with AST discovery
-- Toolset composition (named groups, composable, webhook-safe subset)
-- StreamingToolExecutor with concurrency control (parallel safe, exclusive for unsafe)
-- ToolUseContext dependency injection (rich context for all tool executions)
-- Streaming context scrubber for clean output
+- [x] Context Compressor (token-budget, head/tail protection) ✅
+- [x] ToolRegistry with semantic search (cosine similarity) ✅
+- [ ] Toolset composition (named groups, composable, webhook-safe subset)
+- [ ] StreamingToolExecutor with concurrency control (parallel safe, exclusive for unsafe)
+- [ ] ToolUseContext dependency injection (rich context for all tool executions)
+- [ ] Streaming context scrubber for clean output
 
 **v0.6.0 — Multi-Agent & Security (3-4 weeks)**
 - Runtime subagent delegation (isolated context, restricted tools, depth caps)

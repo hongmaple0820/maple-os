@@ -85,7 +85,8 @@ impl TokenCounter for SimpleTokenCounter {
             })
             .count();
 
-        let non_cjk_count = text.len() - cjk_count;
+        let total_chars = text.chars().count();
+        let non_cjk_count = total_chars - cjk_count;
 
         // CJK: ~2 tokens per char, non-CJK: ~4 chars per token
         (cjk_count * 2) + (non_cjk_count / self.chars_per_token)
@@ -155,10 +156,10 @@ mod tests {
     #[test]
     fn test_simple_token_counter_cjk() {
         let counter = SimpleTokenCounter::new();
-        // CJK characters: 3 chars * 2 tokens = 6
-        assert_eq!(counter.count_tokens("你好世界"), 6);
-        // Mixed: CJK (3*2=6) + ASCII (4/4=1) = 7
-        assert_eq!(counter.count_tokens("你好test"), 7);
+        // CJK characters: 4 chars * 2 tokens = 8
+        assert_eq!(counter.count_tokens("你好世界"), 8);
+        // Mixed: CJK (2*2=4) + ASCII (4/4=1) = 5
+        assert_eq!(counter.count_tokens("你好test"), 5);
     }
 
     #[test]

@@ -216,7 +216,7 @@ async fn chat_handler(
         let security_mgr = SecurityManager::new(Default::default());
         let perf_monitor = PerformanceMonitor::new();
 
-        let react_loop = ReactLoop::new(10)
+        let mut react_loop = ReactLoop::new(10)
             .with_tool_use_context(tool_ctx)
             .with_security_manager(security_mgr)
             .with_performance_monitor(perf_monitor);

@@ -5,6 +5,7 @@ use crate::streaming_executor::StreamingToolExecutor;
 use crate::tool_use_context::ToolUseContext;
 use anyhow::Result;
 use async_trait::async_trait;
+use futures::StreamExt;
 use maple_engine::hooks::{HookDecision, HookRunner};
 use maple_llm::request::{LlmRequest, Message, ToolDefinition};
 use maple_llm::router::LlmAdapter;
@@ -291,7 +292,7 @@ impl ReactLoop {
     }
 
     pub async fn run_turn(
-        &self,
+        &mut self,
         adapter: &dyn LlmAdapter,
         tool_executor: &dyn ToolExecutor,
         session: &mut Session,
@@ -441,10 +442,24 @@ impl ReactLoop {
                     results.into_iter().enumerate().collect()
                 } else {
                     let max_concurrent = self.max_concurrent_tools.max(1);
+                    let owned_tool_uses: Vec<(usize, ToolUse)> = tool_uses
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, tu)| {
+                            (
+                                idx,
+                                ToolUse {
+                                    id: tu.id.clone(),
+                                    name: tu.name.clone(),
+                                    input: tu.input.clone(),
+                                },
+                            )
+                        })
+                        .collect();
                     let mut results: Vec<(usize, ToolResult)> =
-                        futures::stream::iter(tool_uses.iter().enumerate())
+                        futures::stream::iter(owned_tool_uses)
                             .map(|(idx, tool_use)| async move {
-                                let result = match tool_executor.execute(tool_use).await {
+                                let result = match tool_executor.execute(&tool_use).await {
                                     Ok(r) => r,
                                     Err(e) => ToolResult::error(
                                         &tool_use.id,

@@ -26,6 +26,34 @@ pub trait LlmAdapter: Send + Sync {
     }
 }
 
+#[async_trait]
+impl LlmAdapter for Arc<dyn LlmAdapter> {
+    async fn complete(&self, req: LlmRequest) -> Result<LlmResponse> {
+        (**self).complete(req).await
+    }
+    async fn stream(&self, req: LlmRequest) -> Result<Box<dyn LlmStream>> {
+        (**self).stream(req).await
+    }
+    fn count_tokens(&self, text: &str) -> usize {
+        (**self).count_tokens(text)
+    }
+    fn max_context_length(&self) -> usize {
+        (**self).max_context_length()
+    }
+    fn cost_per_1k_tokens(&self) -> (f64, f64) {
+        (**self).cost_per_1k_tokens()
+    }
+    fn name(&self) -> &str {
+        (**self).name()
+    }
+    fn supports_vision(&self) -> bool {
+        (**self).supports_vision()
+    }
+    fn supports_function_calling(&self) -> bool {
+        (**self).supports_function_calling()
+    }
+}
+
 /// Trait for external provider health checking — allows HealthMonitor (in maple-agent)
 /// to feed health data into LlmRouter without creating a circular dependency.
 #[async_trait]

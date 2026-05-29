@@ -102,9 +102,22 @@ impl StreamingToolExecutor {
             use futures::StreamExt;
 
             let max_concurrent = self.max_concurrent_safe.max(1);
-            let results: Vec<(usize, ToolResult)> = futures::stream::iter(concurrent_safe)
+            let owned: Vec<(usize, ToolUse)> = concurrent_safe
+                .into_iter()
+                .map(|(idx, tu)| {
+                    (
+                        idx,
+                        ToolUse {
+                            id: tu.id.clone(),
+                            name: tu.name.clone(),
+                            input: tu.input.clone(),
+                        },
+                    )
+                })
+                .collect();
+            let results: Vec<(usize, ToolResult)> = futures::stream::iter(owned)
                 .map(|(idx, tool_use)| async move {
-                    let result = match self.inner.execute(tool_use).await {
+                    let result = match self.inner.execute(&tool_use).await {
                         Ok(r) => r,
                         Err(e) => ToolResult::error(&tool_use.id, &tool_use.name, &e.to_string()),
                     };

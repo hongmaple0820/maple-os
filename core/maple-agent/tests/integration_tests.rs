@@ -11,10 +11,10 @@ use std::time::Duration;
 #[test]
 fn test_context_compressor_integration() {
     let config = ContextCompressorConfig {
-        max_context_length: 100,
+        max_context_length: 20,
         threshold_percentage: 0.50,
         tail_percentage: 0.20,
-        min_tail_tokens: 10,
+        min_tail_tokens: 5,
         head_message_count: 1,
         ..Default::default()
     };
@@ -22,10 +22,14 @@ fn test_context_compressor_integration() {
 
     let messages = vec![
         Message::system("You are a helpful assistant."),
-        Message::user("Hello"),
-        Message::assistant("Hi there!"),
-        Message::user("How are you?"),
-        Message::assistant("I'm doing well, thank you!"),
+        Message::user("Hello, how are you today?"),
+        Message::assistant("I'm doing well, thank you for asking!"),
+        Message::user("What is Rust programming language?"),
+        Message::assistant("Rust is a systems programming language focused on safety."),
+        Message::user("Tell me more about ownership and borrowing."),
+        Message::assistant("Ownership is Rust's key feature for memory safety without garbage collection."),
+        Message::user("How does the borrow checker work?"),
+        Message::assistant("The borrow checker enforces rules at compile time to prevent data races."),
     ];
 
     let compressed = compressor.compress(&messages);

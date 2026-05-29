@@ -447,7 +447,7 @@ mod tests {
 
     #[test]
     fn test_trigger_bus() {
-        let bus = TriggerBus::new(10);
+        let mut bus = TriggerBus::new(10);
         let sender = bus.get_sender();
 
         let event = TriggerEvent::Custom {

@@ -298,8 +298,8 @@ impl MemoryManager {
 
     /// Simple keyword relevance score (0.0 - 1.0)
     fn keyword_relevance(query: &str, content: &str) -> f64 {
-        let query_words: Vec<&str> = query
-            .to_lowercase()
+        let query_lower = query.to_lowercase();
+        let query_words: Vec<&str> = query_lower
             .split_whitespace()
             .filter(|w| w.len() > 2)
             .collect();

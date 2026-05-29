@@ -90,7 +90,7 @@
    实现：`SlidingWindow`, `TokenBudget`, `LlmSummarize`, `HierarchicalSummary`
 2. 在 `ReactLoop::run_turn()` 的 `adapter.complete()` 调用前接入压缩器
 3. 在 `LlmAdapter`/`LlmRouter` 添加预发送检查：`estimated_tokens > max_context_length()` 时自动压缩
-4. 用 `tiktoken-rs` 替换 `content.len() / 4`
+4. 用 `tiktoken-rs` 替换 `content.len() / 4` ✅ 已完成
 
 **关键常量（参考 hermes-agent）：**
 - 最小摘要 token：2000
@@ -123,12 +123,12 @@
        async fn execute(&self, input: &Value) -> Result<Value>;
    }
    ```
-2. 创建 `ToolRegistry` 替代 `SkillRegistry` 和 `AppToolExecutor`，工具自注册
-3. 从 `Tool` trait 方法自动生成 `ToolDefinition`
+2. 创建 `ToolRegistry` 替代 `SkillRegistry` 和 `AppToolExecutor`，工具自注册 ✅ 已完成
+3. 从 `Tool` trait 方法自动生成 `ToolDefinition` ✅ 已完成 (`#[tool]` 宏)
 4. 添加 JSON Schema 参数验证
 5. 为 `ToolRegistry` 实现 `ToolExecutor` 以桥接 ReAct 循环
 
-**工作量：** L (3-5天) | **依赖：** 无
+**工作量：** L (3-5天) | **依赖：** 无 | **进度：** 2/5 完成
 
 ---
 

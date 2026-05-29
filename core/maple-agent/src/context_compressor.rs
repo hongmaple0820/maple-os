@@ -186,15 +186,15 @@ impl ContextCompressor {
                 if let Some(ref tool_calls) = msg.tool_calls {
                     let needs_truncation = tool_calls
                         .iter()
-                        .any(|tc| tc.arguments.to_string().len() > 1000);
+                        .any(|tc| tc["arguments"].to_string().len() > 1000);
                     if needs_truncation {
                         let mut truncated = msg.clone();
                         if let Some(ref mut tcs) = truncated.tool_calls {
                             for tc in tcs.iter_mut() {
-                                let arg_str = tc.arguments.to_string();
+                                let arg_str = tc["arguments"].to_string();
                                 if arg_str.len() > 1000 {
                                     // Keep valid JSON but truncate large values
-                                    tc.arguments = truncate_json_values(&tc.arguments, 500);
+                                    tc["arguments"] = truncate_json_values(&tc["arguments"], 500);
                                 }
                             }
                         }
@@ -555,7 +555,7 @@ mod tests {
     #[test]
     fn test_compression_triggered() {
         let config = ContextCompressorConfig {
-            max_context_length: 100, // Very small to trigger compression
+            max_context_length: 30, // Very small to trigger compression
             threshold_percentage: 0.50,
             tail_percentage: 0.20,
             min_tail_tokens: 10,

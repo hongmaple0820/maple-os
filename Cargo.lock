@@ -1369,12 +1369,15 @@ dependencies = [
  "dashmap",
  "futures",
  "maple-engine",
+ "maple-kb",
  "maple-llm",
+ "maple-macro",
  "serde",
  "serde_json",
  "sqlx",
  "thiserror 1.0.69",
  "tokio",
+ "tokio-util",
  "tracing",
  "uuid",
 ]
@@ -1432,6 +1435,7 @@ dependencies = [
  "jsonwebtoken",
  "maple-agent",
  "maple-engine",
+ "maple-llm",
  "reqwest",
  "serde",
  "serde_json",
@@ -1475,6 +1479,7 @@ dependencies = [
  "chrono",
  "dashmap",
  "futures",
+ "maple-macro",
  "reqwest",
  "serde",
  "serde_json",
@@ -1483,6 +1488,16 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "maple-macro"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde_json",
+ "syn",
 ]
 
 [[package]]

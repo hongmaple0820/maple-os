@@ -81,6 +81,7 @@ mapleos/
  │   ├── maple-gateway/  # Agent gateway (WS/SSE/RPC)
  │   ├── maple-collab/   # Collaboration layer
  │   ├── maple-rpc/      # JSON-RPC 2.0 service
+ │   ├── maple-macro/    # Proc macros (#[tool] derive macro)
  │   └── scale-engine/   # SCALE governance engine (Node.js submodule)
  ├── server/             # Rust Axum backend service
  ├── apps/
@@ -131,7 +132,7 @@ docker compose -f infra/docker/docker-compose.yml up
 
 ### LLM Routing Configuration
 
-Edit `routing_rules.yaml`:
+Edit `infra/routing_rules.yaml`:
 
 ```yaml
 rules:
@@ -143,6 +144,14 @@ rules:
     preferred: ["ollama/qwen2.5:7b"]
     fallback_to_cloud: false
 ```
+
+---
+
+## Developer Docs
+
+- [`#[tool]` Macro](./docs/tool-macro.md) — Declarative tool definition with auto-generated JSON Schema
+- [Competitive Analysis](./docs/competitive-analysis.md) — Deep competitor comparison & best practices
+- [Unified Implementation Plan](./docs/unified-implementation-plan.md) — Architecture upgrade roadmap
 
 ---
 

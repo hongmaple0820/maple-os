@@ -41,17 +41,22 @@ impl<K: Eq + Hash + Clone, V: Clone> LruCache<K, V> {
 
     pub fn get(&mut self, key: &K) -> Option<&V> {
         // Check if entry exists and is not expired
-        if let Some(entry) = self.items.get(key) {
-            if entry.inserted_at.elapsed() < entry.ttl {
-                // Move to end of access order (most recently used)
-                self.access_order.retain(|k| k != key);
-                self.access_order.push(key.clone());
-                return Some(&entry.value);
-            } else {
-                // Entry expired, remove it
-                self.items.remove(key);
-                self.access_order.retain(|k| k != key);
-            }
+        let expired = self
+            .items
+            .get(key)
+            .map(|entry| entry.inserted_at.elapsed() >= entry.ttl)
+            .unwrap_or(false);
+
+        if expired {
+            self.items.remove(key);
+            self.access_order.retain(|k| k != key);
+            return None;
+        }
+
+        if self.items.contains_key(key) {
+            self.access_order.retain(|k| k != key);
+            self.access_order.push(key.clone());
+            return self.items.get(key).map(|entry| &entry.value);
         }
         None
     }

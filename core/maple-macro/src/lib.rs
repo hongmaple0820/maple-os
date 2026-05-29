@@ -1,12 +1,12 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{ItemFn, Lit, Meta, NestedMeta, PatType, ReturnType, Type, parse_macro_input};
+use syn::{ItemFn, Lit, Meta, PatType, Type, parse_macro_input};
 
 /// `#[tool]` attribute macro for declarative tool definition.
 ///
 /// # Usage
 ///
-/// ```rust
+/// ```rust,ignore
 /// use maple_macro::tool;
 /// use anyhow::Result;
 /// use serde_json::Value;

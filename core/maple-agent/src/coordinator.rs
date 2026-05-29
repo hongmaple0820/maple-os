@@ -1,4 +1,4 @@
-use crate::delegation::{DelegateOpts, DelegateResult, DelegationEngine};
+use crate::delegation::{DelegateOptsBuilder, DelegateResult, DelegationEngine};
 use crate::tool_use_context::ToolUseContext;
 use anyhow::Result;
 use maple_llm::request::LlmRequest;
@@ -181,7 +181,7 @@ impl Coordinator {
         Ok(vec![SubTask {
             id: uuid::Uuid::new_v4().to_string(),
             description: goal.to_string(),
-            tools_required: tools.clone(),
+            tools_required: tools.to_vec(),
             dependencies: Vec::new(),
             priority: 0,
             estimated_complexity: TaskComplexity::Medium,
@@ -241,7 +241,7 @@ Example response:
             return Ok(vec![SubTask {
                 id: uuid::Uuid::new_v4().to_string(),
                 description: goal.to_string(),
-                tools_required: tools.clone(),
+                tools_required: tools.to_vec(),
                 dependencies: Vec::new(),
                 priority: 0,
                 estimated_complexity: TaskComplexity::Medium,
@@ -300,15 +300,15 @@ Example response:
                 );
             }
 
-            let opts = DelegateOpts::builder()
+            let opts = DelegateOptsBuilder::new()
                 .max_iterations(10)
                 .timeout(self.worker_timeout)
-                .tool_subset(Some(subtask.tools_required.clone()))
+                .tool_subset(subtask.tools_required.clone())
                 .build();
 
             let delegation = self.delegation_engine.clone();
             let goal = subtask.description.clone();
-            let tools = tools.clone();
+            let tools: Vec<String> = tools.to_vec();
             let ctx = context.clone();
 
             let handle =
@@ -333,28 +333,24 @@ Example response:
                     results.insert(task_id, result);
                 }
                 Ok(Err(e)) => {
-                    results.insert(
-                        task_id,
-                        DelegateResult {
-                            task_id: task_id.clone(),
-                            success: false,
-                            output: format!("Error: {}", e),
-                            iterations_used: 0,
-                            tokens_used: 0,
-                        },
-                    );
+                    let err_result = DelegateResult {
+                        task_id: task_id.clone(),
+                        success: false,
+                        output: format!("Error: {}", e),
+                        iterations_used: 0,
+                        tokens_used: 0,
+                    };
+                    results.insert(task_id, err_result);
                 }
                 Err(e) => {
-                    results.insert(
-                        task_id,
-                        DelegateResult {
-                            task_id: task_id.clone(),
-                            success: false,
-                            output: format!("Worker panicked: {}", e),
-                            iterations_used: 0,
-                            tokens_used: 0,
-                        },
-                    );
+                    let err_result = DelegateResult {
+                        task_id: task_id.clone(),
+                        success: false,
+                        output: format!("Worker panicked: {}", e),
+                        iterations_used: 0,
+                        tokens_used: 0,
+                    };
+                    results.insert(task_id, err_result);
                 }
             }
         }

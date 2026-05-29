@@ -110,19 +110,37 @@ pub trait RecoveryContext: Send + Sync {
     /// Restart a worker process
     async fn restart_worker(&self) -> Result<String>;
 
-    /// Execute an operation with retry and exponential backoff
-    async fn retry_with_backoff<F, Fut, T>(
-        &self,
-        operation: F,
-        max_attempts: u32,
-        initial_delay_ms: u64,
-    ) -> Result<T>
-    where
-        F: Fn() -> Fut + Send + Sync,
-        Fut: std::future::Future<Output = Result<T>> + Send;
-
     /// Switch to an alternative LLM provider
     async fn fallback_to_provider(&self, provider: &str) -> Result<String>;
+}
+
+/// Execute an operation with retry and exponential backoff (standalone function)
+pub async fn retry_with_backoff<F, Fut, T>(
+    operation: F,
+    max_attempts: u32,
+    initial_delay_ms: u64,
+) -> Result<T>
+where
+    F: Fn() -> Fut + Send + Sync,
+    Fut: std::future::Future<Output = Result<T>> + Send,
+{
+    let mut delay = initial_delay_ms;
+    let mut last_error = None;
+
+    for attempt in 0..max_attempts {
+        match operation().await {
+            Ok(result) => return Ok(result),
+            Err(e) => {
+                last_error = Some(e);
+                if attempt + 1 < max_attempts {
+                    tokio::time::sleep(Duration::from_millis(delay)).await;
+                    delay = (delay * 2).min(30_000); // Cap at 30 seconds
+                }
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("All retry attempts failed")))
 }
 
 /// Default recovery context — returns simulated results
@@ -152,35 +170,6 @@ impl RecoveryContext for DefaultRecoveryContext {
     async fn restart_worker(&self) -> Result<String> {
         // In production, this would restart the worker process
         Ok("Worker restarted (simulated)".to_string())
-    }
-
-    async fn retry_with_backoff<F, Fut, T>(
-        &self,
-        operation: F,
-        max_attempts: u32,
-        initial_delay_ms: u64,
-    ) -> Result<T>
-    where
-        F: Fn() -> Fut + Send + Sync,
-        Fut: std::future::Future<Output = Result<T>> + Send,
-    {
-        let mut delay = initial_delay_ms;
-        let mut last_error = None;
-
-        for attempt in 0..max_attempts {
-            match operation().await {
-                Ok(result) => return Ok(result),
-                Err(e) => {
-                    last_error = Some(e);
-                    if attempt + 1 < max_attempts {
-                        tokio::time::sleep(Duration::from_millis(delay)).await;
-                        delay = (delay * 2).min(30_000); // Cap at 30 seconds
-                    }
-                }
-            }
-        }
-
-        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("All retry attempts failed")))
     }
 
     async fn fallback_to_provider(&self, provider: &str) -> Result<String> {
@@ -434,16 +423,14 @@ impl RecoveryEngine {
             } => {
                 // For retry, we simulate a retried operation
                 // In production, the actual operation would be passed in
-                let result = self
-                    .context
-                    .retry_with_backoff(
-                        || async {
-                            Ok::<_, anyhow::Error>("Operation completed successfully".to_string())
-                        },
-                        *max_attempts,
-                        *initial_delay_ms,
-                    )
-                    .await;
+                let result = retry_with_backoff(
+                    || async {
+                        Ok::<_, anyhow::Error>("Operation completed successfully".to_string())
+                    },
+                    *max_attempts,
+                    *initial_delay_ms,
+                )
+                .await;
 
                 match result {
                     Ok(output) => RecoveryResult::Success { output },

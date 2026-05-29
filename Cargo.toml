@@ -46,6 +46,7 @@ rand = "0.8"
 bytes = "1"
 futures = "0.3"
 tokio-stream = "0.1"
+tokio-util = "0.7"
 tower = "0.5"
 tower-http = { version = "0.5", features = ["cors", "trace"] }
 jsonwebtoken = "9"

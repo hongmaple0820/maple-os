@@ -19,6 +19,7 @@
 | maple-gateway | 7 | 2,664 | JWT认证+RBAC / WebSocket网关 / SSE流 / Webhook签名 / MCP Host (Stdio/HTTP/WS) / 多平台消息适配 | **真实** |
 | maple-collab | 5 | 1,626 | Workspace CRUD / FMP协议 / 实时广播 / 群组规则引擎 | **真实** |
 | maple-rpc | 4 | 372 | JSON-RPC 2.0 / 异步分发器 / HTTP handler | **真实** |
+| maple-macro | 1 | 224 | `#[tool]` 派生宏 / JSON Schema 自动生成 / 执行器包装 | **真实** |
 | server/main.rs | 1 | 3,708 | 全部路由+handler+启动流程 | **真实** |
 
 ### REST API — 50+ 端点，29 个路径
@@ -160,6 +161,7 @@
 | 向量库 | Qdrant(可选) + InMemory | **完整** |
 | 同步 | WebDAV + 自定义CRDT | **完整** (Automerge未用) |
 | AI运行时 | Ollama + OpenAI + Anthropic + DeepSeek + GLM | **完整** (5适配器) |
+| Token计数 | tiktoken-rs (cl100k_base) | **完整** (精确token计算 + CJK支持) |
 | 治理 | SCALE Engine | **完整** (bridge-http.mjs) |
 | 认证 | JWT + RBAC + bcrypt | **完整** (4 Role + 17 Permission) |
 | 测试 | Playwright 12用例(全Mock) + Rust 13模块单元测试 | **部分** |
@@ -170,7 +172,7 @@
 
 | 区域 | 文件数 | 行数 |
 |---|---|---|
-| Rust Core (8 crates) | 57 | 20,670 |
+| Rust Core (9 crates) | 58 | 20,894 |
 | Rust Server (main.rs) | 1 | 3,708 |
 | Web Frontend | ~15 | ~2,500 |
 | Mobile Frontend | ~8 | ~600 |

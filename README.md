@@ -81,6 +81,7 @@ mapleos/
  │   ├── maple-gateway/  # Agent 接入网关 (WS/SSE/RPC)
  │   ├── maple-collab/   # 协作层
  │   ├── maple-rpc/      # JSON-RPC 2.0 服务
+ │   ├── maple-macro/    # 过程宏 (#[tool] 派生宏)
  │   └── scale-engine/   # SCALE 治理引擎 (Node.js submodule)
  ├── server/             # Rust Axum 后端服务
  ├── apps/
@@ -131,7 +132,7 @@ docker compose -f infra/docker/docker-compose.yml up
 
 ### LLM 路由配置
 
-编辑 `routing_rules.yaml`：
+编辑 `infra/routing_rules.yaml`：
 
 ```yaml
 rules:
@@ -143,6 +144,14 @@ rules:
     preferred: ["ollama/qwen2.5:7b"]
     fallback_to_cloud: false
 ```
+
+---
+
+## 开发文档
+
+- [`#[tool]` 派生宏](./docs/tool-macro.md) — 声明式工具定义，自动生成 JSON Schema 和执行器
+- [竞品分析](./docs/competitive-analysis.md) — 深度竞品对比与最佳实践
+- [统一实施计划](./docs/unified-implementation-plan.md) — 架构升级路线图
 
 ---
 
