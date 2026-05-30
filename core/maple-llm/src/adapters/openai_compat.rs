@@ -112,6 +112,106 @@ impl OpenAiCompatAdapter {
         .with_context_length(1_000_000)
     }
 
+    pub fn mistral(api_key: String, model: String) -> Self {
+        Self::new(
+            "https://api.mistral.ai".to_string(),
+            api_key,
+            model,
+        )
+        .with_pricing(0.002, 0.006)
+        .with_context_length(128_000)
+    }
+
+    pub fn cohere(api_key: String, model: String) -> Self {
+        Self::new(
+            "https://api.cohere.com/v2".to_string(),
+            api_key,
+            model,
+        )
+        .with_pricing(0.0015, 0.002)
+        .with_context_length(128_000)
+    }
+
+    pub fn groq(api_key: String, model: String) -> Self {
+        Self::new(
+            "https://api.groq.com/openai".to_string(),
+            api_key,
+            model,
+        )
+        .with_pricing(0.0005, 0.0008)
+        .with_context_length(32_000)
+    }
+
+    pub fn together(api_key: String, model: String) -> Self {
+        Self::new(
+            "https://api.together.xyz".to_string(),
+            api_key,
+            model,
+        )
+        .with_pricing(0.0009, 0.0009)
+        .with_context_length(32_000)
+    }
+
+    pub fn fireworks(api_key: String, model: String) -> Self {
+        Self::new(
+            "https://api.fireworks.ai/inference/v1".to_string(),
+            api_key,
+            model,
+        )
+        .with_pricing(0.0009, 0.0009)
+        .with_context_length(32_000)
+    }
+
+    pub fn moonshot(api_key: String, model: String) -> Self {
+        Self::new(
+            "https://api.moonshot.cn".to_string(),
+            api_key,
+            model,
+        )
+        .with_pricing(0.006, 0.012)
+        .with_context_length(128_000)
+    }
+
+    pub fn baichuan(api_key: String, model: String) -> Self {
+        Self::new(
+            "https://api.baichuan-ai.com".to_string(),
+            api_key,
+            model,
+        )
+        .with_pricing(0.001, 0.002)
+        .with_context_length(32_000)
+    }
+
+    pub fn yi(api_key: String, model: String) -> Self {
+        Self::new(
+            "https://api.lingyiwanwu.com".to_string(),
+            api_key,
+            model,
+        )
+        .with_pricing(0.006, 0.006)
+        .with_context_length(200_000)
+    }
+
+    pub fn minimax(api_key: String, model: String) -> Self {
+        Self::new(
+            "https://api.minimax.chat".to_string(),
+            api_key,
+            model,
+        )
+        .with_pricing(0.001, 0.001)
+        .with_context_length(32_000)
+    }
+
+    pub fn stepfun(api_key: String, model: String) -> Self {
+        Self::new(
+            "https://api.stepfun.com".to_string(),
+            api_key,
+            model,
+        )
+        .with_pricing(0.004, 0.008)
+        .with_context_length(256_000)
+    }
+
     fn build_messages(&self, req: &LlmRequest) -> Vec<serde_json::Value> {
         req.messages
             .iter()

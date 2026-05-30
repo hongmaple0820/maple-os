@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.1.0-orange?style=flat-square" alt="version" />
+  <img src="https://img.shields.io/badge/version-2.0.0-orange?style=flat-square" alt="version" />
   <img src="https://img.shields.io/badge/rust-1.95-blue?style=flat-square" alt="rust" />
   <img src="https://img.shields.io/badge/node-26-blue?style=flat-square" alt="node" />
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="license" />
@@ -54,6 +54,11 @@ MapleOS 不是又一个 AI Chat，不是又一个 AI IDE，不是又一个自动
 | Local-first 同步 | CRDT / WebDAV / 离线可运行 / 自动冲突解决 |
 | 插件生态 | Skills / MCP / CLI 工具 / 浏览器控制 / 代码沙箱 |
 | 安全守卫 | 工具调用拦截 / 敏感操作检测 / 角色权限 / 防暴力重试 |
+| RAG 工具检索 | 向量化工具描述 / 语义搜索 / 分类标签 / 使用频率排序 |
+| LLM Provider 生态 | 14+ 提供商支持 (OpenAI/Anthropic/DeepSeek/Qwen/Gemini 等) |
+| 终端后端 | Local / Docker / SSH 多执行环境 / 资源限制 / 文件系统操作 |
+| Cron 调度器 | 自然语言任务定义 / 定时执行 / 多种调度模式 |
+| Mock 测试框架 | 确定性 Mock LLM / 请求录制 / 错误注入 / E2E 对等测试 |
 
 ---
 
@@ -152,6 +157,80 @@ rules:
 - [`#[tool]` 派生宏](./docs/tool-macro.md) — 声明式工具定义，自动生成 JSON Schema 和执行器
 - [竞品分析](./docs/competitive-analysis.md) — 深度竞品对比与最佳实践
 - [统一实施计划](./docs/unified-implementation-plan.md) — 架构升级路线图
+- [v2.0.0 路线图](./docs/v2.0-roadmap.md) — v2.0.0 功能规划与实现
+
+## v2.0.0 新特性详解
+
+### RAG-Retrievable Tools (工具向量检索)
+
+```rust
+// 注册工具时自动向量化
+registry.register_with_category(tool_def, "filesystem").await?;
+
+// 语义搜索
+let tools = registry.search("read file from disk", Some(5)).await?;
+
+// 关键词搜索 (无需 embedding)
+let tools = registry.search_by_keyword("file", Some(10)).await;
+
+// 使用频率排序
+let tools = registry.search_with_usage_boost("file", Some(5)).await?;
+```
+
+### LLM Provider 生态 (14+ 提供商)
+
+```rust
+// 使用内置 provider 注册表
+let registry = builtin_providers();
+
+// 或手动创建 provider
+let adapter = OpenAiCompatAdapter::deepseek(api_key);
+let adapter = OpenAiCompatAdapter::qwen(api_key);
+let adapter = OpenAiCompatAdapter::google(api_key, "gemini-2.0-flash");
+```
+
+### 终端后端 (多执行环境)
+
+```rust
+// 本地执行
+let backend = LocalBackend::new();
+let result = backend.execute("ls -la", None).await?;
+
+// Docker 容器执行
+let backend = DockerBackend::new("ubuntu:latest")
+    .with_volume("/host", "/container");
+let result = backend.execute("apt update", None).await?;
+
+// SSH 远程执行
+let backend = SshBackend::new("server.com", "user")
+    .with_key("/path/to/key");
+let result = backend.execute("uname -a", None).await?;
+```
+
+### Cron 调度器 (自然语言)
+
+```rust
+// 自然语言解析
+let schedule = CronExpression::parse_natural_language("every 5 minutes")?;
+let schedule = CronExpression::parse_natural_language("daily at 9:00")?;
+let schedule = CronExpression::parse_natural_language("weekly on Monday at 14:00")?;
+```
+
+### Mock 测试框架
+
+```rust
+// 创建 mock adapter
+let mut adapter = MockLlmAdapter::new("test-model");
+adapter.when(
+    RequestMatcher::ContentContains("hello"),
+    MockResponses::text("Hi there!"),
+);
+
+// E2E 对等测试
+let mut harness = MockParityHarness::new("test-model");
+harness.add_test_case(ParityTestCase { ... });
+let report = harness.verify_parity().await?;
+```
 
 ---
 
@@ -169,7 +248,21 @@ rules:
 
 ## 开发路线图
 
-### Phase 1 — 基础引擎 (当前)
+### v2.0.0 — 生产级 Agent OS (已完成)
+
+**P0 — 核心竞争力:**
+- [x] RAG-Retrievable Tools — 向量化工具描述 + 语义搜索 + 分类标签 + 使用频率排序
+- [x] LLM Provider 生态扩展 — 14+ 提供商 (OpenAI/Anthropic/DeepSeek/Qwen/Gemini/Mistral/Groq/Moonshot/Yi/Baichuan/Minimax/Stepfun)
+
+**P1 — 生产就绪:**
+- [x] Cron 调度器 + 自然语言任务 — "every 5 minutes", "daily at 9:00", "weekly on Monday at 14:00"
+- [x] 终端后端扩展 — Local / Docker / SSH 多执行环境
+
+**P2 — 工程质量:**
+- [x] Mock Parity Harness — 确定性 Mock LLM + E2E 对等测试框架
+- [x] ToolSearch 运行时发现 — 关键词工具搜索，无需 embedding
+
+### Phase 1 — 基础引擎
 
 - Rust 核心引擎: Workflow / Agent / LLM Router / Knowledge / Task Queue
 - Web 前端: Dashboard / Chat / Workflow Editor / Agent Center
@@ -299,6 +392,21 @@ git push origin feat/your-feature
 | Governance | SCALE Engine | Agent 治理 + FSM + 门禁 |
 
 ---
+
+## 性能基准
+
+| 组件 | 操作 | 时间 |
+|------|------|------|
+| Trident Compaction | 20 消息 | 22.5 µs |
+| Trident Compaction | 100 消息 | 112.4 µs |
+| Skill Discovery | 100 技能 | 44.2 µs |
+| Credential Stripping | 大 JSON | 216.9 µs |
+| Workflow DAG | 验证 (中等) | 13.5 µs |
+| Parallel Tools | 10 并发 | 24.8 µs |
+| Lane Manager | 完整生命周期 | 57.0 µs |
+| Trajectory Scoring | 评分 | 23.8 ns |
+| Platform Registry | 路由消息 | 994.6 ns |
+| Tool Sync | 更新 | 16.2 µs |
 
 ## 产品护城河
 

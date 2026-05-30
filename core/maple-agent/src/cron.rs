@@ -159,6 +159,170 @@ impl CronExpression {
         Ok(CronField::Value(value))
     }
 
+    /// Parse natural language description into a cron expression
+    ///
+    /// Supports:
+    /// - "every N minutes/hours/days"
+    /// - "daily at HH:MM"
+    /// - "weekly on Monday at HH:MM"
+    /// - "monthly on day N at HH:MM"
+    /// - "hourly", "daily", "weekly", "monthly"
+    pub fn parse_natural_language(input: &str) -> Result<Self> {
+        let input = input.trim().to_lowercase();
+
+        // "every N minutes"
+        if let Some(caps) = input.strip_prefix("every ") {
+            let parts: Vec<&str> = caps.split_whitespace().collect();
+            if parts.len() >= 2 {
+                if let Ok(n) = parts[0].parse::<u8>() {
+                    match parts[1] {
+                        "minute" | "minutes" | "min" | "mins" => {
+                            return Ok(Self {
+                                minute: CronField::Step(n),
+                                hour: CronField::Any,
+                                day: CronField::Any,
+                                month: CronField::Any,
+                                weekday: CronField::Any,
+                            });
+                        }
+                        "hour" | "hours" => {
+                            return Ok(Self {
+                                minute: CronField::Value(0),
+                                hour: if n == 1 { CronField::Any } else { CronField::Step(n) },
+                                day: CronField::Any,
+                                month: CronField::Any,
+                                weekday: CronField::Any,
+                            });
+                        }
+                        "day" | "days" => {
+                            return Ok(Self {
+                                minute: CronField::Value(0),
+                                hour: CronField::Value(0),
+                                day: if n == 1 { CronField::Any } else { CronField::Step(n) },
+                                month: CronField::Any,
+                                weekday: CronField::Any,
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // "daily at HH:MM"
+        if input.starts_with("daily at ") || input.starts_with("every day at ") {
+            let time_str = if input.starts_with("daily at ") {
+                &input[9..]
+            } else {
+                &input[13..]
+            };
+            if let Some((h, m)) = parse_time(time_str) {
+                return Ok(Self {
+                    minute: CronField::Value(m),
+                    hour: CronField::Value(h),
+                    day: CronField::Any,
+                    month: CronField::Any,
+                    weekday: CronField::Any,
+                });
+            }
+        }
+
+        // "hourly"
+        if input == "hourly" || input == "every hour" {
+            return Ok(Self {
+                minute: CronField::Value(0),
+                hour: CronField::Any,
+                day: CronField::Any,
+                month: CronField::Any,
+                weekday: CronField::Any,
+            });
+        }
+
+        // "daily"
+        if input == "daily" || input == "every day" {
+            return Ok(Self {
+                minute: CronField::Value(0),
+                hour: CronField::Value(0),
+                day: CronField::Any,
+                month: CronField::Any,
+                weekday: CronField::Any,
+            });
+        }
+
+        // "weekly on Monday at HH:MM"
+        if input.starts_with("weekly on ") {
+            let rest = &input[10..];
+            let days = [
+                ("sunday", 0), ("monday", 1), ("tuesday", 2), ("wednesday", 3),
+                ("thursday", 4), ("friday", 5), ("saturday", 6),
+            ];
+            for (day_name, day_num) in &days {
+                if rest.starts_with(day_name) {
+                    let time_part = &rest[day_name.len()..].trim();
+                    let (h, m) = if time_part.starts_with("at ") {
+                        parse_time(&time_part[3..]).unwrap_or((0, 0))
+                    } else {
+                        (0, 0)
+                    };
+                    return Ok(Self {
+                        minute: CronField::Value(m),
+                        hour: CronField::Value(h),
+                        day: CronField::Any,
+                        month: CronField::Any,
+                        weekday: CronField::Value(*day_num),
+                    });
+                }
+            }
+        }
+
+        // "monthly on day N at HH:MM"
+        if input.starts_with("monthly on day ") {
+            let rest = &input[15..];
+            let parts: Vec<&str> = rest.split_whitespace().collect();
+            if let Ok(day) = parts[0].parse::<u8>() {
+                let (h, m) = if parts.len() > 2 && parts[1] == "at" {
+                    parse_time(parts[2]).unwrap_or((0, 0))
+                } else {
+                    (0, 0)
+                };
+                return Ok(Self {
+                    minute: CronField::Value(m),
+                    hour: CronField::Value(h),
+                    day: CronField::Value(day),
+                    month: CronField::Any,
+                    weekday: CronField::Any,
+                });
+            }
+        }
+
+        // "weekly"
+        if input == "weekly" || input == "every week" {
+            return Ok(Self {
+                minute: CronField::Value(0),
+                hour: CronField::Value(0),
+                day: CronField::Any,
+                month: CronField::Any,
+                weekday: CronField::Value(1), // Monday
+            });
+        }
+
+        // "monthly"
+        if input == "monthly" || input == "every month" {
+            return Ok(Self {
+                minute: CronField::Value(0),
+                hour: CronField::Value(0),
+                day: CronField::Value(1),
+                month: CronField::Any,
+                weekday: CronField::Any,
+            });
+        }
+
+        Err(anyhow::anyhow!(
+            "Could not parse natural language cron: '{}'. Try 'every 5 minutes', 'daily at 9:00', 'weekly on Monday at 14:00'",
+            input
+        ))
+    }
+
     /// Check if current time matches this expression
     pub fn matches(&self, minute: u8, hour: u8, day: u8, month: u8, weekday: u8) -> bool {
         self.field_matches(&self.minute, minute, 0, 59)
@@ -434,6 +598,38 @@ impl CronJobBuilder {
     }
 }
 
+/// Parse time string like "9:00", "14:30", "9am", "2pm"
+fn parse_time(s: &str) -> Option<(u8, u8)> {
+    let s = s.trim().to_lowercase();
+
+    // Try "HH:MM" format
+    if let Some((h, m)) = s.split_once(':') {
+        if let (Ok(h), Ok(m)) = (h.parse::<u8>(), m.parse::<u8>()) {
+            if h <= 23 && m <= 59 {
+                return Some((h, m));
+            }
+        }
+    }
+
+    // Try "Ham" or "Hpm" format
+    if let Some(h_str) = s.strip_suffix("am") {
+        if let Ok(h) = h_str.parse::<u8>() {
+            if h >= 1 && h <= 12 {
+                return Some((if h == 12 { 0 } else { h }, 0));
+            }
+        }
+    }
+    if let Some(h_str) = s.strip_suffix("pm") {
+        if let Ok(h) = h_str.parse::<u8>() {
+            if h >= 1 && h <= 12 {
+                return Some((if h == 12 { 12 } else { h + 12 }, 0));
+            }
+        }
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,5 +722,73 @@ mod tests {
             .unwrap()
             .as_secs();
         assert_eq!(next_secs, 24 * 3600 + 9 * 3600);
+    }
+
+    #[test]
+    fn test_parse_time() {
+        assert_eq!(parse_time("9:00"), Some((9, 0)));
+        assert_eq!(parse_time("14:30"), Some((14, 30)));
+        assert_eq!(parse_time("9am"), Some((9, 0)));
+        assert_eq!(parse_time("2pm"), Some((14, 0)));
+        assert_eq!(parse_time("12pm"), Some((12, 0)));
+        assert_eq!(parse_time("12am"), Some((0, 0)));
+        assert_eq!(parse_time("invalid"), None);
+    }
+
+    #[test]
+    fn test_natural_language_every_minutes() {
+        let expr = CronExpression::parse_natural_language("every 5 minutes").unwrap();
+        assert!(matches!(expr.minute, CronField::Step(5)));
+        assert!(matches!(expr.hour, CronField::Any));
+    }
+
+    #[test]
+    fn test_natural_language_every_hours() {
+        let expr = CronExpression::parse_natural_language("every 2 hours").unwrap();
+        assert!(matches!(expr.minute, CronField::Value(0)));
+        assert!(matches!(expr.hour, CronField::Step(2)));
+    }
+
+    #[test]
+    fn test_natural_language_daily_at() {
+        let expr = CronExpression::parse_natural_language("daily at 9:00").unwrap();
+        assert!(matches!(expr.minute, CronField::Value(0)));
+        assert!(matches!(expr.hour, CronField::Value(9)));
+        assert!(matches!(expr.day, CronField::Any));
+    }
+
+    #[test]
+    fn test_natural_language_hourly() {
+        let expr = CronExpression::parse_natural_language("hourly").unwrap();
+        assert!(matches!(expr.minute, CronField::Value(0)));
+        assert!(matches!(expr.hour, CronField::Any));
+    }
+
+    #[test]
+    fn test_natural_language_daily() {
+        let expr = CronExpression::parse_natural_language("daily").unwrap();
+        assert!(matches!(expr.minute, CronField::Value(0)));
+        assert!(matches!(expr.hour, CronField::Value(0)));
+    }
+
+    #[test]
+    fn test_natural_language_weekly_on_monday() {
+        let expr = CronExpression::parse_natural_language("weekly on Monday at 14:00").unwrap();
+        assert!(matches!(expr.minute, CronField::Value(0)));
+        assert!(matches!(expr.hour, CronField::Value(14)));
+        assert!(matches!(expr.weekday, CronField::Value(1)));
+    }
+
+    #[test]
+    fn test_natural_language_monthly_on_day() {
+        let expr = CronExpression::parse_natural_language("monthly on day 15 at 10:00").unwrap();
+        assert!(matches!(expr.minute, CronField::Value(0)));
+        assert!(matches!(expr.hour, CronField::Value(10)));
+        assert!(matches!(expr.day, CronField::Value(15)));
+    }
+
+    #[test]
+    fn test_natural_language_invalid() {
+        assert!(CronExpression::parse_natural_language("invalid input").is_err());
     }
 }

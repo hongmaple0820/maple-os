@@ -214,4 +214,23 @@ impl MemoryStore {
             }
         }
     }
+
+    /// Get all memories of a specific type
+    pub fn get_all_by_type(&self, memory_type: &MemoryType) -> Vec<MemoryEntry> {
+        let map = match memory_type {
+            MemoryType::Working => &self.working,
+            MemoryType::Episodic => &self.episodic,
+            MemoryType::Semantic => &self.semantic,
+        };
+        map.values().cloned().collect()
+    }
+
+    /// Count memories by type
+    pub fn count_by_type(&self, memory_type: &MemoryType) -> usize {
+        match memory_type {
+            MemoryType::Working => self.working.len(),
+            MemoryType::Episodic => self.episodic.len(),
+            MemoryType::Semantic => self.semantic.len(),
+        }
+    }
 }

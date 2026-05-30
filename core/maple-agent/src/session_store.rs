@@ -53,6 +53,7 @@ impl SessionStore {
                 content: content.clone(),
                 tool_call_id,
                 tool_calls,
+                thinking: None,
             };
             messages.push(msg);
         }

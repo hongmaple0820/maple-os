@@ -7,7 +7,7 @@ pub mod bm25;
 pub mod vector_store;
 
 pub use retriever::HybridRetriever;
-pub use evolver::Evolver;
+pub use evolver::{Evolver, EvolutionConfig, DistillationResult, EvolutionStats, KnowledgeLink};
 pub use memory::MemoryStore;
 pub use bm25::BM25Searcher;
 pub use vector_store::{VectorSearch, InMemoryVectorStore, QdrantVectorStore, ChunkEmbedding};

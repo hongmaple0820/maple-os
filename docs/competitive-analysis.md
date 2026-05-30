@@ -320,43 +320,98 @@ MapleOS's unique position: **the only Rust-native, full-stack agent OS with visu
 **v0.4.0 — Foundation (2-3 weeks)**
 - [x] Token 计数精确化 — tiktoken-rs (cl100k_base) 已集成 ✅
 - [x] `#[tool]` 派生宏 — 声明式工具定义 ✅
-- [ ] ProviderProfile refactor for `maple-llm` (declarative provider config)
-- [ ] Error classifier with structured failover reasons (22 categories)
-- [ ] IterationBudget with grace call for cost control
-- [ ] Cache token tracking in LLM usage metrics
-- [ ] Thinking block support in message types
+- [x] ProviderProfile refactor for `maple-llm` (declarative provider config) ✅
+- [x] Error classifier with structured failover reasons (22 categories) ✅
+- [x] IterationBudget with grace call for cost control ✅
+- [x] Cache token tracking in LLM usage metrics ✅
+- [x] Thinking block support in message types ✅
 
 **v0.5.0 — Agent Runtime (3-4 weeks)**
 - [x] Context Compressor (token-budget, head/tail protection) ✅
 - [x] ToolRegistry with semantic search (cosine similarity) ✅
-- [ ] Toolset composition (named groups, composable, webhook-safe subset)
-- [ ] StreamingToolExecutor with concurrency control (parallel safe, exclusive for unsafe)
-- [ ] ToolUseContext dependency injection (rich context for all tool executions)
-- [ ] Streaming context scrubber for clean output
+- [x] StreamingToolExecutor with concurrency control (parallel safe, exclusive for unsafe) ✅
+- [x] ToolUseContext dependency injection (rich context for all tool executions) ✅
+- [x] Toolset composition (named groups, composable, webhook-safe subset) ✅
+- [x] Streaming context scrubber for clean output ✅
 
 **v0.6.0 — Multi-Agent & Security (3-4 weeks)**
-- Runtime subagent delegation (isolated context, restricted tools, depth caps)
-- Worker boot state machine (spawn → trust → permission → ready → running)
-- Recovery recipes for automatic failure recovery with escalation
-- Permission-enforced tool execution (dynamic classification by command content)
-- Threat pattern scanning (context files + runtime prompts)
-- Outbox pattern for reliable task dispatch
+- [x] Runtime subagent delegation (isolated context, restricted tools, depth caps) ✅
+- [x] Worker boot state machine (spawn → trust → permission → ready → running) ✅
+- [x] Recovery recipes for automatic failure recovery with escalation ✅
+- [x] Permission-enforced tool execution (dynamic classification by command content) ✅
+- [x] Threat pattern scanning (context files + runtime prompts) ✅
+- [x] Outbox pattern for reliable task dispatch ✅
 
-**v0.7.0 — Intelligence (4-5 weeks)**
-- Mixture-of-Agents (parallel multi-model reasoning)
-- Trident compaction (3-stage: supersede, collapse, cluster)
-- Lane events + policy engine for parallel workstream management
-- Task packets (structured handoff with acceptance tests)
-- In-process multi-agent (AsyncLocalStorage for lightweight sub-agents)
-- Mailbox-based inter-agent communication
-- Dynamic skill discovery (conditional activation by file paths)
-- Memory provider lifecycle hooks (pluggable memory system)
-- Trajectory compression for training data
-- Post-ready step queue for agent initialization
+**v0.7.0 — Intelligence (4-5 weeks)** — [详细架构设计](v0.7-architecture.md)
+- [x] Mixture-of-Agents (parallel multi-model reasoning) ✅
+- [x] Trident compaction (3-stage: supersede, collapse, cluster) ✅
+- [x] Lane events + policy engine for parallel workstream management ✅
+- [x] Task packets (structured handoff with acceptance tests) ✅
+- [x] In-process multi-agent (AsyncLocalStorage for lightweight sub-agents) ✅
+- [x] Mailbox-based inter-agent communication ✅
+- [x] Dynamic skill discovery (conditional activation by file paths) ✅
+- [x] Memory provider lifecycle hooks (pluggable memory system) ✅
+- [x] Trajectory compression for training data ✅
+- [x] Post-ready step queue for agent initialization ✅
 
 **v1.0.0 — Full Stack Agent OS**
+- [x] Visual workflow DAG (unique moat) ✅ `workflow_dag.rs`
+- [x] Knowledge base + Evolver (unique moat) ✅ `evolver.rs` enhanced with distillation/prune/feedback
+- [x] Real-time collaboration (unique moat) ✅ `realtime_collab.rs` WebSocket broadcast + presence + OT
+- [x] Platform adapter framework ✅ `platform_adapter.rs` registry + capabilities + sessions
+- [x] MCP client enhancements ✅ `mcp_client.rs` auto-reconnect + tool sync + parallel calls + credential stripping
+- [x] Semantic-gated dispatch batching ✅ `dispatch_batch.rs`
+- [x] Streaming tool result partial cache ✅ `tool_result_cache.rs`
+- [x] Performance benchmarks ✅ `benches/agent_benchmarks.rs` (9 benchmark suites)
 - Full competitive feature parity with hermes-agent's agent capabilities
 - Maintaining Rust performance advantage (10-100x over Python)
-- Visual workflow DAG (unique moat)
-- Knowledge base + Evolver (unique moat)
-- Real-time collaboration (unique moat)
+
+**v2.0.0 — Production-Grade Agent OS**
+
+P0 — 核心竞争力:
+- [x] RAG-Retrievable Tools (ToolEmbedding) ✅ `tool_registry.rs` 增强版
+  - category 分类标签
+  - usage-based ranking boost (0.0-0.2)
+  - 记录工具使用次数和最后使用时间
+  - 统计信息 (ToolRegistryStats)
+  - 7 个新方法 + 11 个新测试
+- [x] LLM Provider 生态扩展 ✅ `openai_compat.rs` 14+ providers
+  - OpenAI, Anthropic, Ollama, DeepSeek, Qwen, GLM, Google Gemini
+  - Mistral, Groq, Moonshot, Yi, Baichuan, Minimax, Stepfun
+  - `builtin_providers()` 工厂函数一键创建所有内置 provider
+  - ProviderProfile 验证 + YAML 序列化
+
+P1 — 生产就绪:
+- [x] Cron 调度器 + 自然语言任务 ✅ `cron.rs` 增强版
+  - 支持自然语言描述转换为 cron 表达式
+  - "every 5 minutes", "daily at 9:00", "weekly on Monday at 14:00"
+  - "monthly on day 15 at 10:00", "hourly", "daily", "weekly", "monthly"
+  - parse_time() 支持 HH:MM、9am、2pm 等格式
+  - 9 个新测试 + 17 个 cron 测试全部通过
+- [x] 终端后端扩展 ✅ `terminal_backend.rs` (4 个后端)
+  - LocalBackend: 本地 shell 执行
+  - DockerBackend: Docker 容器隔离执行
+  - SshBackend: SSH 远程执行
+  - BackendRegistry: 后端注册和管理
+  - 资源限制 (timeout, memory, cpu, disk)
+  - 文件系统操作 (read, write, list, create, remove)
+  - 环境变量管理
+  - 9 个新测试 + 273 单元测试 + 18 集成测试 ✓
+
+P2 — 工程质量:
+- [x] Mock Parity Harness ✅ `mock_llm.rs` (确定性 Mock LLM + E2E 对等测试)
+  - MockLlmAdapter: 可编程响应、请求录制、错误注入
+  - RequestMatcher: 按内容、工具、消息数匹配
+  - MockResponses: 预定义响应模板 (text, tool_call, error)
+  - MockParityHarness: E2E 对等测试框架
+  - ParityReport: 测试报告 (passed/failed/errors)
+  - 11 个新测试 + 69 maple-llm 测试 ✓
+- [x] ToolSearch 运行时发现 ✅ `tool_registry.rs` 增强版
+  - search_by_keyword(): 关键词搜索，无需 embedding
+  - 匹配工具名、描述、标签、schema 属性
+  - 相关性评分排序
+  - 2 个新测试 + 13 tool_registry 测试 ✓
+  - 总计 275 单元测试 + 18 集成测试 ✓
+
+P3 — 可扩展性:
+- [ ] Config 层级合并 (user/project/local 三级配置合并)

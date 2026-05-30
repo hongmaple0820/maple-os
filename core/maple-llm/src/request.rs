@@ -36,6 +36,9 @@ pub struct Message {
     pub tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<serde_json::Value>>,
+    /// Thinking/reasoning content from models like Claude
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
 }
 
 impl Message {
@@ -45,6 +48,7 @@ impl Message {
             content: content.to_string(),
             tool_call_id: None,
             tool_calls: None,
+            thinking: None,
         }
     }
 
@@ -54,6 +58,18 @@ impl Message {
             content: content.to_string(),
             tool_call_id: None,
             tool_calls: None,
+            thinking: None,
+        }
+    }
+
+    /// Create assistant message with thinking/reasoning content
+    pub fn assistant_with_thinking(content: &str, thinking: &str) -> Self {
+        Self {
+            role: "assistant".to_string(),
+            content: content.to_string(),
+            tool_call_id: None,
+            tool_calls: None,
+            thinking: Some(thinking.to_string()),
         }
     }
 
@@ -67,6 +83,7 @@ impl Message {
             },
             tool_call_id: None,
             tool_calls: Some(tool_calls),
+            thinking: None,
         }
     }
 
@@ -76,6 +93,7 @@ impl Message {
             content: content.to_string(),
             tool_call_id: None,
             tool_calls: None,
+            thinking: None,
         }
     }
 
@@ -89,7 +107,18 @@ impl Message {
             },
             tool_call_id: Some(tool_use_id.to_string()),
             tool_calls: None,
+            thinking: None,
         }
+    }
+
+    /// Check if this message has thinking content
+    pub fn has_thinking(&self) -> bool {
+        self.thinking.is_some()
+    }
+
+    /// Get thinking content if available
+    pub fn get_thinking(&self) -> Option<&str> {
+        self.thinking.as_deref()
     }
 }
 
