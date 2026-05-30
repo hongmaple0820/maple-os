@@ -12,8 +12,8 @@ use tokio::sync::RwLock;
 /// - Agent heartbeat monitoring
 /// - Tool execution statistics
 /// - Health check API
-
-/// Provider health state
+///
+///   Provider health state
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderHealth {
     pub provider_id: String,

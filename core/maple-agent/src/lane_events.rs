@@ -1,6 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::time::Duration;
 
 /// Lane Events + Policy Engine — parallel workstream management
 ///
@@ -8,8 +6,8 @@ use std::time::Duration;
 /// - Lanes: independent workstreams with ordered steps
 /// - Policies: rules that govern lane behavior
 /// - Events: lifecycle notifications for monitoring
-
-/// Lane status
+///
+///   Lane status
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LaneStatus {
     Idle,

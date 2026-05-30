@@ -59,23 +59,23 @@ impl SessionStore {
         }
 
         // Apply message window limit if specified
-        if let Some(limit) = max_messages {
-            if messages.len() > limit {
-                // Preserve system prompt (first message if it's system role)
-                let system_prompt = if messages.first().map_or(false, |m| m.role == "system") {
-                    Some(messages.remove(0))
-                } else {
-                    None
-                };
+        if let Some(limit) = max_messages
+            && messages.len() > limit
+        {
+            // Preserve system prompt (first message if it's system role)
+            let system_prompt = if messages.first().is_some_and(|m| m.role == "system") {
+                Some(messages.remove(0))
+            } else {
+                None
+            };
 
-                // Keep only the most recent messages
-                let start = messages.len().saturating_sub(limit);
-                messages = messages[start..].to_vec();
+            // Keep only the most recent messages
+            let start = messages.len().saturating_sub(limit);
+            messages = messages[start..].to_vec();
 
-                // Re-insert system prompt at the beginning
-                if let Some(prompt) = system_prompt {
-                    messages.insert(0, prompt);
-                }
+            // Re-insert system prompt at the beginning
+            if let Some(prompt) = system_prompt {
+                messages.insert(0, prompt);
             }
         }
 

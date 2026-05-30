@@ -203,11 +203,12 @@ impl ProviderProfile {
 
     /// Resolve API key from environment if it's a reference like "${VAR}"
     pub fn resolve_api_key(&mut self) {
-        if let Some(ref key) = self.endpoint.api_key.clone() {
-            if key.starts_with("${") && key.ends_with('}') {
-                let env_var = &key[2..key.len() - 1];
-                self.endpoint.api_key = std::env::var(env_var).ok();
-            }
+        if let Some(ref key) = self.endpoint.api_key.clone()
+            && key.starts_with("${")
+            && key.ends_with('}')
+        {
+            let env_var = &key[2..key.len() - 1];
+            self.endpoint.api_key = std::env::var(env_var).ok();
         }
     }
 
@@ -243,10 +244,10 @@ impl ProviderProfile {
             errors.push("At least one model must be configured".to_string());
         }
 
-        if let Some(ref default) = self.default_model {
-            if !self.models.iter().any(|m| &m.id == default) {
-                errors.push(format!("Default model '{}' not found in models list", default));
-            }
+        if let Some(ref default) = self.default_model
+            && !self.models.iter().any(|m| &m.id == default)
+        {
+            errors.push(format!("Default model '{}' not found in models list", default));
         }
 
         if errors.is_empty() {
@@ -346,7 +347,7 @@ pub fn builtin_providers() -> ProviderRegistry {
     registry.register(openai);
 
     // Anthropic
-    let mut anthropic = ProviderProfile {
+    let anthropic = ProviderProfile {
         id: "anthropic".to_string(),
         name: "Anthropic".to_string(),
         provider_type: ProviderType::Anthropic,

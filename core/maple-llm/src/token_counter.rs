@@ -8,7 +8,7 @@ pub trait TokenCounter: Send + Sync {
     fn count_tokens(&self, text: &str) -> usize;
 
     /// Count tokens for a message with role overhead
-    fn count_message_tokens(&self, content: &str, role: &str) -> usize {
+    fn count_message_tokens(&self, content: &str, _role: &str) -> usize {
         // Base token count + role overhead (typically 4 tokens per message)
         self.count_tokens(content) + 4
     }

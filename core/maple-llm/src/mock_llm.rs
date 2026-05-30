@@ -1,5 +1,4 @@
-use crate::error::LlmError;
-use crate::request::{LlmRequest, Message, Priority, PrivacyLevel, TaskType, ToolDefinition};
+use crate::request::LlmRequest;
 use crate::response::LlmResponse;
 use crate::router::LlmAdapter;
 use crate::stream::{LlmStream, StreamChunk};
@@ -16,7 +15,7 @@ use std::sync::{Arc, Mutex};
 /// - Error injection for testing error handling
 /// - Request recording for assertions
 /// - Latency simulation
-
+///
 /// Response configuration
 #[derive(Debug, Clone)]
 pub struct MockResponse {
@@ -117,7 +116,7 @@ impl MockLlmAdapter {
                 req.messages.iter().any(|m| m.content.contains(substring))
             }
             RequestMatcher::HasTool(tool_name) => {
-                req.tools.as_ref().map_or(false, |tools| {
+                req.tools.as_ref().is_some_and(|tools| {
                     tools.iter().any(|t| &t.name == tool_name)
                 })
             }
@@ -185,7 +184,7 @@ impl LlmAdapter for MockLlmAdapter {
 
     fn count_tokens(&self, text: &str) -> usize {
         // Simple approximation: 1 token per 4 characters
-        (text.len() + 3) / 4
+        text.len().div_ceil(4)
     }
 
     fn max_context_length(&self) -> usize {
@@ -396,6 +395,7 @@ pub struct ParityError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::request::{Message, Priority, PrivacyLevel, TaskType, ToolDefinition};
 
     fn sample_request(content: &str) -> LlmRequest {
         LlmRequest {

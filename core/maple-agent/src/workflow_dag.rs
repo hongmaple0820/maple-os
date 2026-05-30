@@ -11,8 +11,8 @@ use std::collections::{HashMap, HashSet};
 /// - Parallel: Parallel execution of children
 /// - Loop: Loop until condition met
 /// - Start/End: Entry/exit points
-
-/// Node type in the workflow DAG
+///
+///   Node type in the workflow DAG
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum NodeType {
     /// Start node (entry point)
@@ -190,7 +190,7 @@ impl WorkflowExecutor {
             .filter(|n| {
                 // Must be pending
                 let result = self.state.node_results.get(&n.id);
-                result.map_or(true, |r| r.status == NodeStatus::Pending)
+                result.is_none_or(|r| r.status == NodeStatus::Pending)
             })
             .filter(|n| {
                 // All predecessors must be completed
@@ -200,7 +200,7 @@ impl WorkflowExecutor {
                         self.state
                             .node_results
                             .get(pred_id)
-                            .map_or(false, |r| r.status == NodeStatus::Completed)
+                            .is_some_and(|r| r.status == NodeStatus::Completed)
                     })
             })
             .collect()
@@ -222,10 +222,10 @@ impl WorkflowExecutor {
         let now = chrono::Utc::now().timestamp();
 
         // Store output in variables if specified
-        if let Some(ref var_name) = node.output_var {
-            if let Some(val) = output.clone() {
-                self.state.variables.insert(var_name.clone(), val);
-            }
+        if let Some(ref var_name) = node.output_var
+            && let Some(val) = output.clone()
+        {
+            self.state.variables.insert(var_name.clone(), val);
         }
 
         self.state.node_results.insert(
@@ -299,7 +299,7 @@ impl WorkflowExecutor {
             .iter()
             .filter(|n| {
                 n.next.contains(&node_id.to_string())
-                    || n.branches.as_ref().map_or(false, |(t, f)| {
+                    || n.branches.as_ref().is_some_and(|(t, f)| {
                         t == node_id || f == node_id
                     })
             })

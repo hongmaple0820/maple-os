@@ -1,7 +1,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 /// Security Hardening — inspired by claw-code's 5-level permission system
 ///
@@ -11,8 +11,8 @@ use std::collections::{HashMap, HashSet};
 /// - Path traversal prevention
 /// - Audit logging
 /// - Approval callbacks
-
-/// Permission levels — ordered from least to most privileged
+///
+///   Permission levels — ordered from least to most privileged
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum SecurityLevel {
     /// Read-only access
@@ -84,6 +84,7 @@ pub struct SecurityManager {
     policy: SecurityPolicy,
     audit_log: Vec<AuditEntry>,
     max_audit_entries: usize,
+    #[allow(clippy::type_complexity)]
     approval_callback: Option<Box<dyn Fn(&str, &Value) -> bool + Send + Sync>>,
 }
 
@@ -97,6 +98,7 @@ impl SecurityManager {
         }
     }
 
+    #[allow(clippy::type_complexity)]
     pub fn with_approval_callback(
         mut self,
         callback: Box<dyn Fn(&str, &Value) -> bool + Send + Sync>,
@@ -148,12 +150,12 @@ impl SecurityManager {
         }
 
         // Check path restrictions for file operations
-        if let Some(path) = self.extract_path(tool_name, input) {
-            if !self.is_path_allowed(&path) {
-                return Ok(PermissionCheck::Denied {
-                    reason: format!("Path {} is not allowed", path),
-                });
-            }
+        if let Some(path) = self.extract_path(tool_name, input)
+            && !self.is_path_allowed(&path)
+        {
+            return Ok(PermissionCheck::Denied {
+                reason: format!("Path {} is not allowed", path),
+            });
         }
 
         Ok(PermissionCheck::Allowed)
@@ -205,14 +207,14 @@ impl SecurityManager {
         }
 
         // For command execution, try to extract file paths
-        if tool_name.contains("command") || tool_name.contains("bash") {
-            if let Some(cmd) = input["command"].as_str() {
-                // Simple path extraction from command
-                let parts: Vec<&str> = cmd.split_whitespace().collect();
-                for part in parts {
-                    if part.starts_with('/') || part.starts_with("./") || part.starts_with("../") {
-                        return Some(part.to_string());
-                    }
+        if (tool_name.contains("command") || tool_name.contains("bash"))
+            && let Some(cmd) = input["command"].as_str()
+        {
+            // Simple path extraction from command
+            let parts: Vec<&str> = cmd.split_whitespace().collect();
+            for part in parts {
+                if part.starts_with('/') || part.starts_with("./") || part.starts_with("../") {
+                    return Some(part.to_string());
                 }
             }
         }

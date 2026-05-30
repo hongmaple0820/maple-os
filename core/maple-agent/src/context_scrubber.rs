@@ -114,10 +114,10 @@ impl StreamingContextScrubber {
         let mut line = line.to_string();
 
         // Handle thinking tags
-        if self.config.strip_thinking_tags {
-            if self.handle_thinking_tags(&mut line) {
-                return None; // Line is inside thinking block, suppress
-            }
+        if self.config.strip_thinking_tags
+            && self.handle_thinking_tags(&mut line)
+        {
+            return None; // Line is inside thinking block, suppress
         }
 
         // Handle code blocks
@@ -238,7 +238,7 @@ impl StreamingContextScrubber {
     /// Track code block state
     fn track_code_blocks(&mut self, line: &str) {
         let trimmed = line.trim();
-        if trimmed.starts_with("```") {
+        if let Some(rest) = trimmed.strip_prefix("```") {
             if self.in_code_block {
                 // Closing code block
                 self.in_code_block = false;
@@ -246,7 +246,7 @@ impl StreamingContextScrubber {
             } else {
                 // Opening code block
                 self.in_code_block = true;
-                let lang = trimmed[3..].trim();
+                let lang = rest.trim();
                 self.code_block_lang = if lang.is_empty() {
                     None
                 } else {

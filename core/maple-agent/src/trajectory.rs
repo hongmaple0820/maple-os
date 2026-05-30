@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 /// - Extracts decision points and outcomes
 /// - Scores trajectory quality
 /// - Exports to JSONL for fine-tuning
-
-/// Compressed training trajectory
+///
+///   Compressed training trajectory
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrainingTrajectory {
     pub id: String,
@@ -93,10 +93,10 @@ impl TrajectoryCompressor {
             match role.as_str() {
                 "assistant" => {
                     let tool = extract_tool_name(content);
-                    if let Some(ref t) = tool {
-                        if !tools_used.contains(t) {
-                            tools_used.push(t.clone());
-                        }
+                    if let Some(ref t) = tool
+                        && !tools_used.contains(t)
+                    {
+                        tools_used.push(t.clone());
                     }
                     steps.push(TrajectoryStep {
                         summary: summarize_content(content, 200),

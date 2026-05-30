@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
 
 /// Real-time Collaboration — WebSocket broadcast + presence + conflict resolution
@@ -10,8 +9,8 @@ use tokio::sync::{broadcast, RwLock};
 /// - WebSocket broadcast for real-time events
 /// - Operational Transform for concurrent edit resolution
 /// - Collaborative session management
-
-/// Collaboration event types
+///
+///   Collaboration event types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CollabEvent {
     /// User/agent joined the session
@@ -187,7 +186,7 @@ impl CollabManager {
         display_name: &str,
         role: UserRole,
     ) -> Result<(), CollabError> {
-        let mut sessions = self.sessions.write().await;
+        let sessions = self.sessions.write().await;
         if !sessions.contains_key(session_id) {
             return Err(CollabError::SessionNotFound(session_id.into()));
         }
@@ -245,11 +244,11 @@ impl CollabManager {
         position: CursorPosition,
     ) -> Result<(), CollabError> {
         let mut presences = self.presences.write().await;
-        if let Some(session_presences) = presences.get_mut(session_id) {
-            if let Some(presence) = session_presences.get_mut(user_id) {
-                presence.cursor = Some(position.clone());
-                presence.last_active = chrono::Utc::now().timestamp();
-            }
+        if let Some(session_presences) = presences.get_mut(session_id)
+            && let Some(presence) = session_presences.get_mut(user_id)
+        {
+            presence.cursor = Some(position.clone());
+            presence.last_active = chrono::Utc::now().timestamp();
         }
 
         let _ = self.event_tx.send(CollabEvent::CursorMove {
@@ -267,7 +266,7 @@ impl CollabManager {
         user_id: &str,
         op: TextOp,
     ) -> Result<u64, CollabError> {
-        let mut sessions = self.sessions.write().await;
+        let sessions = self.sessions.write().await;
         let _session = sessions
             .get(session_id)
             .ok_or_else(|| CollabError::SessionNotFound(session_id.into()))?;
@@ -297,13 +296,13 @@ impl CollabManager {
             .get_mut(session_id)
             .ok_or_else(|| CollabError::SessionNotFound(session_id.into()))?;
 
-        if let Some(owner) = session.file_locks.get(file_path) {
-            if owner != user_id {
-                return Err(CollabError::FileLocked {
-                    file: file_path.into(),
-                    by: owner.clone(),
-                });
-            }
+        if let Some(owner) = session.file_locks.get(file_path)
+            && owner != user_id
+        {
+            return Err(CollabError::FileLocked {
+                file: file_path.into(),
+                by: owner.clone(),
+            });
         }
 
         session.file_locks.insert(file_path.into(), user_id.into());
@@ -325,10 +324,10 @@ impl CollabManager {
         file_path: &str,
     ) -> Result<(), CollabError> {
         let mut sessions = self.sessions.write().await;
-        if let Some(session) = sessions.get_mut(session_id) {
-            if session.file_locks.get(file_path) == Some(&user_id.to_string()) {
-                session.file_locks.remove(file_path);
-            }
+        if let Some(session) = sessions.get_mut(session_id)
+            && session.file_locks.get(file_path) == Some(&user_id.to_string())
+        {
+            session.file_locks.remove(file_path);
         }
 
         let _ = self.event_tx.send(CollabEvent::FileLock {

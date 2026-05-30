@@ -233,24 +233,23 @@ impl ReactLoop {
             }
 
             // Check feature flags for specific tool categories
-            if tool_use.name.contains("shell")
+            if (tool_use.name.contains("shell")
                 || tool_use.name.contains("bash")
-                || tool_use.name.contains("execute")
+                || tool_use.name.contains("execute"))
+                && !ctx.is_feature_enabled("shell")
             {
-                if !ctx.is_feature_enabled("shell") {
-                    return Some(format!(
-                        "Tool '{}' denied: shell feature disabled",
-                        tool_use.name
-                    ));
-                }
+                return Some(format!(
+                    "Tool '{}' denied: shell feature disabled",
+                    tool_use.name
+                ));
             }
-            if tool_use.name.contains("browser") {
-                if !ctx.is_feature_enabled("browser") {
-                    return Some(format!(
-                        "Tool '{}' denied: browser feature disabled",
-                        tool_use.name
-                    ));
-                }
+            if tool_use.name.contains("browser")
+                && !ctx.is_feature_enabled("browser")
+            {
+                return Some(format!(
+                    "Tool '{}' denied: browser feature disabled",
+                    tool_use.name
+                ));
             }
 
             // Check path boundaries for file operations
@@ -478,7 +477,7 @@ impl ReactLoop {
 
             // Post-tool-use hooks + performance recording + emit events
             for (_, result) in &indexed_results {
-                self.hook_runner
+                let _ = self.hook_runner
                     .run_post_tool_use(&result.tool_name, &result.output)
                     .await;
 

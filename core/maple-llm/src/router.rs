@@ -1,4 +1,4 @@
-use crate::error::{ClassifiedError, LlmError};
+use crate::error::LlmError;
 use crate::response::LlmResponse;
 use crate::stream::LlmStream;
 use crate::usage::UsageTracker;
@@ -182,22 +182,20 @@ impl LlmRouter {
 
         // Check internal circuit breaker
         let health = self.health.read().await;
-        if let Some(adapter_health) = health.get(model_id) {
-            if adapter_health.is_circuit_open {
-                if let Some(until) = adapter_health.circuit_open_until {
-                    if std::time::Instant::now() < until {
-                        return false;
-                    }
-                }
-            }
+        if let Some(adapter_health) = health.get(model_id)
+            && adapter_health.is_circuit_open
+            && let Some(until) = adapter_health.circuit_open_until
+            && std::time::Instant::now() < until
+        {
+            return false;
         }
         drop(health);
 
         // Check external health checker (HealthMonitor)
-        if let Some(ref checker) = self.external_health_checker {
-            if !checker.is_provider_available(model_id).await {
-                return false;
-            }
+        if let Some(ref checker) = self.external_health_checker
+            && !checker.is_provider_available(model_id).await
+        {
+            return false;
         }
 
         true
@@ -209,7 +207,7 @@ impl LlmRouter {
 
     /// Record an error for an adapter — used by error classifier
     pub async fn record_error(&self, model_id: &str, error: &LlmError) {
-        let decision = error.classify_decision();
+        let _decision = error.classify_decision();
 
         let mut health = self.health.write().await;
         let adapter_health = health.entry(model_id.to_string()).or_default();

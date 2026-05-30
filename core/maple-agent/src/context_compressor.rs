@@ -14,7 +14,7 @@ use std::sync::Arc;
 /// - Structured summary template for compressed context
 /// - Iterative summary updates (previous_summary + new turns)
 /// - LLM-driven summarization with fallback to heuristic
-
+///
 /// Context compressor configuration
 pub struct ContextCompressorConfig {
     /// Maximum context length in tokens
@@ -240,7 +240,7 @@ impl ContextCompressor {
     fn protect_tail(
         &self,
         messages: &[Message],
-        compressed: &mut Vec<Message>,
+        _compressed: &mut [Message],
         head_end: usize,
     ) -> usize {
         let tail_budget = self.tail_token_budget();
@@ -255,11 +255,12 @@ impl ContextCompressor {
             let msg_tokens = self.count_message_tokens(&messages[i]);
             if tail_tokens + msg_tokens > tail_budget {
                 // Even if over budget, ensure last user message is included
-                if let Some(user_idx) = last_user_idx {
-                    if i <= user_idx && user_idx >= head_end {
-                        tail_start = user_idx;
-                        break;
-                    }
+                if let Some(user_idx) = last_user_idx
+                    && i <= user_idx
+                    && user_idx >= head_end
+                {
+                    tail_start = user_idx;
+                    break;
                 }
                 break;
             }
@@ -268,10 +269,11 @@ impl ContextCompressor {
         }
 
         // Guarantee last user message is in tail
-        if let Some(user_idx) = last_user_idx {
-            if user_idx >= head_end && user_idx < tail_start {
-                tail_start = user_idx;
-            }
+        if let Some(user_idx) = last_user_idx
+            && user_idx >= head_end
+            && user_idx < tail_start
+        {
+            tail_start = user_idx;
         }
 
         tail_start
@@ -308,8 +310,8 @@ impl ContextCompressor {
         let prompt = format!(
             r#"You are a conversation summarizer. Compress the following conversation into a structured summary.
 
-{}
-{}
+{previous_context}
+{conversation_text}
 
 STRUCTURED SUMMARY FORMAT:
 ## Active Task — The original user request (most critical field)
@@ -332,12 +334,6 @@ Rules:
 - Keep file paths and technical details
 - Be concise but complete
 - If previous summary exists, merge new information into it"#,
-            if previous_context.is_empty() {
-                String::new()
-            } else {
-                format!("PREVIOUS SUMMARY:\n{}", previous_context)
-            },
-            format!("NEW TURNS TO INCORPORATE:\n{}", conversation_text)
         );
 
         let model = self
@@ -365,6 +361,7 @@ Rules:
     }
 
     /// Heuristic summary (fallback when no LLM available)
+    #[allow(dead_code)]
     fn summarize_middle(&self, messages: &[Message]) -> String {
         self.heuristic_summary(messages)
     }
@@ -392,19 +389,18 @@ Rules:
                         key_points.push(format!("User request: {}", msg.content));
                     }
                 }
-                "assistant" => {
-                    if !msg.content.is_empty() {
-                        // Extract file paths mentioned
-                        for word in msg.content.split_whitespace() {
-                            if word.contains('/') || word.contains('\\') {
-                                if word.len() > 3 && word.len() < 200 {
-                                    relevant_files.push(word.to_string());
-                                }
-                            }
+                "assistant" if !msg.content.is_empty() => {
+                    // Extract file paths mentioned
+                    for word in msg.content.split_whitespace() {
+                        if (word.contains('/') || word.contains('\\'))
+                            && word.len() > 3
+                            && word.len() < 200
+                        {
+                            relevant_files.push(word.to_string());
                         }
-                        if msg.content.len() > 100 {
-                            key_points.push(format!("Assistant: {}...", &msg.content[..100]));
-                        }
+                    }
+                    if msg.content.len() > 100 {
+                        key_points.push(format!("Assistant: {}...", &msg.content[..100]));
                     }
                 }
                 "tool" => {

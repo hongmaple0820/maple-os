@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{BinaryHeap, HashMap};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
@@ -12,8 +12,8 @@ use tokio::sync::mpsc;
 /// - Deferred trigger stages (Stable, Silence, Debounce, PostReadyTick, ChatPendingForce)
 /// - Deduplication by trigger key
 /// - Priority queue for scheduling
-
-/// Trigger event types
+///
+///   Trigger event types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TriggerEvent {
     /// File system change
@@ -130,6 +130,12 @@ pub struct TriggerScheduler {
     dedup_window: Duration,
 }
 
+impl Default for TriggerScheduler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TriggerScheduler {
     pub fn new() -> Self {
         Self {
@@ -155,7 +161,7 @@ impl TriggerScheduler {
         let event_type = self.get_event_type(event);
         let mut triggered_rules = Vec::new();
 
-        for (_, rule) in &self.rules {
+        for rule in self.rules.values() {
             if !rule.enabled {
                 continue;
             }
@@ -175,10 +181,10 @@ impl TriggerScheduler {
                 event_type: event_type.clone(),
             };
 
-            if let Some(last_trigger) = self.dedup.get(&key) {
-                if last_trigger.elapsed() < self.dedup_window {
-                    continue;
-                }
+            if let Some(last_trigger) = self.dedup.get(&key)
+                && last_trigger.elapsed() < self.dedup_window
+            {
+                continue;
             }
 
             // Schedule trigger
@@ -254,10 +260,10 @@ impl TriggerScheduler {
         for condition in conditions {
             match condition {
                 TriggerCondition::PathMatches { pattern } => {
-                    if let TriggerEvent::FileChanged { path } = event {
-                        if !self.match_glob(pattern, path) {
-                            return false;
-                        }
+                    if let TriggerEvent::FileChanged { path } = event
+                        && !self.match_glob(pattern, path)
+                    {
+                        return false;
                     }
                 }
                 TriggerCondition::EventContains { key, value } => {
@@ -286,8 +292,7 @@ impl TriggerScheduler {
         if pattern == "*" {
             return true;
         }
-        if pattern.ends_with("/*") {
-            let prefix = &pattern[..pattern.len() - 2];
+        if let Some(prefix) = pattern.strip_suffix("/*") {
             return path.starts_with(prefix);
         }
         pattern == path

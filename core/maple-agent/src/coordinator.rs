@@ -4,7 +4,6 @@ use anyhow::Result;
 use maple_llm::request::LlmRequest;
 use maple_llm::router::LlmAdapter;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,8 +15,8 @@ use std::time::Duration;
 /// - Parallel worker execution (Delegate phase)
 /// - Result aggregation (Monitor + Synthesize phases)
 /// - Error handling and fallback
-
-/// Coordinator workflow phases
+///
+///   Coordinator workflow phases
 #[derive(Debug, Clone, PartialEq)]
 pub enum CoordinatorPhase {
     Analyze,
@@ -78,6 +77,7 @@ pub struct CoordinatorResult {
 
 /// LLM response format for task decomposition
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct DecompositionResponse {
     subtasks: Vec<DecomposedTask>,
 }
@@ -288,7 +288,7 @@ Example response:
 
         // Sort by priority (highest first) and respect dependencies
         let mut sorted_subtasks: Vec<&SubTask> = subtasks.iter().collect();
-        sorted_subtasks.sort_by(|a, b| b.priority.cmp(&a.priority));
+        sorted_subtasks.sort_by_key(|b| std::cmp::Reverse(b.priority));
 
         for subtask in sorted_subtasks.iter().take(self.max_workers) {
             // Skip subtasks with unresolved dependencies (simplified: just warn)

@@ -6,6 +6,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct LlmConfig {
     pub default: Option<DefaultConfig>,
     pub ollama: Option<OllamaConfig>,
@@ -20,6 +21,7 @@ pub struct LlmConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct DefaultConfig {
     pub model: Option<String>,
     pub daily_budget: Option<f64>,
@@ -27,6 +29,7 @@ pub struct DefaultConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct OllamaConfig {
     pub enabled: Option<bool>,
     pub base_url: Option<String>,
@@ -35,6 +38,7 @@ pub struct OllamaConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct ProviderConfig {
     pub enabled: Option<bool>,
     pub api_key: Option<String>,
@@ -128,7 +132,7 @@ pub fn build_llm_router(config: &ServerConfig) -> Arc<LlmRouter> {
             .or_else(|_| {
                 deepseek_config
                     .and_then(|c| c.api_key.clone())
-                    .ok_or_else(|| std::env::VarError::NotPresent)
+                    .ok_or(std::env::VarError::NotPresent)
             })
             .unwrap_or_default();
 
@@ -159,7 +163,7 @@ pub fn build_llm_router(config: &ServerConfig) -> Arc<LlmRouter> {
             .or_else(|_| {
                 anthropic_config
                     .and_then(|c| c.api_key.clone())
-                    .ok_or_else(|| std::env::VarError::NotPresent)
+                    .ok_or(std::env::VarError::NotPresent)
             })
             .unwrap_or_default();
 
@@ -168,10 +172,8 @@ pub fn build_llm_router(config: &ServerConfig) -> Arc<LlmRouter> {
                 .and_then(|c| c.default_model.clone())
                 .unwrap_or_else(|| "claude-3-5-sonnet-20241022".to_string());
             let mut adapter = maple_llm::adapters::anthropic::AnthropicAdapter::new(api_key, model);
-            if let Some(anthropic) = anthropic_config {
-                if let Some(base_url) = &anthropic.base_url {
-                    adapter = adapter.with_base_url(base_url.clone());
-                }
+            if let Some(base_url) = anthropic_config.and_then(|c| c.base_url.as_ref()) {
+                adapter = adapter.with_base_url(base_url.clone());
             }
             router.register_adapter(Box::new(adapter));
         }
@@ -186,7 +188,7 @@ pub fn build_llm_router(config: &ServerConfig) -> Arc<LlmRouter> {
             .or_else(|_| {
                 qwen_config
                     .and_then(|c| c.api_key.clone())
-                    .ok_or_else(|| std::env::VarError::NotPresent)
+                    .ok_or(std::env::VarError::NotPresent)
             })
             .unwrap_or_default();
 
@@ -217,7 +219,7 @@ pub fn build_llm_router(config: &ServerConfig) -> Arc<LlmRouter> {
             .or_else(|_| {
                 glm_config
                     .and_then(|c| c.api_key.clone())
-                    .ok_or_else(|| std::env::VarError::NotPresent)
+                    .ok_or(std::env::VarError::NotPresent)
             })
             .unwrap_or_default();
 
@@ -247,7 +249,7 @@ pub fn build_llm_router(config: &ServerConfig) -> Arc<LlmRouter> {
             .or_else(|_| {
                 openai_config
                     .and_then(|c| c.api_key.clone())
-                    .ok_or_else(|| std::env::VarError::NotPresent)
+                    .ok_or(std::env::VarError::NotPresent)
             })
             .unwrap_or_default();
 
@@ -281,7 +283,7 @@ pub fn build_llm_router(config: &ServerConfig) -> Arc<LlmRouter> {
             .or_else(|_| {
                 google_config
                     .and_then(|c| c.api_key.clone())
-                    .ok_or_else(|| std::env::VarError::NotPresent)
+                    .ok_or(std::env::VarError::NotPresent)
             })
             .unwrap_or_default();
 
@@ -310,83 +312,79 @@ pub fn build_llm_router(config: &ServerConfig) -> Arc<LlmRouter> {
     let mut fallback = vec!["ollama/qwen2.5:7b".to_string()];
 
     // 从配置文件加载回退链
-    if let Some(llm_config) = &llm_config {
-        if let Some(chain) = &llm_config.fallback_chain {
-            fallback = chain.clone();
-        }
+    if let Some(chain) = llm_config.as_ref().and_then(|c| c.fallback_chain.as_ref()) {
+        fallback = chain.clone();
     }
 
     // 添加已启用的云端模型到回退链
-    if std::env::var("DEEPSEEK_API_KEY").is_ok() || deepseek_enabled {
-        if !fallback.contains(&"deepseek-chat".to_string()) {
-            fallback.push("deepseek-chat".to_string());
-        }
+    if (std::env::var("DEEPSEEK_API_KEY").is_ok() || deepseek_enabled)
+        && !fallback.contains(&"deepseek-chat".to_string())
+    {
+        fallback.push("deepseek-chat".to_string());
     }
-    if std::env::var("ANTHROPIC_API_KEY").is_ok() || anthropic_enabled {
-        if !fallback.contains(&"claude-3-5-sonnet-20241022".to_string()) {
-            fallback.push("claude-3-5-sonnet-20241022".to_string());
-        }
+    if (std::env::var("ANTHROPIC_API_KEY").is_ok() || anthropic_enabled)
+        && !fallback.contains(&"claude-3-5-sonnet-20241022".to_string())
+    {
+        fallback.push("claude-3-5-sonnet-20241022".to_string());
     }
-    if std::env::var("QWEN_API_KEY").is_ok() || qwen_enabled {
-        if !fallback.contains(&"qwen-plus".to_string()) {
-            fallback.push("qwen-plus".to_string());
-        }
+    if (std::env::var("QWEN_API_KEY").is_ok() || qwen_enabled)
+        && !fallback.contains(&"qwen-plus".to_string())
+    {
+        fallback.push("qwen-plus".to_string());
     }
-    if std::env::var("GLM_API_KEY").is_ok() || glm_enabled {
-        if !fallback.contains(&"glm-4".to_string()) {
-            fallback.push("glm-4".to_string());
-        }
+    if (std::env::var("GLM_API_KEY").is_ok() || glm_enabled)
+        && !fallback.contains(&"glm-4".to_string())
+    {
+        fallback.push("glm-4".to_string());
     }
-    if std::env::var("GOOGLE_API_KEY").is_ok() || google_enabled {
-        if !fallback.contains(&"gemini-1.5-flash".to_string()) {
-            fallback.push("gemini-1.5-flash".to_string());
-        }
+    if (std::env::var("GOOGLE_API_KEY").is_ok() || google_enabled)
+        && !fallback.contains(&"gemini-1.5-flash".to_string())
+    {
+        fallback.push("gemini-1.5-flash".to_string());
     }
     router.set_fallback_chain(fallback);
 
     // 加载路由规则
     let rules_path = std::env::var("ROUTING_RULES_PATH")
         .unwrap_or_else(|_| "infra/routing_rules.yaml".to_string());
-    if let Ok(content) = std::fs::read_to_string(&rules_path) {
-        if let Ok(yaml) = serde_yaml::from_str::<serde_json::Value>(&content) {
-            if let Some(rules_arr) = yaml.get("rules").and_then(|r| r.as_array()) {
-                let rules: Vec<maple_llm::router::RoutingRule> = rules_arr
-                    .iter()
-                    .filter_map(|r| serde_json::from_value(r.clone()).ok())
-                    .collect();
-                let rules_count = rules.len();
-                router.set_routing_rules(rules);
-                tracing::info!("Loaded {} routing rules from {}", rules_count, rules_path);
-            }
-            if let Some(chain) = yaml.get("fallback_chain").and_then(|c| c.as_array()) {
-                let chain: Vec<String> = chain
-                    .iter()
-                    .filter_map(|c| c.as_str().map(|s| s.to_string()))
-                    .collect();
-                router.set_fallback_chain(chain);
-                tracing::info!("Loaded fallback chain from {}", rules_path);
-            }
+    if let Ok(content) = std::fs::read_to_string(&rules_path)
+        && let Ok(yaml) = serde_yaml::from_str::<serde_json::Value>(&content)
+    {
+        if let Some(rules_arr) = yaml.get("rules").and_then(|r| r.as_array()) {
+            let rules: Vec<maple_llm::router::RoutingRule> = rules_arr
+                .iter()
+                .filter_map(|r| serde_json::from_value(r.clone()).ok())
+                .collect();
+            let rules_count = rules.len();
+            router.set_routing_rules(rules);
+            tracing::info!("Loaded {} routing rules from {}", rules_count, rules_path);
+        }
+        if let Some(chain) = yaml.get("fallback_chain").and_then(|c| c.as_array()) {
+            let chain: Vec<String> = chain
+                .iter()
+                .filter_map(|c| c.as_str().map(|s| s.to_string()))
+                .collect();
+            router.set_fallback_chain(chain);
+            tracing::info!("Loaded fallback chain from {}", rules_path);
         }
     } else {
         tracing::info!("No routing_rules.yaml found, using default rules");
     }
 
     // 从配置文件加载路由规则
-    if let Some(llm_config) = &llm_config {
-        if let Some(rules_config) = &llm_config.routing_rules {
-            let rules: Vec<maple_llm::router::RoutingRule> = rules_config
-                .iter()
-                .map(|r| maple_llm::router::RoutingRule {
-                    name: r.name.clone(),
-                    condition: r.condition.clone(),
-                    preferred: r.preferred.clone(),
-                    fallback_to_cloud: r.fallback_to_cloud.unwrap_or(true),
-                })
-                .collect();
-            let rules_count = rules.len();
-            router.set_routing_rules(rules);
-            tracing::info!("Loaded {} routing rules from config file", rules_count);
-        }
+    if let Some(rules_config) = llm_config.as_ref().and_then(|c| c.routing_rules.as_ref()) {
+        let rules: Vec<maple_llm::router::RoutingRule> = rules_config
+            .iter()
+            .map(|r| maple_llm::router::RoutingRule {
+                name: r.name.clone(),
+                condition: r.condition.clone(),
+                preferred: r.preferred.clone(),
+                fallback_to_cloud: r.fallback_to_cloud.unwrap_or(true),
+            })
+            .collect();
+        let rules_count = rules.len();
+        router.set_routing_rules(rules);
+        tracing::info!("Loaded {} routing rules from config file", rules_count);
     }
 
     Arc::new(router)

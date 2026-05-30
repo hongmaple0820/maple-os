@@ -1,11 +1,8 @@
 use maple_agent::registry::AgentRegistry;
 use maple_agent::session_store::SessionStore;
 use maple_collab::workspace::WorkspaceManager;
-use maple_engine::checkpoint::CheckpointManager;
 use maple_engine::event_bus::EventBus;
 use maple_engine::executor::WorkflowExecutor;
-use maple_engine::hooks::HookRunner;
-use maple_engine::scheduler::Scheduler;
 use maple_engine::skill_registry::SkillRegistry;
 use maple_engine::task_queue::TaskQueueService;
 use maple_gateway::auth::AuthService;
@@ -20,7 +17,7 @@ use maple_kb::vector_store::VectorSearch;
 use maple_llm::embedding::Embedder;
 use maple_llm::router::LlmRouter;
 use maple_sync::sync_engine::SyncEngine;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::sync::Arc;
 
 #[derive(Debug, Serialize)]
@@ -96,6 +93,7 @@ pub struct AppState {
 }
 
 impl AppState {
+    #[allow(dead_code)]
     pub async fn get_config(&self) -> ServerConfig {
         self.config.read().await.clone()
     }

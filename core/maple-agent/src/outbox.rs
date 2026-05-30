@@ -90,10 +90,10 @@ impl Outbox {
         dedup_key: Option<String>,
     ) -> Result<(), OutboxError> {
         // Check for duplicate
-        if let Some(ref key) = dedup_key {
-            if self.dedup_keys.contains_key(key) {
-                return Err(OutboxError::DuplicateTask(key.clone()));
-            }
+        if let Some(ref key) = dedup_key
+            && self.dedup_keys.contains_key(key)
+        {
+            return Err(OutboxError::DuplicateTask(key.clone()));
         }
 
         let now = chrono::Utc::now().timestamp();

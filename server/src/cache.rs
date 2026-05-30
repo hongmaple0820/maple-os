@@ -1,9 +1,7 @@
 use dashmap::DashMap;
-use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
 
 /// 缓存条目
 #[derive(Debug, Clone)]
@@ -39,6 +37,7 @@ where
     max_size: usize,
 }
 
+#[allow(dead_code)]
 impl<K, V> Cache<K, V>
 where
     K: Eq + Hash + Clone,
@@ -81,10 +80,10 @@ where
         }
 
         // 如果仍然已满，删除最旧的条目
-        if self.store.len() >= self.max_size {
-            if let Some(oldest_key) = self.find_oldest_key() {
-                self.store.remove(&oldest_key);
-            }
+        if self.store.len() >= self.max_size
+            && let Some(oldest_key) = self.find_oldest_key()
+        {
+            self.store.remove(&oldest_key);
         }
 
         self.store.insert(key, CacheEntry::new(value, ttl));
@@ -147,6 +146,7 @@ where
 }
 
 /// 预定义的缓存实例
+#[allow(dead_code)]
 pub struct AppCache {
     /// 系统配置缓存
     pub config: Cache<String, serde_json::Value>,
@@ -160,6 +160,7 @@ pub struct AppCache {
     pub llm_response: Cache<String, String>,
 }
 
+#[allow(dead_code)]
 impl AppCache {
     pub fn new() -> Self {
         Self {

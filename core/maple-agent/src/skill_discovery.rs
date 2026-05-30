@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 /// - Task type (code_gen → code skill)
 /// - Keywords in user messages
 /// - User preferences (always-on)
-
-/// Skill definition
+///
+///   Skill definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Skill {
     pub id: String,

@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 /// - TTL-based cache expiration
 /// - Size-bounded entries with LRU eviction
 /// - Partial result retrieval for long-running tools
-
-/// Cached result entry
+///
+///   Cached result entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedResult {
     pub tool_call_id: String,
@@ -139,11 +139,7 @@ impl StreamingResultCache {
     pub fn get_partial(&mut self, tool_call_id: &str) -> Option<&str> {
         let entry = self.entries.get_mut(tool_call_id)?;
         entry.last_accessed = Instant::now();
-        if entry.result.is_partial {
-            Some(&entry.result.content)
-        } else {
-            Some(&entry.result.content)
-        }
+        Some(&entry.result.content)
     }
 
     /// Check if a result is complete

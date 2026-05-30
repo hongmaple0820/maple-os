@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 /// Semantic-Gated Dispatch Batching — intelligent tool call batching
@@ -9,8 +8,8 @@ use std::time::{Duration, Instant};
 /// - Time-window batching: collect calls within a configurable window
 /// - Priority-aware: urgent calls bypass batching
 /// - Deduplication: identical calls are merged
-
-/// Dispatch priority
+///
+///   Dispatch priority
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum DispatchPriority {
     Low,
@@ -106,12 +105,12 @@ impl DispatchBatcher {
         }
 
         // Deduplicate if enabled
-        if self.config.deduplicate {
-            if self.pending.iter().any(|existing| {
+        if self.config.deduplicate
+            && self.pending.iter().any(|existing| {
                 existing.tool_name == call.tool_name && existing.arguments == call.arguments
-            }) {
-                return None; // Duplicate, skip
-            }
+            })
+        {
+            return None; // Duplicate, skip
         }
 
         self.pending.push(call);
@@ -144,7 +143,7 @@ impl DispatchBatcher {
         } else {
             // Return the largest batch, re-queue others
             let mut sorted = batches;
-            sorted.sort_by(|a, b| b.calls.len().cmp(&a.calls.len()));
+            sorted.sort_by_key(|b| std::cmp::Reverse(b.calls.len()));
             let largest = sorted.remove(0);
             for batch in sorted {
                 self.pending.extend(batch.calls);

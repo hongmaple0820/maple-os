@@ -8,7 +8,7 @@ use std::sync::Arc;
 ///
 /// Runs multiple virtual agents within the same tokio task,
 /// sharing underlying resources but isolating state via task_local.
-
+///
 /// Lightweight agent context
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentContext {

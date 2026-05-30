@@ -169,6 +169,12 @@ pub struct ToolsetBuilder {
     registry: ToolsetRegistry,
 }
 
+impl Default for ToolsetBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ToolsetBuilder {
     pub fn new() -> Self {
         Self {
@@ -176,7 +182,7 @@ impl ToolsetBuilder {
         }
     }
 
-    pub fn add(mut self, toolset: Toolset) -> Self {
+    pub fn register(mut self, toolset: Toolset) -> Self {
         self.registry.register(toolset);
         self
     }

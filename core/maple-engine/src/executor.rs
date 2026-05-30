@@ -172,7 +172,7 @@ impl NodeExecutor {
                 std::time::Duration::from_secs(timeout),
                 handler(agent_id_owned, goal),
             ).await {
-                Ok(result) => result.map(|s| Value::String(s)),
+                Ok(result) => result.map(Value::String),
                 Err(_) => anyhow::bail!("Agent {} timed out after {}s", agent_id, timeout),
             }
         } else {

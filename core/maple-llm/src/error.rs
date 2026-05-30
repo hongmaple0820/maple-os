@@ -101,12 +101,12 @@ impl LlmError {
                 provider: provider.to_string(),
                 model: String::new(), // Will be filled by caller
             },
-            500..=599 => LlmError::ServerError {
+            404..=499 => LlmError::ClientError {
                 status,
                 provider: provider.to_string(),
                 body: body.to_string(),
             },
-            400..=499 => LlmError::ClientError {
+            500..=599 => LlmError::ServerError {
                 status,
                 provider: provider.to_string(),
                 body: body.to_string(),

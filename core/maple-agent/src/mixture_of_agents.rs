@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 ///
 /// Runs the same prompt through multiple models in parallel,
 /// then aggregates results using various strategies.
-
-/// MoA model configuration
+///
+///   MoA model configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MoAModel {
     pub model_id: String,
@@ -122,7 +122,7 @@ impl MixtureOfAgents {
             .unwrap_or_else(|| responses[0].clone())
     }
 
-    fn weighted_vote<'a>(&self, responses: &[&'a MoAResponse]) -> MoAResponse {
+    fn weighted_vote(&self, responses: &[&MoAResponse]) -> MoAResponse {
         // Score each response by model weight
         let mut best_score = 0.0f64;
         let mut best = responses[0];
@@ -145,7 +145,7 @@ impl MixtureOfAgents {
         best.clone()
     }
 
-    fn longest_best<'a>(&self, responses: &[&'a MoAResponse]) -> MoAResponse {
+    fn longest_best(&self, responses: &[&MoAResponse]) -> MoAResponse {
         responses
             .iter()
             .max_by_key(|r| r.content.len())
@@ -153,7 +153,7 @@ impl MixtureOfAgents {
             .unwrap_or_else(|| responses[0].clone())
     }
 
-    fn quality_score<'a>(&self, responses: &[&'a MoAResponse]) -> MoAResponse {
+    fn quality_score(&self, responses: &[&MoAResponse]) -> MoAResponse {
         // Score by: content length + model weight - latency penalty
         let mut best_score = f64::MIN;
         let mut best = responses[0];

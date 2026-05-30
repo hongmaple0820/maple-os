@@ -2,7 +2,6 @@ use maple_llm::request::Message;
 use maple_llm::token_counter::{SimpleTokenCounter, TokenCounter};
 use std::collections::HashMap;
 use std::ops::Range;
-use std::sync::Arc;
 
 /// Trident Compaction — 3-stage context compression
 ///
@@ -11,8 +10,8 @@ use std::sync::Arc;
 /// Stage 3 - Cluster: Group messages by topic, summarize each cluster
 ///
 /// Inspired by claw-code's trident compaction strategy.
-
-/// Trident compaction configuration
+///
+///   Trident compaction configuration
 pub struct TridentConfig {
     /// Enable Stage 1: Supersede
     pub enable_supersede: bool,
@@ -123,28 +122,28 @@ impl TridentCompactor {
         let mut to_remove: Vec<usize> = Vec::new();
 
         for (i, msg) in messages.iter().enumerate() {
-            if msg.role == "tool" {
-                if let Some(tool_call_id) = &msg.tool_call_id {
-                    // Find the corresponding assistant message with tool_calls
-                    let (tool_name, target) =
-                        self.extract_tool_info(messages, i, tool_call_id);
+            if msg.role == "tool"
+                && let Some(tool_call_id) = &msg.tool_call_id
+            {
+                // Find the corresponding assistant message with tool_calls
+                let (tool_name, target) =
+                    self.extract_tool_info(messages, i, tool_call_id);
 
-                    if let Some(name) = tool_name {
-                        let key = (name.clone(), target.clone());
-                        if let Some(&prev_idx) = tool_targets.get(&key) {
-                            // Supersede: new output replaces old
-                            actions.push(CompactionAction::Supersede {
-                                removed_idx: prev_idx,
-                                kept_idx: i,
-                                reason: format!(
-                                    "Tool '{}' target '{}' superseded",
-                                    name, target
-                                ),
-                            });
-                            to_remove.push(prev_idx);
-                        }
-                        tool_targets.insert(key, i);
+                if let Some(name) = tool_name {
+                    let key = (name.clone(), target.clone());
+                    if let Some(&prev_idx) = tool_targets.get(&key) {
+                        // Supersede: new output replaces old
+                        actions.push(CompactionAction::Supersede {
+                            removed_idx: prev_idx,
+                            kept_idx: i,
+                            reason: format!(
+                                "Tool '{}' target '{}' superseded",
+                                name, target
+                            ),
+                        });
+                        to_remove.push(prev_idx);
                     }
+                    tool_targets.insert(key, i);
                 }
             }
         }
@@ -275,7 +274,7 @@ impl TridentCompactor {
                 summary_parts.join("\n---\n")
             );
             // Insert after first cluster
-            let insert_pos = if result.first().map_or(false, |m: &Message| m.role == "system") {
+            let insert_pos = if result.first().is_some_and(|m: &Message| m.role == "system") {
                 1
             } else {
                 0
@@ -330,15 +329,12 @@ impl TridentCompactor {
                 // Extract file paths from tool calls
                 if let Some(ref tool_calls) = msg.tool_calls {
                     for tc in tool_calls {
-                        if let Some(args) = tc.get("arguments") {
-                            if let Some(path) = args.get("path").or_else(|| args.get("file_path"))
-                            {
-                                if let Some(p) = path.as_str() {
-                                    if !files_involved.contains(&p.to_string()) {
-                                        files_involved.push(p.to_string());
-                                    }
-                                }
-                            }
+                        if let Some(args) = tc.get("arguments")
+                            && let Some(path) = args.get("path").or_else(|| args.get("file_path"))
+                            && let Some(p) = path.as_str()
+                            && !files_involved.contains(&p.to_string())
+                        {
+                            files_involved.push(p.to_string());
                         }
                     }
                 }
@@ -409,10 +405,10 @@ impl TridentCompactor {
         let args = &tool_call["arguments"];
         // Try common parameter names
         for key in &["path", "file_path", "filename", "file", "command"] {
-            if let Some(val) = args.get(key) {
-                if let Some(s) = val.as_str() {
-                    return s.to_string();
-                }
+            if let Some(val) = args.get(key)
+                && let Some(s) = val.as_str()
+            {
+                return s.to_string();
             }
         }
         // Fallback: use first string argument

@@ -117,10 +117,10 @@ impl LiveSseStream {
                         SseFormat::Anthropic => Self::parse_anthropic_line(&line),
                     };
 
-                    if let Some(result) = parsed {
-                        if tx.send(result).await.is_err() {
-                            break;
-                        }
+                    if let Some(result) = parsed
+                        && tx.send(result).await.is_err()
+                    {
+                        break;
                     }
                 }
             }
@@ -138,13 +138,13 @@ impl LiveSseStream {
             }));
         }
         let json: serde_json::Value = serde_json::from_str(data).ok()?;
-        if let Some(delta) = json["choices"][0]["delta"]["content"].as_str() {
-            if !delta.is_empty() {
-                return Some(Ok(StreamChunk {
-                    delta: delta.to_string(),
-                    finish_reason: None,
-                }));
-            }
+        if let Some(delta) = json["choices"][0]["delta"]["content"].as_str()
+            && !delta.is_empty()
+        {
+            return Some(Ok(StreamChunk {
+                delta: delta.to_string(),
+                finish_reason: None,
+            }));
         }
         if let Some(fr) = json["choices"][0]["finish_reason"].as_str() {
             return Some(Ok(StreamChunk {
@@ -164,13 +164,13 @@ impl LiveSseStream {
 
         match json["type"].as_str() {
             Some("content_block_delta") => {
-                if let Some(text) = json["delta"]["text"].as_str() {
-                    if !text.is_empty() {
-                        return Some(Ok(StreamChunk {
-                            delta: text.to_string(),
-                            finish_reason: None,
-                        }));
-                    }
+                if let Some(text) = json["delta"]["text"].as_str()
+                    && !text.is_empty()
+                {
+                    return Some(Ok(StreamChunk {
+                        delta: text.to_string(),
+                        finish_reason: None,
+                    }));
                 }
             }
             Some("message_delta") => {

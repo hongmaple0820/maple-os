@@ -22,8 +22,8 @@ use std::time::Duration;
 /// - Environment variable management
 /// - Working directory management
 /// - Resource limits
-
-/// Execution result
+///
+///   Execution result
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionResult {
     pub exit_code: i32,
@@ -192,6 +192,12 @@ pub struct ResourceUsage {
 pub struct LocalBackend {
     working_dir: PathBuf,
     env: HashMap<String, String>,
+}
+
+impl Default for LocalBackend {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl LocalBackend {
@@ -642,7 +648,7 @@ impl TerminalBackend for DockerBackend {
 
     async fn is_available(&self) -> bool {
         let output = tokio::process::Command::new("docker")
-            .args(&["info"])
+            .args(["info"])
             .output()
             .await;
         match output {
@@ -672,6 +678,7 @@ pub struct SshBackend {
     port: u16,
     user: String,
     key_path: Option<String>,
+    #[allow(dead_code)]
     env: HashMap<String, String>,
 }
 
@@ -895,7 +902,7 @@ impl TerminalBackend for SshBackend {
 
     async fn is_available(&self) -> bool {
         let output = tokio::process::Command::new("ssh")
-            .args(&self.build_ssh_args("echo ok"))
+            .args(self.build_ssh_args("echo ok"))
             .output()
             .await;
         match output {

@@ -55,24 +55,21 @@ impl syn::parse::Parse for ToolArgs {
 
         while !input.is_empty() {
             let meta: Meta = input.parse()?;
-            match meta {
-                Meta::NameValue(nv) => {
-                    let ident = nv
-                        .path
-                        .get_ident()
-                        .map(|i| i.to_string())
-                        .unwrap_or_default();
-                    if let syn::Expr::Lit(expr_lit) = &nv.value {
-                        if let Lit::Str(s) = &expr_lit.lit {
-                            match ident.as_str() {
-                                "description" => description = s.value(),
-                                "name" => name_override = Some(s.value()),
-                                _ => {}
-                            }
-                        }
+            if let Meta::NameValue(nv) = meta {
+                let ident = nv
+                    .path
+                    .get_ident()
+                    .map(|i| i.to_string())
+                    .unwrap_or_default();
+                if let syn::Expr::Lit(expr_lit) = &nv.value
+                    && let Lit::Str(s) = &expr_lit.lit
+                {
+                    match ident.as_str() {
+                        "description" => description = s.value(),
+                        "name" => name_override = Some(s.value()),
+                        _ => {}
                     }
                 }
-                _ => {}
             }
             if !input.is_empty() {
                 let _ = input.parse::<syn::Token![,]>();
@@ -102,22 +99,22 @@ fn impl_tool(args: ToolArgs, input_fn: ItemFn) -> syn::Result<proc_macro2::Token
     let mut param_types = Vec::new();
 
     for input in &sig.inputs {
-        if let syn::FnArg::Typed(PatType { pat, ty, .. }) = input {
-            if let syn::Pat::Ident(pat_ident) = pat.as_ref() {
-                let name = pat_ident.ident.to_string();
-                let (schema, is_optional) = type_to_json_schema(ty)?;
+        if let syn::FnArg::Typed(PatType { pat, ty, .. }) = input
+            && let syn::Pat::Ident(pat_ident) = pat.as_ref()
+        {
+            let name = pat_ident.ident.to_string();
+            let (schema, is_optional) = type_to_json_schema(ty)?;
 
-                properties.push(quote! {
-                    (#name.to_string(), #schema)
-                });
+            properties.push(quote! {
+                (#name.to_string(), #schema)
+            });
 
-                if !is_optional {
-                    required.push(quote! { #name.to_string() });
-                }
-
-                param_names.push(pat_ident.ident.clone());
-                param_types.push(ty.clone());
+            if !is_optional {
+                required.push(quote! { #name.to_string() });
             }
+
+            param_names.push(pat_ident.ident.clone());
+            param_types.push(ty.clone());
         }
     }
 
@@ -184,28 +181,23 @@ fn type_to_json_schema(ty: &Type) -> syn::Result<(proc_macro2::TokenStream, bool
                 "f32" | "f64" => (quote! { json!({"type": "number"}) }, false),
                 "bool" => (quote! { json!({"type": "boolean"}) }, false),
                 "Option" => {
-                    if let syn::PathArguments::AngleBracketed(args) = &last.arguments {
-                        if let Some(syn::GenericArgument::Type(inner)) = args.args.first() {
-                            let (inner_schema, _) = type_to_json_schema(inner)?;
-                            return Ok((inner_schema, true));
-                        }
+                    if let syn::PathArguments::AngleBracketed(args) = &last.arguments
+                        && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
+                    {
+                        let (inner_schema, _) = type_to_json_schema(inner)?;
+                        return Ok((inner_schema, true));
                     }
                     (quote! { json!({"type": "string"}) }, true)
                 }
                 "Vec" => {
-                    if let syn::PathArguments::AngleBracketed(args) = &last.arguments {
-                        if let Some(syn::GenericArgument::Type(inner)) = args.args.first() {
-                            let (item_schema, _) = type_to_json_schema(inner)?;
-                            (
-                                quote! { json!({"type": "array", "items": #item_schema}) },
-                                false,
-                            )
-                        } else {
-                            (
-                                quote! { json!({"type": "array", "items": {"type": "string"}}) },
-                                false,
-                            )
-                        }
+                    if let syn::PathArguments::AngleBracketed(args) = &last.arguments
+                        && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
+                    {
+                        let (item_schema, _) = type_to_json_schema(inner)?;
+                        (
+                            quote! { json!({"type": "array", "items": #item_schema}) },
+                            false,
+                        )
                     } else {
                         (
                             quote! { json!({"type": "array", "items": {"type": "string"}}) },

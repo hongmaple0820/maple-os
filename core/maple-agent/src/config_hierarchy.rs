@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 ///
 /// Each level can override values from the previous level.
 /// Deep merge is used for nested objects.
-
-/// Main configuration structure
+///
+///   Main configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MapleConfig {
     /// LLM configuration

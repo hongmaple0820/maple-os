@@ -17,7 +17,7 @@ pub enum Role {
 }
 
 impl Role {
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "admin" => Role::Admin,
             "editor" => Role::Editor,
@@ -140,7 +140,7 @@ pub struct AuthClaims {
 
 impl AuthClaims {
     pub fn role(&self) -> Role {
-        Role::from_str(&self.role)
+        Role::parse(&self.role)
     }
 
     pub fn has_permission(&self, permission: &Permission) -> bool {

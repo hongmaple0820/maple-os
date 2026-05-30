@@ -11,8 +11,8 @@ use tokio::sync::RwLock;
 /// - Token count caching
 /// - Concurrency limiter
 /// - Performance metrics collection
-
-/// LRU Cache
+///
+///   LRU Cache
 pub struct LruCache<K, V> {
     capacity: usize,
     items: HashMap<K, CacheEntry<V>>,
@@ -34,7 +34,7 @@ impl<K: Eq + Hash + Clone, V: Clone> LruCache<K, V> {
         }
     }
 
-    pub fn with_ttl(mut self, ttl: Duration) -> Self {
+    pub fn with_ttl(self, _ttl: Duration) -> Self {
         // TTL is set per entry in this implementation
         self
     }
@@ -116,7 +116,9 @@ pub struct ToolResultCache {
 struct CachedToolResult {
     output: serde_json::Value,
     success: bool,
+    #[allow(dead_code)]
     cached_at: Instant,
+    #[allow(dead_code)]
     hit_count: u32,
 }
 
@@ -232,7 +234,7 @@ impl Drop for ConcurrencyGuard {
 }
 
 /// Performance metrics
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct PerformanceMetrics {
     pub tool_calls: u64,
     pub tool_call_duration_ms: u64,
@@ -244,20 +246,6 @@ pub struct PerformanceMetrics {
     pub token_count_cache_misses: u64,
 }
 
-impl Default for PerformanceMetrics {
-    fn default() -> Self {
-        Self {
-            tool_calls: 0,
-            tool_call_duration_ms: 0,
-            llm_calls: 0,
-            llm_call_duration_ms: 0,
-            cache_hits: 0,
-            cache_misses: 0,
-            token_count_cache_hits: 0,
-            token_count_cache_misses: 0,
-        }
-    }
-}
 
 /// Performance monitor
 pub struct PerformanceMonitor {

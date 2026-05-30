@@ -125,10 +125,10 @@ impl MemoryManager {
         if let Some(scope) = scope {
             all.retain(|entry| match scope {
                 MemoryScope::Session(sid) => {
-                    entry.metadata.get("session_id").map_or(false, |s| s == sid)
+                    entry.metadata.get("session_id").is_some_and(|s| s == sid)
                 }
-                MemoryScope::User(uid) => entry.metadata.get("user_id").map_or(false, |s| s == uid),
-                MemoryScope::Global => entry.metadata.get("scope").map_or(false, |s| s == "global"),
+                MemoryScope::User(uid) => entry.metadata.get("user_id").is_some_and(|s| s == uid),
+                MemoryScope::Global => entry.metadata.get("scope").is_some_and(|s| s == "global"),
             });
         }
 

@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 /// 应用监控指标
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct AppMetrics {
     /// 指标注册表
     registry: Arc<Registry>,
@@ -254,17 +255,19 @@ pub async fn metrics_handler(
 }
 
 /// 健康检查端点
+#[allow(dead_code)]
 pub async fn health_handler() -> &'static str {
     "ok"
 }
 
 /// 深度健康检查端点
+#[allow(dead_code)]
 pub async fn deep_health_handler(
     axum::extract::State(state): axum::extract::State<Arc<crate::AppState>>,
 ) -> axum::Json<serde_json::Value> {
     let db_healthy = sqlx::query("SELECT 1").execute(&state.db).await.is_ok();
 
-    let llm_healthy = state.llm_router.list_models().await.len() > 0;
+    let llm_healthy = !state.llm_router.list_models().await.is_empty();
 
     axum::Json(serde_json::json!({
         "status": if db_healthy && llm_healthy { "ok" } else { "degraded" },

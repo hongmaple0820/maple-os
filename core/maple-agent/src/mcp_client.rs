@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
 
 /// MCP Client Enhancements — auto-reconnect, tool sync, parallel calls, credential stripping
 ///
@@ -12,8 +11,8 @@ use tokio::sync::RwLock;
 /// - Parallel tool invocation across servers
 /// - Credential/secret stripping from tool results
 /// - Per-server health tracking and degraded-startup reports
-
-/// MCP server health state
+///
+///   MCP server health state
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ServerHealth {
     Healthy,

@@ -1,7 +1,5 @@
-use serde_json::Value;
 use std::collections::HashMap;
-use std::path::PathBuf;
-use tokio_util::sync::CancellationToken;
+use std::path::{Path, PathBuf};
 
 /// ToolUseContext — unified dependency injection for all tool executions
 /// Inspired by cc-haha's ~30-field DI container
@@ -119,7 +117,7 @@ impl ToolUseContext {
     }
 
     /// Check if a path is within allowed boundaries
-    pub fn is_path_allowed(&self, path: &PathBuf) -> bool {
+    pub fn is_path_allowed(&self, path: &Path) -> bool {
         // Check if path is within workspace root
         if path.starts_with(&self.workspace_root) {
             return true;

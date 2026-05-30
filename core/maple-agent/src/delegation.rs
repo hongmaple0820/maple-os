@@ -1,4 +1,4 @@
-use crate::react_loop::{ReactLoop, Session, ToolExecutor, ToolResult, ToolUse};
+use crate::react_loop::{ReactLoop, Session, ToolExecutor};
 use crate::registry::{AgentRegistry, AgentRole, AgentTask};
 use crate::tool_use_context::ToolUseContext;
 use anyhow::Result;
@@ -14,8 +14,8 @@ use std::time::Duration;
 /// - Independent ReAct loop per delegate
 /// - Timeout and cancellation support
 /// - Result streaming back to parent
-
-/// Options for delegation
+///
+///   Options for delegation
 #[derive(Debug, Clone)]
 pub struct DelegateOpts {
     /// Maximum iterations for the sub-agent
@@ -87,7 +87,7 @@ impl DelegationEngine {
         goal: &str,
         parent_tools: &[String],
         opts: DelegateOpts,
-        context: &ToolUseContext,
+        _context: &ToolUseContext,
     ) -> Result<DelegateResult> {
         // Check depth limit
         if self.max_depth == 0 {
@@ -233,6 +233,12 @@ impl DelegationEngine {
 /// Builder for DelegateOpts
 pub struct DelegateOptsBuilder {
     opts: DelegateOpts,
+}
+
+impl Default for DelegateOptsBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl DelegateOptsBuilder {

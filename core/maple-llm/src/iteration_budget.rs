@@ -1,6 +1,4 @@
-use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
 
 /// IterationBudget — controls resource consumption per session/request
 ///
@@ -289,6 +287,12 @@ impl std::fmt::Display for BudgetWarning {
 /// Builder for IterationBudget
 pub struct IterationBudgetBuilder {
     budget: IterationBudget,
+}
+
+impl Default for IterationBudgetBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl IterationBudgetBuilder {

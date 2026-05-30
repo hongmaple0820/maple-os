@@ -14,7 +14,7 @@ use tokio::fs;
 /// - Max jobs limit (50)
 /// - Timezone support
 /// - Missed execution handling
-
+///
 const MAX_JOBS: usize = 50;
 
 /// Cron job types
@@ -173,58 +173,55 @@ impl CronExpression {
         // "every N minutes"
         if let Some(caps) = input.strip_prefix("every ") {
             let parts: Vec<&str> = caps.split_whitespace().collect();
-            if parts.len() >= 2 {
-                if let Ok(n) = parts[0].parse::<u8>() {
-                    match parts[1] {
-                        "minute" | "minutes" | "min" | "mins" => {
-                            return Ok(Self {
-                                minute: CronField::Step(n),
-                                hour: CronField::Any,
-                                day: CronField::Any,
-                                month: CronField::Any,
-                                weekday: CronField::Any,
-                            });
-                        }
-                        "hour" | "hours" => {
-                            return Ok(Self {
-                                minute: CronField::Value(0),
-                                hour: if n == 1 { CronField::Any } else { CronField::Step(n) },
-                                day: CronField::Any,
-                                month: CronField::Any,
-                                weekday: CronField::Any,
-                            });
-                        }
-                        "day" | "days" => {
-                            return Ok(Self {
-                                minute: CronField::Value(0),
-                                hour: CronField::Value(0),
-                                day: if n == 1 { CronField::Any } else { CronField::Step(n) },
-                                month: CronField::Any,
-                                weekday: CronField::Any,
-                            });
-                        }
-                        _ => {}
+            if parts.len() >= 2
+                && let Ok(n) = parts[0].parse::<u8>()
+            {
+                match parts[1] {
+                    "minute" | "minutes" | "min" | "mins" => {
+                        return Ok(Self {
+                            minute: CronField::Step(n),
+                            hour: CronField::Any,
+                            day: CronField::Any,
+                            month: CronField::Any,
+                            weekday: CronField::Any,
+                        });
                     }
+                    "hour" | "hours" => {
+                        return Ok(Self {
+                            minute: CronField::Value(0),
+                            hour: if n == 1 { CronField::Any } else { CronField::Step(n) },
+                            day: CronField::Any,
+                            month: CronField::Any,
+                            weekday: CronField::Any,
+                        });
+                    }
+                    "day" | "days" => {
+                        return Ok(Self {
+                            minute: CronField::Value(0),
+                            hour: CronField::Value(0),
+                            day: if n == 1 { CronField::Any } else { CronField::Step(n) },
+                            month: CronField::Any,
+                            weekday: CronField::Any,
+                        });
+                    }
+                    _ => {}
                 }
             }
         }
 
         // "daily at HH:MM"
-        if input.starts_with("daily at ") || input.starts_with("every day at ") {
-            let time_str = if input.starts_with("daily at ") {
-                &input[9..]
-            } else {
-                &input[13..]
-            };
-            if let Some((h, m)) = parse_time(time_str) {
-                return Ok(Self {
-                    minute: CronField::Value(m),
-                    hour: CronField::Value(h),
-                    day: CronField::Any,
-                    month: CronField::Any,
-                    weekday: CronField::Any,
-                });
-            }
+        if let Some(time_str) = input
+            .strip_prefix("daily at ")
+            .or_else(|| input.strip_prefix("every day at "))
+            && let Some((h, m)) = parse_time(time_str)
+        {
+            return Ok(Self {
+                minute: CronField::Value(m),
+                hour: CronField::Value(h),
+                day: CronField::Any,
+                month: CronField::Any,
+                weekday: CronField::Any,
+            });
         }
 
         // "hourly"
@@ -250,17 +247,16 @@ impl CronExpression {
         }
 
         // "weekly on Monday at HH:MM"
-        if input.starts_with("weekly on ") {
-            let rest = &input[10..];
+        if let Some(rest) = input.strip_prefix("weekly on ") {
             let days = [
                 ("sunday", 0), ("monday", 1), ("tuesday", 2), ("wednesday", 3),
                 ("thursday", 4), ("friday", 5), ("saturday", 6),
             ];
             for (day_name, day_num) in &days {
-                if rest.starts_with(day_name) {
-                    let time_part = &rest[day_name.len()..].trim();
-                    let (h, m) = if time_part.starts_with("at ") {
-                        parse_time(&time_part[3..]).unwrap_or((0, 0))
+                if let Some(after_day) = rest.strip_prefix(day_name) {
+                    let time_part = after_day.trim();
+                    let (h, m) = if let Some(time_str) = time_part.strip_prefix("at ") {
+                        parse_time(time_str).unwrap_or((0, 0))
                     } else {
                         (0, 0)
                     };
@@ -276,8 +272,7 @@ impl CronExpression {
         }
 
         // "monthly on day N at HH:MM"
-        if input.starts_with("monthly on day ") {
-            let rest = &input[15..];
+        if let Some(rest) = input.strip_prefix("monthly on day ") {
             let parts: Vec<&str> = rest.split_whitespace().collect();
             if let Ok(day) = parts[0].parse::<u8>() {
                 let (h, m) = if parts.len() > 2 && parts[1] == "at" {
@@ -338,9 +333,9 @@ impl CronExpression {
             CronField::Value(v) => value == *v,
             CronField::Range(start, end) => value >= *start && value <= *end,
             CronField::List(values) => values.contains(&value),
-            CronField::Step(step) => value % step == 0,
+            CronField::Step(step) => value.is_multiple_of(*step),
             CronField::RangeStep(start, end, step) => {
-                value >= *start && value <= *end && (value - start) % step == 0
+                (*start..=*end).contains(&value) && (value - start).is_multiple_of(*step)
             }
         }
     }
@@ -380,7 +375,7 @@ impl CronExpression {
 
         // Calculate date from days since Unix epoch (1970-01-01 = day 0)
         // Using a simplified algorithm for date calculation
-        let (year, month, day) = Self::days_to_ymd(days_total);
+        let (_year, month, day) = Self::days_to_ymd(days_total);
 
         // Calculate day of week (1970-01-01 was a Thursday = 4)
         let weekday = ((days_total + 4) % 7) as u8;
@@ -538,10 +533,10 @@ impl CronScheduler {
             job.run_count += 1;
 
             // Remove if max runs reached
-            if let Some(max_runs) = job.max_runs {
-                if job.run_count >= max_runs {
-                    job.enabled = false;
-                }
+            if let Some(max_runs) = job.max_runs
+                && job.run_count >= max_runs
+            {
+                job.enabled = false;
             }
         }
 
@@ -603,28 +598,26 @@ fn parse_time(s: &str) -> Option<(u8, u8)> {
     let s = s.trim().to_lowercase();
 
     // Try "HH:MM" format
-    if let Some((h, m)) = s.split_once(':') {
-        if let (Ok(h), Ok(m)) = (h.parse::<u8>(), m.parse::<u8>()) {
-            if h <= 23 && m <= 59 {
-                return Some((h, m));
-            }
-        }
+    if let Some((h, m)) = s.split_once(':')
+        && let (Ok(h), Ok(m)) = (h.parse::<u8>(), m.parse::<u8>())
+        && h <= 23
+        && m <= 59
+    {
+        return Some((h, m));
     }
 
     // Try "Ham" or "Hpm" format
-    if let Some(h_str) = s.strip_suffix("am") {
-        if let Ok(h) = h_str.parse::<u8>() {
-            if h >= 1 && h <= 12 {
-                return Some((if h == 12 { 0 } else { h }, 0));
-            }
-        }
+    if let Some(h_str) = s.strip_suffix("am")
+        && let Ok(h) = h_str.parse::<u8>()
+        && (1..=12).contains(&h)
+    {
+        return Some((if h == 12 { 0 } else { h }, 0));
     }
-    if let Some(h_str) = s.strip_suffix("pm") {
-        if let Ok(h) = h_str.parse::<u8>() {
-            if h >= 1 && h <= 12 {
-                return Some((if h == 12 { 12 } else { h + 12 }, 0));
-            }
-        }
+    if let Some(h_str) = s.strip_suffix("pm")
+        && let Ok(h) = h_str.parse::<u8>()
+        && (1..=12).contains(&h)
+    {
+        return Some((if h == 12 { 12 } else { h + 12 }, 0));
     }
 
     None

@@ -1,6 +1,4 @@
 use crate::react_loop::{ToolExecutor, ToolResult, ToolUse};
-use anyhow::Result;
-use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -12,8 +10,8 @@ use std::sync::Arc;
 /// - Sequential execution for exclusive tools
 /// - Ordered emission (results in original index order)
 /// - Error cascading (one failure cancels remaining)
-
-/// Tool concurrency classification
+///
+///   Tool concurrency classification
 #[derive(Debug, Clone, PartialEq)]
 pub enum ToolConcurrency {
     /// Can be executed in parallel (read_file, search, web_fetch)

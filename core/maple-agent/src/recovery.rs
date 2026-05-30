@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 /// - Escalation policies
 /// - Recovery ledger for tracking attempts
 /// - Pluggable recovery context for actual operations
-
-/// Failure scenarios
+///
+///   Failure scenarios
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum FailureScenario {
     TrustPromptUnresolved,
@@ -236,6 +236,7 @@ pub struct RecoveryEngine {
     recipes: Vec<RecoveryRecipe>,
     ledger: RecoveryLedger,
     context: Box<dyn RecoveryContext>,
+    #[allow(clippy::type_complexity)]
     escalation_callback: Option<Box<dyn Fn(&str) + Send + Sync>>,
 }
 

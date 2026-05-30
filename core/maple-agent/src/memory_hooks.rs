@@ -11,8 +11,8 @@ use std::time::Duration;
 /// - MemoryHook trait for lifecycle interception (before/after save/load)
 /// - TTL-based expiration
 /// - Built-in hooks: encryption, compression, sync
-
-/// Memory entry (compatible with maple_kb::MemoryEntry)
+///
+///   Memory entry (compatible with maple_kb::MemoryEntry)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryRecord {
     pub id: String,
@@ -89,7 +89,7 @@ pub trait MemoryProvider: Send + Sync {
 #[async_trait]
 pub trait MemoryHook: Send + Sync {
     /// Called before storing a memory (can modify or reject)
-    async fn before_save(&self, record: &mut MemoryRecord) -> Result<HookDecision, MemoryError> {
+    async fn before_save(&self, _record: &mut MemoryRecord) -> Result<HookDecision, MemoryError> {
         Ok(HookDecision::Allow)
     }
     /// Called after storing a memory
@@ -284,12 +284,12 @@ impl MemoryHook for EncryptionHook {
 
     async fn after_load(&self, records: &mut Vec<MemoryRecord>) -> Result<(), MemoryError> {
         for record in records.iter_mut() {
-            if let Some(encrypted_hex) = record.metadata.get("encrypted") {
-                if let Some(encrypted) = Self::from_hex(encrypted_hex) {
-                    let decrypted = self.xor_transform(&encrypted);
-                    record.content = String::from_utf8_lossy(&decrypted).to_string();
-                    record.metadata.remove("encrypted");
-                }
+            if let Some(encrypted_hex) = record.metadata.get("encrypted")
+                && let Some(encrypted) = Self::from_hex(encrypted_hex)
+            {
+                let decrypted = self.xor_transform(&encrypted);
+                record.content = String::from_utf8_lossy(&decrypted).to_string();
+                record.metadata.remove("encrypted");
             }
         }
         Ok(())
@@ -384,25 +384,25 @@ impl MemoryProvider for InMemoryProvider {
         let mut results: Vec<MemoryRecord> = records
             .values()
             .filter(|r| {
-                if let Some(ref scope) = query.scope {
-                    if r.scope != *scope {
-                        return false;
-                    }
+                if let Some(ref scope) = query.scope
+                    && r.scope != *scope
+                {
+                    return false;
                 }
-                if let Some(ref mt) = query.memory_type {
-                    if r.memory_type != *mt {
-                        return false;
-                    }
+                if let Some(ref mt) = query.memory_type
+                    && r.memory_type != *mt
+                {
+                    return false;
                 }
-                if !query.tags.is_empty() {
-                    if !query.tags.iter().any(|t| r.tags.contains(t)) {
-                        return false;
-                    }
+                if !query.tags.is_empty()
+                    && !query.tags.iter().any(|t| r.tags.contains(t))
+                {
+                    return false;
                 }
-                if let Some(ref text) = query.text {
-                    if !r.content.to_lowercase().contains(&text.to_lowercase()) {
-                        return false;
-                    }
+                if let Some(ref text) = query.text
+                    && !r.content.to_lowercase().contains(&text.to_lowercase())
+                {
+                    return false;
                 }
                 true
             })

@@ -10,14 +10,12 @@ mod state;
 use axum::Json;
 use axum::Router;
 use axum::extract::ws::WebSocketUpgrade;
-use axum::middleware::Next;
 use axum::response::IntoResponse;
 use axum::response::sse::{Event, Sse};
 use axum::routing::{delete, get, post, put};
 use std::convert::Infallible;
 
 use async_trait::async_trait;
-use maple_agent::health::HealthMonitor;
 use maple_agent::performance::PerformanceMonitor;
 use maple_agent::react_loop::{ReactLoop, Session, ToolExecutor, ToolResult, ToolUse};
 use maple_agent::registry::AgentRegistry;
@@ -44,13 +42,11 @@ use maple_kb::prompt_version::PromptVersionManager;
 use maple_kb::retriever::HybridRetriever;
 use maple_kb::vector_store::{InMemoryVectorStore, QdrantVectorStore, VectorSearch};
 use maple_llm::embedding::{Embedder, FallbackEmbedder, OllamaEmbedder};
-use maple_llm::router::LlmRouter;
-use maple_llm::router::ProviderHealthChecker;
 use maple_rpc::dispatch::RpcDispatcher;
 use maple_rpc::server::RpcServer;
 use maple_sync::sync_engine::SyncEngine;
 use serde::{Deserialize, Serialize};
-use state::{ApiError, AppState, ServerConfig};
+use state::{AppState, ServerConfig};
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
@@ -1793,6 +1789,7 @@ struct CreateTaskRequest {
 async fn list_tasks_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> axum::Json<serde_json::Value> {
+    #[allow(clippy::type_complexity)]
     let rows: Vec<(String, String, Option<String>, String, String, Option<String>, Option<String>, Option<String>, String, i64)> =
         sqlx::query_as("SELECT id, title, description, status, priority, assignee_name, assignee_avatar, due_date, tags, sort_order FROM board_tasks ORDER BY sort_order, created_at")
             .fetch_all(&state.db)
@@ -1821,9 +1818,7 @@ async fn list_tasks_handler(
                     "description": desc,
                     "status": status,
                     "priority": priority,
-                    "assignee": if let Some(name) = assignee_name {
-                        Some(serde_json::json!({"name": name, "avatar": assignee_avatar}))
-                    } else { None },
+                    "assignee": assignee_name.map(|name| serde_json::json!({"name": name, "avatar": assignee_avatar})),
                     "due_date": due_date,
                     "tags": tags_vec,
                 })
@@ -1969,6 +1964,7 @@ async fn list_comments_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
     axum::extract::Path(task_id): axum::extract::Path<String>,
 ) -> axum::Json<serde_json::Value> {
+    #[allow(clippy::type_complexity)]
     let rows: Vec<(String, Option<String>, String, Option<String>, Option<String>, String, i64, i64)> =
         sqlx::query_as("SELECT id, parent_id, author_name, author_avatar, author_role, content, likes, created_at FROM board_comments WHERE task_id = ? ORDER BY created_at DESC")
             .bind(&task_id)
@@ -2602,10 +2598,10 @@ async fn main() -> anyhow::Result<()> {
             let yaml_str: Option<String> = sqlx::query_scalar(
                 "SELECT yaml_content FROM workflows WHERE id = ?"
             ).bind(&job.workflow_id).fetch_optional(&db).await.ok().flatten();
-            if let Some(yaml) = yaml_str {
-                if let Ok(parsed) = Workflow::parse_definition(&yaml) {
-                    let _ = wf.execute(&parsed.nodes, &job.workflow_id, parsed.version, serde_json::Value::Null).await;
-                }
+            if let Some(yaml) = yaml_str
+                && let Ok(parsed) = Workflow::parse_definition(&yaml)
+            {
+                let _ = wf.execute(&parsed.nodes, &job.workflow_id, parsed.version, serde_json::Value::Null).await;
             }
             Ok(())
         }

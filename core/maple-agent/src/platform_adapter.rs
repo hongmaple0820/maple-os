@@ -9,8 +9,8 @@ use std::sync::Arc;
 /// - Registry for managing multiple adapters
 /// - Session persistence across platforms
 /// - Message normalization and routing
-
-/// Platform capabilities
+///
+///   Platform capabilities
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlatformCapabilities {
     /// Platform name

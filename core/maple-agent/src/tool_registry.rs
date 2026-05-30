@@ -283,7 +283,7 @@ impl ToolRegistry {
             .len();
         let total_uses: u64 = tools.values().map(|e| e.use_count).sum();
         let avg_embedding_dim = if total > 0 {
-            tools.values().map(|e| e.embedding.len()).sum::<usize>() / total
+            tools.values().map(|e| e.embedding.len()).sum::<usize>().checked_div(total).unwrap_or(0)
         } else {
             0
         };

@@ -1,11 +1,8 @@
-use crate::state::{AppState, RateLimiter};
+use crate::state::AppState;
 use axum::extract::State;
 use axum::middleware::Next;
 use maple_gateway::auth::Permission;
-use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
-use tokio::sync::RwLock;
 
 pub async fn audit_log_middleware(
     req: axum::http::Request<axum::body::Body>,
@@ -110,17 +107,17 @@ pub async fn auth_middleware(
     match state.auth_service.verify_token(token) {
         Ok(claims) => {
             let required_permission = get_required_permission(path, &method);
-            if let Some(permission) = required_permission {
-                if !claims.has_permission(&permission) {
-                    tracing::warn!(
-                        user_id = ?claims.user_id,
-                        role = %claims.role,
-                        path = %path,
-                        method = %method,
-                        "Permission denied"
-                    );
-                    return Err(axum::http::StatusCode::FORBIDDEN);
-                }
+            if let Some(permission) = required_permission
+                && !claims.has_permission(&permission)
+            {
+                tracing::warn!(
+                    user_id = ?claims.user_id,
+                    role = %claims.role,
+                    path = %path,
+                    method = %method,
+                    "Permission denied"
+                );
+                return Err(axum::http::StatusCode::FORBIDDEN);
             }
             Ok(next.run(req).await)
         }
