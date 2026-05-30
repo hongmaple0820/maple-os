@@ -1,6 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/nickel-org/nickel.rs/master/nickel/schema.json",
-  "$schema-comment": "TODO: Update to Tauri 2 schema when available",
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-cli/schema.json",
   "productName": "MapleOS",
   "version": "0.1.0",
   "identifier": "com.mapleos.desktop",
