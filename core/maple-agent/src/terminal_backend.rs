@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 /// Terminal Backend — execution environment abstraction
 ///
