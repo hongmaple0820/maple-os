@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@babel/runtime": "^7.26.0",
     "@expo/vector-icons": "^14.0.0",
     "@mapleos/sdk": "workspace:*",
     "@react-native-async-storage/async-storage": "^2.2.0",
