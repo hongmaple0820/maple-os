@@ -299,7 +299,7 @@ jobs:
         run: pnpm --filter=@mapleos/ui --filter=@mapleos/sdk build
 
       - name: Setup EAS CLI
-        run: npm install -g eas-cli
+        run: npm install -g eas-cli@latest
 
       - name: Build Android APK (preview)
         working-directory: apps/mobile
