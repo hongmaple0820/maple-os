@@ -117,7 +117,7 @@ jobs:
           corepack prepare pnpm@latest --activate
 
       - name: Install frontend dependencies
-        run: pnpm install
+        run: pnpm install --no-frozen-lockfile
 
       - name: Build shared packages
         run: pnpm --filter=@mapleos/ui --filter=@mapleos/sdk build
@@ -181,7 +181,7 @@ jobs:
           corepack prepare pnpm@latest --activate
 
       - name: Install frontend dependencies
-        run: pnpm install
+        run: pnpm install --no-frozen-lockfile
 
       - name: Build shared packages
         run: pnpm --filter=@mapleos/ui --filter=@mapleos/sdk build
@@ -240,7 +240,7 @@ jobs:
           corepack prepare pnpm@latest --activate
 
       - name: Install frontend dependencies
-        run: pnpm install
+        run: pnpm install --no-frozen-lockfile
 
       - name: Build shared packages
         run: pnpm --filter=@mapleos/ui --filter=@mapleos/sdk build
@@ -293,7 +293,7 @@ jobs:
           corepack prepare pnpm@latest --activate
 
       - name: Install frontend dependencies
-        run: pnpm install
+        run: pnpm install --no-frozen-lockfile
 
       - name: Build shared packages
         run: pnpm --filter=@mapleos/ui --filter=@mapleos/sdk build
@@ -346,7 +346,7 @@ jobs:
           corepack prepare pnpm@latest --activate
 
       - name: Install frontend dependencies
-        run: pnpm install
+        run: pnpm install --no-frozen-lockfile
 
       - name: Build shared packages
         run: pnpm --filter=@mapleos/ui --filter=@mapleos/sdk build

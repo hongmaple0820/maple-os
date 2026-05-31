@@ -65,7 +65,7 @@ jobs:
           corepack prepare pnpm@latest --activate
 
       - name: Install frontend dependencies
-        run: pnpm install
+        run: pnpm install --no-frozen-lockfile
 
       - name: Build shared packages first
         run: pnpm --filter=@mapleos/ui --filter=@mapleos/sdk build
