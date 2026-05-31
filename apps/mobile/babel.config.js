@@ -1,4 +1,4 @@
 module.exports = {
-  presets: ['module:commonjs', '@babel/preset-env', ['expo', 'react-native']],
+  presets: ['module:commonjs', '@babel/preset-env', ['expo', {}]],
   plugins: ['expo-router/babel'],
 };
