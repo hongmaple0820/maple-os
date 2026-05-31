@@ -32,9 +32,10 @@ fn main() {
             let sidecar = app.shell().sidecar("mapleos-server").unwrap();
             let (mut rx, _) = sidecar.spawn().expect("failed to start mapleos-server sidecar");
             tauri::async_runtime::spawn(async move {
+                use tauri_plugin_shell::process::CommandEvent;
                 while let Some(event) = rx.recv().await {
-                    if let tauri_plugin_shell::Event::Stderr(line) = event {
-                        eprintln!("[server] {}", line);
+                    if let CommandEvent::Stderr(line) = event {
+                        eprintln!("[server] {}", String::from_utf8_lossy(&line));
                     }
                 }
             });
