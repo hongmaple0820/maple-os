@@ -180,12 +180,11 @@ impl AppMetrics {
         {
             if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
                 for line in status.lines() {
-                    if line.starts_with("VmRSS:") {
-                        if let Some(kb_str) = line.split_whitespace().nth(1) {
-                            if let Ok(kb) = kb_str.parse::<f64>() {
-                                self.memory_usage.set(kb * 1024.0); // Convert KB to bytes
-                            }
-                        }
+                    if line.starts_with("VmRSS:")
+                        && let Some(kb_str) = line.split_whitespace().nth(1)
+                        && let Ok(kb) = kb_str.parse::<f64>()
+                    {
+                        self.memory_usage.set(kb * 1024.0); // Convert KB to bytes
                     }
                 }
             }
