@@ -703,7 +703,7 @@ mod tests {
 
         // Search for "path" - should return read_file and write_file (from schema)
         let results = registry.search_by_keyword("path", Some(10)).await;
-        assert!(results.len() >= 1, "Expected at least 1 result for 'path', got {}", results.len());
+        assert!(!results.is_empty(), "Expected at least 1 result for 'path', got {}", results.len());
     }
 
     #[tokio::test]

@@ -310,14 +310,14 @@ mod tests {
     #[test]
     fn test_resolve_tool_subset() {
         // This would require mocking the registry, so just test the logic
-        let parent_tools = vec![
+        let parent_tools = [
             "read_file".to_string(),
             "write_file".to_string(),
             "delegate".to_string(),
             "approve".to_string(),
         ];
 
-        let excluded = vec!["delegate".to_string(), "approve".to_string()];
+        let excluded = ["delegate".to_string(), "approve".to_string()];
 
         let filtered: Vec<String> = parent_tools
             .iter()

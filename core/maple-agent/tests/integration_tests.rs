@@ -299,7 +299,7 @@ async fn test_tool_registry_keyword_search() {
 
     // Keyword search for "web" should match search_web
     let results = registry.search_by_keyword("web", Some(10)).await;
-    assert!(results.len() >= 1);
+    assert!(!results.is_empty());
     assert_eq!(results[0].name, "search_web");
 
     // Stats
@@ -372,7 +372,7 @@ async fn test_terminal_backend_registry_integration() {
     registry.register(Box::new(LocalBackend::new()));
 
     let available = registry.available_backends().await;
-    assert!(available.len() >= 1);
+    assert!(!available.is_empty());
 
     // Local backend should be available
     let local = registry.get("local");

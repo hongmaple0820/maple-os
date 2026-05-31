@@ -35,7 +35,7 @@ fn bench_trident_compaction(c: &mut Criterion) {
             &messages,
             |b, msgs| {
                 b.iter(|| {
-                    let mut compactor = TridentCompactor::new(TridentConfig::default());
+                    let compactor = TridentCompactor::new(TridentConfig::default());
                     compactor.compact(black_box(msgs));
                 });
             },

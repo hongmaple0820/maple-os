@@ -610,7 +610,7 @@ mod tests {
 
         let (result, actions) = compactor.cluster(&messages);
         // Old cluster should be summarized
-        assert!(actions.len() > 0);
+        assert!(!actions.is_empty());
         // Result should have summary + recent clusters
         assert!(result.iter().any(|m| m.content.contains("summarized")));
     }

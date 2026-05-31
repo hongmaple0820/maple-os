@@ -630,16 +630,10 @@ mod tests {
             Message::system("test"),
             Message::user("run tool"),
             Message::assistant("running"),
-            {
-                let mut m = Message::tool_result("call_1", "same output content", false);
-                m
-            },
+            Message::tool_result("call_1", "same output content", false),
             Message::user("run again"),
             Message::assistant("running again"),
-            {
-                let mut m = Message::tool_result("call_1", "same output content", false);
-                m
-            },
+            Message::tool_result("call_1", "same output content", false),
         ];
 
         let pruned = compressor.prune_tool_outputs(&messages);
