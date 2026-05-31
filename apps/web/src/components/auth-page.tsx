@@ -157,7 +157,7 @@ type AuthResponse = { token?: string; error?: string; user_id?: string; username
           <button
             type="button"
             className="text-primary hover:underline"
-            onClick={() => onModeChange(mode === "login" ? "register" : "login")}
+            onClick={() => setMode(mode === "login" ? "register" : "login")}
           >
             {mode === "login" ? "Register" : "Login"}
           </button>

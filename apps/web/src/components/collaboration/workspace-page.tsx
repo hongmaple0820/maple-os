@@ -52,6 +52,8 @@ export default function CollaborationWorkspace() {
     { label: "审核中", value: taskCounts.review, icon: TrendingUp, color: "bg-primary/10 text-primary" },
   ];
 
+  const recentActivities: Array<{ user: string; action: string; target: string; time: string }> = [];
+
   return (
     <div className="min-h-screen bg-background">
       {/* Top Navigation */}

@@ -124,7 +124,7 @@ mod tests {
         let counter = TiktokenCounter::new();
         // "hello world" = 2 tokens in cl100k_base
         let tokens = counter.count_tokens("hello world");
-        assert!(tokens >= 2 && tokens <= 3, "expected ~2, got {}", tokens);
+        assert!((2..=3).contains(&tokens), "expected ~2, got {}", tokens);
         assert_eq!(counter.count_tokens(""), 0);
     }
 
@@ -172,7 +172,7 @@ mod tests {
     #[test]
     fn test_global_counter() {
         let tokens = count_tokens("hello world");
-        assert!(tokens >= 2 && tokens <= 3, "expected ~2, got {}", tokens);
+        assert!((2..=3).contains(&tokens), "expected ~2, got {}", tokens);
     }
 
     #[test]
