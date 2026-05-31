@@ -1,39 +1,50 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use tauri::{Manager, Menu, MenuItem, Submenu};
+use tauri::menu::{Menu, MenuItem, Submenu};
+use tauri_plugin_shell::ShellExt;
 
 fn main() {
-    let menu = Menu::new()
-        .item(&MenuItem::new("MapleOS", true, None))
-        .item(&Submenu::new("文件", Menu::new()
-            .item(&MenuItem::new("新建对话", false, Some("new-chat")))
-            .item(&MenuItem::new("打开工作空间", false, Some("open-workspace")))
-            .separator()
-            .item(&MenuItem::new("设置", false, Some("settings")))
-        ))
-        .item(&Submenu::new("帮助", Menu::new()
-            .item(&MenuItem::new("关于 MapleOS", false, Some("about")))
-        ));
-
     tauri::Builder::default()
-        .menu(menu)
-        .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_fs::init())
-        .invoke_handler(tauri::generate_handler![greet, get_system_info])
         .setup(|app| {
+            // Build menu
+            let file_menu = Submenu::with_items(
+                app,
+                "文件",
+                true,
+                &[
+                    &MenuItem::with_id(app, "new-chat", "新建对话", true, None::<&str>)?,
+                    &MenuItem::with_id(app, "open-workspace", "打开工作空间", true, None::<&str>)?,
+                    &MenuItem::with_id(app, "settings", "设置", true, None::<&str>)?,
+                ],
+            )?;
+            let help_menu = Submenu::with_items(
+                app,
+                "帮助",
+                true,
+                &[
+                    &MenuItem::with_id(app, "about", "关于 MapleOS", true, None::<&str>)?,
+                ],
+            )?;
+            let menu = Menu::with_items(app, &[&file_menu, &help_menu])?;
+            app.set_menu(menu)?;
+
+            // Start sidecar
             let sidecar = app.shell().sidecar("mapleos-server").unwrap();
             let (mut rx, _) = sidecar.spawn().expect("failed to start mapleos-server sidecar");
             tauri::async_runtime::spawn(async move {
                 while let Some(event) = rx.recv().await {
-                    if let tauri_plugin_shell::ShellEvent::Stderr(line) = event {
+                    if let tauri_plugin_shell::Event::Stderr(line) = event {
                         eprintln!("[server] {}", line);
                     }
                 }
             });
             Ok(())
         })
+        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
+        .invoke_handler(tauri::generate_handler![greet, get_system_info])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
