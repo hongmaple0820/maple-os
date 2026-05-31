@@ -301,6 +301,12 @@ jobs:
       - name: Setup EAS CLI
         run: npm install -g eas-cli@latest
 
+      - name: Initialize EAS Project
+        working-directory: apps/mobile
+        run: eas init --non-interactive
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+
       - name: Build Android APK (preview)
         working-directory: apps/mobile
         run: |
