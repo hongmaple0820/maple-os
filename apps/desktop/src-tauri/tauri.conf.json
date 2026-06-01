@@ -13,6 +13,7 @@
     "windows": [
       {
         "title": "MapleOS",
+        "url": "index.html",
         "width": 1280,
         "height": 800,
         "minWidth": 960,
@@ -22,7 +23,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' http://localhost:7788 http://localhost:7790 ws://localhost:7788; img-src 'self' data: https:; font-src 'self' data:"
+      "csp": "default-src 'self' https: http: data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval' https: http:; style-src 'self' 'unsafe-inline' https: http:; connect-src 'self' https: http: ws: wss:; img-src 'self' data: https: http: blob:; font-src 'self' data: https: http:; media-src 'self' data: https: http: blob:"
     }
   },
   "bundle": {
