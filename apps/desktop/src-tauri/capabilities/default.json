@@ -7,6 +7,7 @@
     "shell:allow-spawn",
     "shell:allow-execute",
     "shell:allow-kill",
+    "shell:allow-sidecar",
     "notification:default",
     "dialog:default",
     "fs:default"
