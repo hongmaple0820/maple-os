@@ -28,7 +28,7 @@ jobs:
             artifact: mapleos-server-aarch64-macos
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact: mapleos-server-x86_64-windows.exe
+            artifact: mapleos-server-x86_64-windows
     steps:
       - uses: actions/checkout@v4
         with:
@@ -82,7 +82,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: target/${{ matrix.target }}/release/${{ matrix.artifact }}.*
+          path: target/${{ matrix.target }}/release/${{ matrix.artifact }}.zip
 
   build-desktop-linux:
     name: Build Desktop Linux
@@ -248,7 +248,7 @@ jobs:
       - name: Download server binary for sidecar
         uses: actions/download-artifact@v4
         with:
-          name: mapleos-server-x86_64-windows.exe
+          name: mapleos-server-x86_64-windows
           path: server-binary
 
       - name: Prepare sidecar binary
@@ -256,7 +256,7 @@ jobs:
         run: |
           Get-ChildItem server-binary/
           New-Item -ItemType Directory -Force -Path apps/desktop/src-tauri/binaries
-          Expand-Archive -Path server-binary/mapleos-server-x86_64-windows.exe.zip -DestinationPath server-binary -Force
+          Expand-Archive -Path server-binary/mapleos-server-x86_64-windows.zip -DestinationPath server-binary -Force
           Move-Item -Path server-binary/mapleos-server.exe -Destination apps/desktop/src-tauri/binaries/mapleos-server-x86_64-pc-windows-msvc.exe -Force
           Get-ChildItem apps/desktop/src-tauri/binaries/
 
@@ -351,13 +351,13 @@ jobs:
       - name: Build shared packages
         run: pnpm --filter=@mapleos/ui --filter=@mapleos/sdk build
 
-      - name: Build web frontend
-        run: pnpm --filter=mapleos-web build
+      - name: Build web frontend (static export)
+        run: pnpm --filter=mapleos-web build:static
 
       - name: Package web static files
         run: |
           cd apps/web
-          tar czf mapleos-web-static.tar.gz .next/
+          tar czf mapleos-web-static.tar.gz out/
 
       - name: Upload web artifact
         uses: actions/upload-artifact@v4
@@ -436,20 +436,31 @@ jobs:
       - name: List artifacts
         run: find artifacts -type f | sort || true
 
+      - name: Prepare release files
+        run: |
+          mkdir -p release-files
+          # Server binaries (tar.gz files)
+          find artifacts/mapleos-server-* -type f -name "*.tar.gz" -exec cp {} release-files/ \;
+          # Server Windows (zip file)
+          find artifacts/mapleos-server-* -type f -name "*.zip" -exec cp {} release-files/ \;
+          # Desktop artifacts: extract from zip
+          for zip in artifacts/mapleos-desktop-*/*.zip; do
+            if [ -f "$zip" ]; then
+              unzip -o "$zip" -d release-files/ || true
+            fi
+          done
+          # Mobile
+          find artifacts/mapleos-mobile-* -type f -name "*.apk" -exec cp {} release-files/ \; || true
+          # Web static
+          find artifacts/mapleos-web-static -type f -exec cp {} release-files/ \; || true
+          echo "=== Release files ==="
+          ls -la release-files/
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           fail_on_unmatched_files: false
-          files: |
-            artifacts/mapleos-server-x86_64-linux/mapleos-server-x86_64-linux.tar.gz
-            artifacts/mapleos-server-aarch64-macos/mapleos-server-aarch64-macos.tar.gz
-            artifacts/mapleos-server-x86_64-windows/mapleos-server-x86_64-windows.exe.zip
-            artifacts/mapleos-desktop-linux/*.deb
-            artifacts/mapleos-desktop-linux/*.rpm
-            artifacts/mapleos-desktop-macos-arm/*.dmg
-            artifacts/mapleos-desktop-windows/*.msi
-            artifacts/mapleos-mobile-android/*.apk
-            artifacts/mapleos-web-static/mapleos-web-static.tar.gz
+          files: release-files/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
