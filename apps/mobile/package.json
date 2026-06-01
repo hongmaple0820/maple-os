@@ -1,6 +1,6 @@
 {
   "name": "mapleos-mobile",
-  "version": "0.1.0",
+  "version": "2.0.7",
   "private": true,
   "main": "expo-router/entry",
   "scripts": {

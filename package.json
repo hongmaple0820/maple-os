@@ -1,6 +1,6 @@
 {
   "name": "mapleos",
-  "version": "0.1.0",
+  "version": "2.0.7",
   "private": true,
   "scripts": {
     "dev": "turbo dev",
@@ -12,6 +12,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.60.0",
+    "@tauri-apps/cli": "^2.11.2",
     "turbo": "^2.3.0"
   },
   "packageManager": "pnpm@11.3.0",
