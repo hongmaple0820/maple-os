@@ -28,17 +28,23 @@ fn main() {
             let menu = Menu::with_items(app, &[&file_menu, &help_menu])?;
             app.set_menu(menu)?;
 
-            // Start sidecar
-            let sidecar = app.shell().sidecar("mapleos-server").unwrap();
-            let (mut rx, _) = sidecar.spawn().expect("failed to start mapleos-server sidecar");
-            tauri::async_runtime::spawn(async move {
-                use tauri_plugin_shell::process::CommandEvent;
-                while let Some(event) = rx.recv().await {
-                    if let CommandEvent::Stderr(line) = event {
-                        eprintln!("[server] {}", String::from_utf8_lossy(&line));
+            // Start sidecar (non-fatal if it fails)
+            match app.shell().sidecar("mapleos-server") {
+                Ok(sidecar) => match sidecar.spawn() {
+                    Ok((mut rx, _child)) => {
+                        tauri::async_runtime::spawn(async move {
+                            use tauri_plugin_shell::process::CommandEvent;
+                            while let Some(event) = rx.recv().await {
+                                if let CommandEvent::Stderr(line) = event {
+                                    eprintln!("[server] {}", String::from_utf8_lossy(&line));
+                                }
+                            }
+                        });
                     }
-                }
-            });
+                    Err(e) => eprintln!("[desktop] Failed to spawn sidecar: {}", e),
+                },
+                Err(e) => eprintln!("[desktop] Failed to create sidecar command: {}", e),
+            }
             Ok(())
         })
         .plugin(tauri_plugin_shell::init())
