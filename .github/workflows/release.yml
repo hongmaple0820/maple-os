@@ -447,19 +447,14 @@ jobs:
       - name: Prepare release files
         run: |
           mkdir -p release-files
-          # Server binaries (tar.gz files)
-          find artifacts/mapleos-server-* -type f -name "*.tar.gz" -exec cp {} release-files/ \;
-          # Server Windows (zip file)
-          find artifacts/mapleos-server-* -type f -name "*.zip" -exec cp {} release-files/ \;
-          # Desktop artifacts: extract from zip
-          for zip in artifacts/mapleos-desktop-*/*.zip; do
-            if [ -f "$zip" ]; then
-              unzip -o "$zip" -d release-files/ || true
-            fi
-          done
+          # Server binaries
+          find artifacts/mapleos-server-* -type f \( -name "*.tar.gz" -o -name "*.zip" \) -exec cp {} release-files/ \;
+          # Desktop artifacts (directly extracted by download-artifact)
+          find artifacts/mapleos-desktop-* -type f \( -name "*.deb" -o -name "*.rpm" -o -name "*.dmg" -o -name "*.msi" \) -exec cp {} release-files/ \; || true
           # Mobile
           find artifacts/mapleos-mobile-* -type f -name "*.apk" -exec cp {} release-files/ \; || true
-          # Web static
+          # Web static (may be at artifacts root or in subdirectory)
+          find artifacts -maxdepth 1 -name "mapleos-web-static*" -type f -exec cp {} release-files/ \; || true
           find artifacts/mapleos-web-static -type f -exec cp {} release-files/ \; || true
           echo "=== Release files ==="
           ls -la release-files/
