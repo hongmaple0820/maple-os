@@ -3,20 +3,22 @@
 import { useState, useRef, useEffect } from "react";
 import type { ChatMessage, ToolCall, KnowledgeRef } from "@/lib/types";
 import { Button, Input, Badge, Card, CardContent, Spinner } from "@mapleos/ui";
-import { mapleApi, rpcCall } from "@/lib/api";
+import { mapleApi, rpcCall, getAuthState } from "@/lib/api";
+import { useTranslation } from "react-i18next";
 
 interface AgentOption { id: string; name: string }
 
 function MessageBubble({ message }: { message: ChatMessage }) {
+  const { t, i18n } = useTranslation();
   const isUser = message.role === "user";
   const isSystem = message.role === "system";
   const isTool = message.role === "tool";
 
   const roleLabel: Record<string, string> = {
-    user: "你",
-    assistant: "助手",
-    system: "系统",
-    tool: "工具",
+    user: t("chat.role.user"),
+    assistant: t("chat.role.assistant"),
+    system: t("chat.role.system"),
+    tool: t("chat.role.tool"),
   };
 
   return (
@@ -32,7 +34,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
         {!isUser && (
           <div className="flex items-center gap-2 mb-1">
             <Badge variant="outline" className="text-[10px]">{roleLabel[message.role] ?? message.role}</Badge>
-            <span className="text-[10px] opacity-50">{new Date(message.timestamp).toLocaleTimeString("zh-CN")}</span>
+            <span className="text-[10px] opacity-50">{new Date(message.timestamp).toLocaleTimeString(i18n.language?.startsWith("zh") ? "zh-CN" : "en-US")}</span>
           </div>
         )}
         <div className="text-[13px] leading-snug whitespace-pre-wrap">{message.content}</div>
@@ -43,7 +45,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
         )}
         {message.knowledgeRefs && message.knowledgeRefs.length > 0 && (
           <div className="mt-2 space-y-1">
-            <div className="text-[10px] text-muted-foreground">引用知识库:</div>
+            <div className="text-[10px] text-muted-foreground">{t("chat.knowledgeRef")}</div>
             {message.knowledgeRefs.map((ref: KnowledgeRef) => <KnowledgeRefCard key={ref.id} ref={ref} />)}
           </div>
         )}
@@ -53,7 +55,8 @@ function MessageBubble({ message }: { message: ChatMessage }) {
 }
 
 function ToolCallCard({ toolCall }: { toolCall: ToolCall }) {
-  const statusLabel: Record<string, string> = { pending: "等待中", running: "执行中", completed: "已完成", failed: "失败" };
+  const { t } = useTranslation();
+  const statusLabel: Record<string, string> = { pending: t("chat.toolStatus.pending"), running: t("chat.toolStatus.running"), completed: t("chat.toolStatus.completed"), failed: t("chat.toolStatus.failed") };
   const statusVariant: Record<string, "outline" | "secondary" | "default" | "destructive"> = { pending: "outline", running: "secondary", completed: "default", failed: "destructive" };
 
   return (
@@ -93,16 +96,18 @@ function KnowledgeRefCard({ ref }: { ref: KnowledgeRef }) {
 }
 
 const QUICK_PROMPTS = [
-  { label: "帮我写一段 Rust 异步任务处理代码", prompt: "帮我写一段 Rust 异步任务处理代码，使用 Tokio runtime" },
-  { label: "分析最近的任务执行情况", prompt: "分析最近的任务执行情况，给出优化建议" },
-  { label: "解释 Workflow DAG 调度原理", prompt: "解释 MapleOS Workflow DAG 调度原理" },
-  { label: "推荐一个适合代码生成的模型", prompt: "推荐一个适合代码生成场景的 LLM 模型，考虑成本和效果" },
+  { label: "chat.quickPrompts.rustAsync", prompt: "帮我写一段 Rust 异步任务处理代码，使用 Tokio runtime" },
+  { label: "chat.quickPrompts.analyzeTasks", prompt: "分析最近的任务执行情况，给出优化建议" },
+  { label: "chat.quickPrompts.workflowDag", prompt: "解释 MapleOS Workflow DAG 调度原理" },
+  { label: "chat.quickPrompts.recommendModel", prompt: "推荐一个适合代码生成场景的 LLM 模型，考虑成本和效果" },
 ];
 
 export function ChatPanel() {
+  const { t } = useTranslation();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
+  const [isThinking, setIsThinking] = useState(false);
   const [agents, setAgents] = useState<AgentOption[]>([]);
   const [selectedAgent, setSelectedAgent] = useState<string>("");
   const [currentSession, setCurrentSession] = useState<string>("");
@@ -186,15 +191,19 @@ export function ChatPanel() {
     setMessages((prev) => [...prev, assistantMsg]);
 
     try {
+      const { token } = getAuthState();
       const res = await fetch(`/api/maple/api/chat/stream`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({ message: userMsg.content, agent_id: selectedAgent, session_id: sessionId, model: selectedModel }),
       });
-      if (!res.ok) throw new Error(`请求失败: ${res.status}`);
+      if (!res.ok) throw new Error(t("chat.error.requestFailed", { status: res.status }));
 
       const reader = res.body?.getReader();
-      if (!reader) throw new Error("无响应体");
+      if (!reader) throw new Error(t("chat.error.noResponse"));
 
       const decoder = new TextDecoder();
       let buffer = "";
@@ -223,28 +232,34 @@ export function ChatPanel() {
               setMessages((prev) => {
                 const updated = [...prev];
                 const last = updated[updated.length - 1];
-                if (last.role === "assistant") last.content = accumulated || `LLM 不可用: ${errorMsg}`;
+                if (last.role === "assistant") updated[updated.length - 1] = { ...last, content: accumulated || t("chat.error.llmUnavailable", { error: errorMsg }) };
                 return updated;
               });
               break;
             }
+            if (currentEvent === "thinking") {
+              setIsThinking(true);
+              continue;
+            }
             try {
               const parsed = JSON.parse(dataStr);
               if (parsed.done) {
+                setIsThinking(false);
                 setMessages((prev) => {
                   const updated = [...prev];
                   const last = updated[updated.length - 1];
-                  if (last.role === "assistant") last.content = accumulated;
+                  if (last.role === "assistant") updated[updated.length - 1] = { ...last, content: accumulated };
                   return updated;
                 });
                 break;
               }
               if (parsed.token) {
+                setIsThinking(false);
                 accumulated += parsed.token;
                 setMessages((prev) => {
                   const updated = [...prev];
                   const last = updated[updated.length - 1];
-                  if (last.role === "assistant") last.content = accumulated;
+                  if (last.role === "assistant") updated[updated.length - 1] = { ...last, content: accumulated };
                   return updated;
                 });
               }
@@ -259,7 +274,7 @@ export function ChatPanel() {
       setMessages((prev) => {
         const updated = [...prev];
         const last = updated[updated.length - 1];
-        if (last.role === "assistant") last.content = `错误: ${(err as Error).message}`;
+        if (last.role === "assistant") last.content = `${t("common.failed")}: ${(err as Error).message}`;
         return updated;
       });
     } finally {
@@ -271,7 +286,7 @@ export function ChatPanel() {
     <div className="flex flex-col h-full">
       <div className="h-10 border-b bg-card flex items-center justify-between px-4">
         <div className="flex items-center gap-2">
-          <h2 className="text-[15px] font-semibold">对话</h2>
+          <h2 className="text-[15px] font-semibold">{t("chat.title")}</h2>
           {agents.length > 0 && (
             <select
               value={selectedAgent}
@@ -287,32 +302,33 @@ export function ChatPanel() {
               onChange={(e) => setSelectedModel(e.target.value)}
               className="h-7 rounded border bg-background text-[12px] px-2 font-mono"
             >
-              <option value="auto">自动选择</option>
+              <option value="auto">{t("chat.autoSelect")}</option>
               {models.map((m) => <option key={m} value={m}>{m}</option>)}
             </select>
           )}
         </div>
         <div className="flex items-center gap-2">
-          {isStreaming && <Spinner className="w-4 h-4" />}
-          <Badge variant="outline" className="text-[10px]">{messages.length} 条消息</Badge>
+          {isThinking && <span className="text-[11px] text-muted-foreground animate-pulse">{t("chat.thinking")}</span>}
+          {isStreaming && !isThinking && <Spinner className="w-4 h-4" />}
+          <Badge variant="outline" className="text-[10px]">{t("chat.messageCount", { count: messages.length })}</Badge>
           {sessionList.length > 1 && (
             <select
               value={currentSession}
               onChange={(e) => { const sid = e.target.value; setCurrentSession(sid); loadSessionMessages(sid); }}
               className="h-7 rounded border bg-background text-[11px] px-1"
             >
-              <option value="">新建对话</option>
+              <option value="">{t("chat.newSession")}</option>
               {sessionList.map((s) => <option key={s.id} value={s.id}>{s.title}</option>)}
             </select>
           )}
-          <Button size="sm" variant="ghost" onClick={newSession}>新建对话</Button>
+          <Button size="sm" variant="ghost" onClick={newSession}>{t("chat.newSession")}</Button>
         </div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-4">
         {messages.length === 0 && (
           <div className="space-y-6 mt-8">
-            <div className="text-center text-muted-foreground text-sm">选择 Agent，开始与 MapleOS 协作</div>
+            <div className="text-center text-muted-foreground text-sm">{t("chat.emptyState")}</div>
             <div className="grid grid-cols-2 gap-2 max-w-xl mx-auto">
               {QUICK_PROMPTS.map((qp) => (
                 <button
@@ -320,7 +336,7 @@ export function ChatPanel() {
                   onClick={() => sendMessage(qp.prompt)}
                   className="rounded-lg border p-3 text-[12px] text-left hover:bg-accent hover:shadow-card transition-all"
                 >
-                  {qp.label}
+                  {t(qp.label)}
                 </button>
               ))}
             </div>
@@ -336,12 +352,12 @@ export function ChatPanel() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
-            placeholder={selectedAgent ? `与 ${agents.find((a) => a.id === selectedAgent)?.name ?? selectedAgent} 对话...` : "输入消息..."}
+            placeholder={selectedAgent ? t("chat.placeholder.withAgent", { name: agents.find((a) => a.id === selectedAgent)?.name ?? selectedAgent }) : t("chat.placeholder.default")}
             disabled={isStreaming}
             className="h-8 text-xs"
           />
           <Button size="sm" onClick={() => sendMessage()} disabled={isStreaming || !input.trim()}>
-            {isStreaming ? "发送中..." : "发送"}
+            {isStreaming ? t("chat.sending") : t("chat.send")}
           </Button>
         </div>
       </div>

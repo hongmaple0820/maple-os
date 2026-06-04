@@ -10,6 +10,7 @@ pub trait LlmStream: Send + Sync {
 pub struct StreamChunk {
     pub delta: String,
     pub finish_reason: Option<String>,
+    pub reasoning: bool,
 }
 
 pub struct OpenAiStream {
@@ -39,6 +40,7 @@ impl OpenAiStream {
                     chunks.push(StreamChunk {
                         delta: delta.to_string(),
                         finish_reason: None,
+                        reasoning: false,
                     });
                 }
                 if let Some(fr) = json["choices"][0]["finish_reason"].as_str() {
@@ -51,6 +53,7 @@ impl OpenAiStream {
             chunks.push(StreamChunk {
                 delta: String::new(),
                 finish_reason: Some(fr),
+                reasoning: false,
             });
         }
 
@@ -135,6 +138,7 @@ impl LiveSseStream {
             return Some(Ok(StreamChunk {
                 delta: String::new(),
                 finish_reason: Some("stop".to_string()),
+                reasoning: false,
             }));
         }
         let json: serde_json::Value = serde_json::from_str(data).ok()?;
@@ -144,12 +148,23 @@ impl LiveSseStream {
             return Some(Ok(StreamChunk {
                 delta: delta.to_string(),
                 finish_reason: None,
+                reasoning: false,
+            }));
+        }
+        if let Some(delta) = json["choices"][0]["delta"]["reasoning_content"].as_str()
+            && !delta.is_empty()
+        {
+            return Some(Ok(StreamChunk {
+                delta: delta.to_string(),
+                finish_reason: None,
+                reasoning: true,
             }));
         }
         if let Some(fr) = json["choices"][0]["finish_reason"].as_str() {
             return Some(Ok(StreamChunk {
                 delta: String::new(),
                 finish_reason: Some(fr.to_string()),
+                reasoning: false,
             }));
         }
         None
@@ -170,6 +185,7 @@ impl LiveSseStream {
                     return Some(Ok(StreamChunk {
                         delta: text.to_string(),
                         finish_reason: None,
+                        reasoning: false,
                     }));
                 }
             }
@@ -178,6 +194,7 @@ impl LiveSseStream {
                     return Some(Ok(StreamChunk {
                         delta: String::new(),
                         finish_reason: Some(fr.to_string()),
+                        reasoning: false,
                     }));
                 }
             }

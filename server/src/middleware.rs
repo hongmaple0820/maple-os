@@ -50,7 +50,7 @@ pub async fn rate_limit_middleware(
 ) -> Result<axum::response::Response, axum::http::StatusCode> {
     let path = req.uri().path();
 
-    if path == "/health" || path == "/health/deep" || path.starts_with("/ws/") {
+    if path == "/health" || path == "/health/deep" || path.starts_with("/ws/") || path.starts_with("/webhook/") {
         return Ok(next.run(req).await);
     }
 
@@ -85,6 +85,7 @@ pub async fn auth_middleware(
         || path.starts_with("/ws/")
         || path.starts_with("/api/events")
         || path.starts_with("/api/auth/")
+        || path.starts_with("/webhook/")
     {
         return Ok(next.run(req).await);
     }

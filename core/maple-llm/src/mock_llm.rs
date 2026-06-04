@@ -215,10 +215,12 @@ impl MockLlmStream {
             .map(|chunk| StreamChunk {
                 delta: chunk.iter().collect(),
                 finish_reason: None,
+                reasoning: false,
             })
             .chain(std::iter::once(StreamChunk {
                 delta: String::new(),
                 finish_reason: Some("stop".to_string()),
+                reasoning: false,
             }))
             .collect();
 

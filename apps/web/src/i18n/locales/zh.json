@@ -1,0 +1,614 @@
+{
+  "common": {
+    "appName": "MapleOS",
+    "cancel": "取消",
+    "confirm": "确认",
+    "save": "保存",
+    "reset": "重置",
+    "refresh": "刷新",
+    "search": "搜索",
+    "create": "创建",
+    "delete": "删除",
+    "edit": "编辑",
+    "close": "关闭",
+    "loading": "加载中...",
+    "noData": "暂无数据",
+    "processing": "处理中...",
+    "saving": "保存中...",
+    "saved": "已保存",
+    "failed": "失败",
+    "success": "成功",
+    "version": "版本",
+    "online": "已连接",
+    "offline": "离线"
+  },
+  "nav": {
+    "dashboard": "工作台",
+    "chat": "对话",
+    "workflows": "工作流",
+    "agents": "Agent",
+    "knowledge": "知识库",
+    "collaboration": "协作空间",
+    "scaleEngine": "SCALE 引擎",
+    "plugins": "插件",
+    "settings": "设置"
+  },
+  "auth": {
+    "login": "登录",
+    "register": "注册",
+    "username": "用户名",
+    "password": "密码",
+    "email": "邮箱（可选）",
+    "logout": "登出",
+    "tagline": "Agent Operating System",
+    "noAccount": "还没有账号？",
+    "hasAccount": "已有账号？",
+    "minChars": "至少 6 个字符",
+    "processing": "处理中...",
+    "error": {
+      "loginFailed": "登录失败，请检查用户名和密码",
+      "registerFailed": "注册失败"
+    }
+  },
+  "chat": {
+    "title": "对话",
+    "send": "发送",
+    "sending": "发送中...",
+    "thinking": "思考中...",
+    "newSession": "新建对话",
+    "emptyState": "选择 Agent，开始与 MapleOS 协作",
+    "messageCount": "{{count}} 条消息",
+    "autoSelect": "自动选择",
+    "placeholder": {
+      "default": "输入消息...",
+      "withAgent": "与 {{name}} 对话..."
+    },
+    "role": {
+      "user": "你",
+      "assistant": "助手",
+      "system": "系统",
+      "tool": "工具"
+    },
+    "knowledgeRef": "引用知识库:",
+    "toolStatus": {
+      "pending": "等待中",
+      "running": "执行中",
+      "completed": "已完成",
+      "failed": "失败"
+    },
+    "error": {
+      "requestFailed": "请求失败: {{status}}",
+      "noResponse": "无响应体",
+      "llmUnavailable": "LLM 不可用: {{error}}"
+    },
+    "quickPrompts": {
+      "rustAsync": "帮我写一段 Rust 异步任务处理代码",
+      "analyzeTasks": "分析最近的任务执行情况",
+      "workflowDag": "解释 Workflow DAG 调度原理",
+      "recommendModel": "推荐一个适合代码生成的模型"
+    }
+  },
+  "dashboard": {
+    "title": "工作台",
+    "systemNormal": "系统正常",
+    "serviceOffline": "服务离线",
+    "uptime": "运行 {{time}}",
+    "taskQueue": "任务队列",
+    "quickActions": "快速操作",
+    "systemInfo": "系统信息",
+    "metrics": {
+      "agents": "Agent",
+      "workflows": "工作流",
+      "totalTasks": "任务总数",
+      "running": "运行中"
+    },
+    "status": {
+      "pending": "等待",
+      "running": "运行",
+      "completed": "完成",
+      "failed": "失败",
+      "deadLetter": "死信",
+      "total": "总计"
+    },
+    "actions": {
+      "newWorkflow": "新建工作流",
+      "searchKnowledge": "搜索知识库",
+      "registerAgent": "注册 Agent",
+      "startChat": "开始对话"
+    },
+    "info": {
+      "version": "版本",
+      "uptime": "运行时长",
+      "agentCount": "Agent 数量",
+      "workflowCount": "工作流数量"
+    },
+    "sidebar": {
+      "agents": "Agent",
+      "workflows": "工作流",
+      "tasks": "任务"
+    }
+  },
+  "agent": {
+    "title": "Agent 中心",
+    "refresh": "刷新",
+    "register": "注册",
+    "dispatchTask": "派发任务",
+    "confirmRegister": "确认注册",
+    "dispatch": "派发",
+    "teamTitle": "Agent 团队",
+    "emptyState": "暂无 Agent，点击注册添加",
+    "selectAgent": "选择 Agent",
+    "taskDescription": "任务描述...",
+    "agentName": "Agent 名称...",
+    "model": "模型: {{model}}",
+    "llmModels": "LLM 模型",
+    "skills": "可用技能",
+    "memorySearch": "记忆搜索",
+    "searchMemory": "搜索记忆或写入笔记...",
+    "memoryWrite": "写入",
+    "noMemory": "暂无记忆",
+    "collabEmpty": "选择 Agent 后开始协作对话",
+    "status": {
+      "idle": "空闲",
+      "busy": "忙碌",
+      "offline": "离线"
+    },
+    "messages": {
+      "deregistered": "Agent \"{{id}}\" 已注销",
+      "registered": "Agent \"{{name}}\" 已注册",
+      "dispatched": "任务已派发给 {{agentId}}",
+      "memoryWritten": "记忆已写入: {{key}}",
+      "noResponse": "（无响应）"
+    },
+    "errors": {
+      "deregisterFailed": "注销失败: {{error}}",
+      "registerFailed": "注册失败: {{error}}",
+      "dispatchFailed": "派发失败: {{error}}",
+      "writeFailed": "写入失败: {{error}}",
+      "requestFailed": "请求失败: {{error}}"
+    }
+  },
+  "workflow": {
+    "title": "工作流编辑器",
+    "search": "搜索...",
+    "create": "新建",
+    "closeEdit": "关闭编辑",
+    "createTitle": "工作流名称...",
+    "nodeLibrary": "节点库 — 点击添加",
+    "savedWorkflows": "已保存工作流",
+    "noWorkflows": "暂无工作流",
+    "runWorkflow": "运行此工作流",
+    "executing": "执行中...",
+    "execHistory": "执行历史",
+    "connectMode": "连线模式 — 点击目标节点",
+    "nodeConfig": "节点配置",
+    "nodeName": "节点名称",
+    "modelRoute": "模型路由",
+    "skillId": "技能 ID",
+    "conditionExpr": "条件表达式",
+    "dependsOn": "依赖节点",
+    "noDeps": "无依赖",
+    "clickNodeConfig": "点击节点查看配置",
+    "canvasHint": "点击左侧节点库添加节点，开始编排工作流",
+    "controls": {
+      "altDrag": "Alt+拖拽 = 平移画布",
+      "clickOutput": "点击节点出口 = 连线模式"
+    },
+    "tabs": {
+      "console": "控制台",
+      "history": "历史",
+      "config": "配置",
+      "scheduler": "调度器"
+    },
+    "nodeTypes": {
+      "llm": "LLM 调用",
+      "tool": "工具调用",
+      "condition": "条件判断",
+      "humanApproval": "人工审批",
+      "trigger": "触发器"
+    },
+    "status": {
+      "active": "活跃",
+      "draft": "草稿",
+      "paused": "暂停",
+      "failed": "失败",
+      "running": "运行中",
+      "completed": "已完成",
+      "waiting": "等待"
+    },
+    "log": {
+      "addNode": "[编辑器] 添加节点: {{label}} ({{id}})",
+      "removeNode": "[编辑器] 移除节点: {{id}}",
+      "connect": "[连线] {{from}} → {{to}}",
+      "removeConnect": "[连线] 移除连接",
+      "addConnect": "[连线] 添加连接",
+      "connectHint": "[连线] 点击目标节点完成连接",
+      "selectWf": "[导航] 选择工作流: {{name}}",
+      "execStart": "[执行] 开始执行工作流 {{id}}",
+      "execSubmit": "[执行] 已提交! exec_id={{id}}, 状态={{status}}",
+      "execFailed": "[执行] 失败: {{error}}",
+      "execError": "[执行] 出错: {{error}}",
+      "nodeStart": "[SSE] 节点开始: {{id}}",
+      "nodeComplete": "[SSE] 节点完成: {{id}}",
+      "nodeFail": "[SSE] 节点失败: {{id}} - {{error}}",
+      "wfComplete": "[SSE] 工作流完成: {{id}}",
+      "wfFail": "[SSE] 工作流失败: {{id}} - {{error}}"
+    },
+    "noLogs": "暂无日志",
+    "noExecHistory": "暂无执行历史"
+  },
+  "knowledge": {
+    "title": "知识库",
+    "searchPlaceholder": "搜索知识库...",
+    "upload": "上传",
+    "searchResults": "搜索结果",
+    "indexDocs": "索引文档",
+    "recentIndex": "最近索引",
+    "emptySearch": "输入关键词搜索知识库",
+    "noResults": "未找到相关内容",
+    "uploadHint": "点击上方\"上传\"按钮添加文档到知识库",
+    "supportedTypes": "支持的文档类型",
+    "indexFormat": "索引格式: title + content + source_type，后端使用 BM25 + Embedding 混合检索",
+    "noIndexRecords": "暂无索引记录",
+    "uploadForm": {
+      "title": "文档标题...",
+      "content": "输入要索引的文本内容...",
+      "submitIndex": "提交索引",
+      "indexing": "索引中...",
+      "uploadFile": "上传文件",
+      "uploading": "上传中..."
+    },
+    "sourceTypes": {
+      "document": "文档",
+      "code": "代码",
+      "conversation": "对话",
+      "web": "网页",
+      "note": "笔记"
+    },
+    "errors": {
+      "searchFailed": "搜索失败: {{error}}",
+      "indexFailed": "索引失败: {{error}}",
+      "uploadFailed": "文件上传失败: {{error}}"
+    }
+  },
+  "settings": {
+    "title": "设置",
+    "saveConfig": "保存配置",
+    "saving": "保存中...",
+    "sections": {
+      "models": "模型配置",
+      "sync": "同步配置",
+      "security": "安全配置",
+      "teams": "团队配置"
+    },
+    "models": {
+      "llmTitle": "LLM 模型",
+      "ollamaUrl": "Ollama 地址",
+      "openaiKey": "OpenAI API Key",
+      "defaultModel": "默认模型路由",
+      "autoSelect": "auto (自动选择)",
+      "registeredModels": "已注册模型:",
+      "noModels": "暂无模型 — 请检查 Ollama 地址",
+      "vectorDb": "向量数据库",
+      "qdrantUrl": "Qdrant 地址 (可选)",
+      "qdrantHint": "留空 Qdrant 地址时，系统自动使用内存向量检索模式"
+    },
+    "sync": {
+      "title": "同步配置",
+      "webdavUrl": "WebDAV 地址",
+      "webdavUser": "WebDAV 用户名",
+      "webdavPass": "WebDAV 密码",
+      "strategy": "同步策略: Local-first (CRDT + Automerge)",
+      "strategyDetail": "数据优先存储在本地 SQLite，WebDAV 用于跨设备同步"
+    },
+    "security": {
+      "title": "安全配置",
+      "gatewayMode": "SCALE Gateway 模式",
+      "strict": "strict (严格: 所有工具调用需审批)",
+      "permissive": "permissive (宽松: 仅敏感操作需审批)",
+      "off": "off (关闭: 无拦截)",
+      "localOnly": "数据仅存储本地 (不发送到云端)",
+      "gatewayDesc": "SCALE Gateway: 工具调用拦截、敏感操作检测、暴力破解检测",
+      "localFirst": "本地优先: 数据默认存储在本地 SQLite",
+      "vectorNote": "向量数据库: Qdrant 可选，无地址时自动使用内存模式"
+    },
+    "teams": {
+      "title": "团队配置",
+      "desc": "多用户协作功能 (Phase 3 开发中):",
+      "multiTenant": "- 多租户隔离",
+      "rbac": "- 角色 & 权限管理",
+      "shared": "- 共享工作流 & 知识库",
+      "audit": "- 审计日志",
+      "enterprise": "企业版功能 — Phase 3"
+    },
+    "errors": {
+      "saveFailed": "保存失败: {{error}}"
+    },
+    "automation": {
+      "title": "自动化规则",
+      "addRule": "添加规则",
+      "editRule": "编辑规则",
+      "ruleName": "规则名称",
+      "ruleType": "规则类型",
+      "enabled": "启用",
+      "disabled": "禁用",
+      "types": {
+        "auto_assign": "自动分配",
+        "auto_approve": "自动审批",
+        "rate_limit": "速率限制",
+        "time_window": "时间窗口"
+      },
+      "delete": "删除",
+      "save": "保存",
+      "cancel": "取消"
+    },
+    "agents": {
+      "title": "Agent 管理",
+      "register": "注册新 Agent",
+      "name": "名称",
+      "description": "描述",
+      "model": "模型",
+      "registerBtn": "注册",
+      "delete": "删除",
+      "online": "在线",
+      "offline": "离线"
+    }
+  },
+  "scale": {
+    "title": "SCALE 引擎",
+    "bridgeOnline": "桥接在线",
+    "bridgeOffline": "桥接离线",
+    "toolCount": "{{count}} 工具",
+    "tabs": {
+      "tools": "工具列表",
+      "call": "工具调用",
+      "artifacts": "Artifact 管理"
+    },
+    "bridgeOfflineHint": "SCALE 引擎桥接服务尚未启动。",
+    "bridgeCommand": "node core/scale-engine/bridge-http.mjs",
+    "bridgePorts": "桥接服务监听端口 7790，提供 /health /tools /call /mcp",
+    "callTitle": "调用: {{name}}",
+    "paramsLabel": "参数 (JSON)",
+    "paramsPlaceholder": "输入 JSON 格式参数...",
+    "execute": "执行",
+    "executing": "执行中...",
+    "selectToolHint": "从工具列表中选择一个工具进行调用",
+    "createArtifact": "创建 Artifact",
+    "titlePlaceholder": "标题...",
+    "fsmStates": "FSM 状态流转",
+    "artifactTypes": "Artifact 类型",
+    "callLog": "调用日志",
+    "toolCategories": "工具分类",
+    "bridgePort": "桥接端口: 7790",
+    "backendPort": "Rust 后端端口: 7788",
+    "protocol": "协议: MCP JSON-RPC",
+    "noLogs": "暂无日志",
+    "fsmStateLabels": {
+      "draft": "草稿",
+      "reviewing": "审核中",
+      "approved": "已批准",
+      "inProgress": "进行中",
+      "completed": "已完成",
+      "cancelled": "已取消"
+    },
+    "artifactTypeLabels": {
+      "spec": "规格",
+      "plan": "计划",
+      "task": "任务",
+      "defect": "缺陷",
+      "testCase": "测试用例",
+      "knowledge": "知识"
+    }
+  },
+  "plugin": {
+    "title": "插件市场",
+    "installed": "已安装",
+    "registeredSkills": "已注册技能",
+    "installing": "安装中...",
+    "notInstalled": "未安装",
+    "install": "安装",
+    "uninstall": "卸载",
+    "installLog": "安装日志",
+    "noLogs": "暂无日志",
+    "all": "全部",
+    "log": {
+      "installStart": "[安装] 开始安装 {{name}}...",
+      "installSuccess": "[安装] {{name}} 安装成功",
+      "installFailed": "[安装] {{name}} 安装失败: {{error}}",
+      "uninstallStart": "[卸载] 开始卸载 {{name}}...",
+      "uninstallSuccess": "[卸载] {{name}} 已卸载",
+      "uninstallFailed": "[卸载] {{name}} 卸载失败: {{error}}"
+    },
+    "categories": {
+      "scaleEngine": "SCALE 引擎",
+      "builtinSkills": "内置技能",
+      "pendingInstall": "待安装"
+    },
+    "items": {
+      "scaleCreate": { "name": "SCALE 创建", "desc": "创建 Spec/Plan/Task/Defect 等 Artifact" },
+      "scaleTransition": { "name": "SCALE 状态迁移", "desc": "通过 FSM action 迁移 Artifact 状态" },
+      "scaleList": { "name": "SCALE 列表", "desc": "按类型/状态筛选列出 Artifact" },
+      "scaleShow": { "name": "SCALE 详情", "desc": "查看 Artifact 详情和 FSM 上下文" },
+      "scaleContext": { "name": "SCALE 上下文", "desc": "为当前会话构建 FSM + 知识上下文" },
+      "scaleStats": { "name": "SCALE 统计", "desc": "获取引擎统计数据" },
+      "scaleAvailableActions": { "name": "SCALE 可用动作", "desc": "获取 Artifact 可执行的 FSM 动作" },
+      "webSearch": { "name": "Web 搜索", "desc": "搜索引擎搜索能力" },
+      "codeExecute": { "name": "代码执行", "desc": "沙箱内执行代码片段" },
+      "fileOps": { "name": "文件操作", "desc": "读写文件系统" },
+      "echo": { "name": "Echo 测试", "desc": "返回输入的测试技能" },
+      "httpRequest": { "name": "HTTP 请求", "desc": "发起 HTTP 请求" },
+      "playwright": { "name": "Playwright 浏览器", "desc": "浏览器自动化控制" },
+      "pdf": { "name": "PDF 处理", "desc": "读取和解析 PDF 文档" },
+      "vercelDeploy": { "name": "Vercel 部署", "desc": "一键部署到 Vercel" }
+    }
+  },
+  "collab": {
+    "workspace": "工作空间",
+    "projectName": "MapleOS 开发",
+    "searchPlaceholder": "搜索任务、成员、讨论...",
+    "tabs": {
+      "overview": "概览",
+      "kanban": "任务看板",
+      "team": "团队",
+      "discussions": "讨论",
+      "settings": "设置"
+    },
+    "overview": {
+      "recentActivity": "最近动态",
+      "viewAll": "查看全部",
+      "projectOverview": "项目概览",
+      "progress": "项目进度",
+      "dueDate": "截止日期",
+      "daysLeft": "剩余 {{days}} 天",
+      "generateReport": "生成进度报告"
+    },
+    "stats": {
+      "todo": "待办任务",
+      "inProgress": "进行中",
+      "done": "已完成",
+      "review": "审核中"
+    },
+    "kanban": {
+      "filter": "筛选",
+      "thisWeek": "本周",
+      "newTask": "新建任务",
+      "title": "任务看板",
+      "taskCount": "{{count}} 个任务",
+      "addCard": "添加卡片",
+      "columns": {
+        "todo": "待办",
+        "inProgress": "进行中",
+        "review": "审核中",
+        "done": "已完成"
+      }
+    },
+    "taskDetail": {
+      "noDescription": "暂无描述",
+      "assignee": "负责人:",
+      "unassigned": "未分配",
+      "dueDate": "截止日期:",
+      "notSet": "未设置",
+      "priority": "优先级:",
+      "taskDiscussion": "任务讨论",
+      "addComment": "添加评论...",
+      "title": "标题",
+      "description": "描述",
+      "status": "状态",
+      "assigneeName": "负责人",
+      "tags": "标签",
+      "dueDateField": "截止日期",
+      "deleteTask": "删除任务",
+      "cancel": "取消",
+      "save": "保存",
+      "priorityLow": "低",
+      "priorityMedium": "中",
+      "priorityHigh": "高",
+      "assigneePlaceholder": "输入负责人名称...",
+      "tagsPlaceholder": "用逗号分隔多个标签...",
+      "titlePlaceholder": "任务标题...",
+      "descPlaceholder": "任务描述（可选）..."
+    },
+    "comments": {
+      "title": "讨论区",
+      "placeholder": "发表你的看法...",
+      "count": "{{count}} 条讨论",
+      "attach": "附件",
+      "mention": "提及",
+      "tag": "标签",
+      "reply": "回复",
+      "justNow": "刚刚",
+      "me": "我"
+    },
+    "online": {
+      "title": "团队成员",
+      "count": "{{count}} 人在线",
+      "lastActive": "上次活跃:",
+      "moreMembers": "还有 {{count}} 位成员",
+      "invite": "邀请成员",
+      "videoCall": "视频会议",
+      "status": {
+        "online": "在线",
+        "away": "离开",
+        "busy": "忙碌",
+        "offline": "离线"
+      }
+    },
+    "settings": {
+      "title": "工作区设置",
+      "name": "工作区名称",
+      "description": "描述",
+      "maxAgents": "最大 Agent 数",
+      "autoApprove": "自动审批",
+      "kbEnabled": "启用知识库",
+      "save": "保存设置",
+      "dangerZone": "危险区域",
+      "deleteWorkspace": "删除工作区",
+      "deleteWarning": "此操作不可撤销，所有数据将被永久删除。",
+      "deleteConfirm": "确定要删除此工作区吗？此操作不可撤销。"
+    },
+    "members": {
+      "title": "工作区成员",
+      "count": "{{count}} 人",
+      "addMember": "+ 添加成员",
+      "memberName": "成员名称",
+      "human": "人类",
+      "agent": "Agent",
+      "add": "添加",
+      "remove": "移除",
+      "empty": "暂无成员"
+    },
+    "notifications": {
+      "title": "通知",
+      "markAllRead": "全部已读",
+      "empty": "暂无通知"
+    },
+    "chart": {
+      "taskDistribution": "任务分布",
+      "noData": "暂无数据"
+    }
+  },
+  "command": {
+    "searchPlaceholder": "输入命令或搜索...",
+    "noResults": "未找到匹配命令",
+    "openHint": "⌘K 打开",
+    "closeHint": "ESC 关闭",
+    "executeHint": "Enter 执行",
+    "categories": {
+      "navigation": "导航",
+      "action": "操作"
+    },
+    "commands": {
+      "gotoDashboard": "前往工作台",
+      "gotoWorkflow": "前往工作流",
+      "gotoAgent": "前往 Agent 中心",
+      "gotoKnowledge": "前往知识库",
+      "startChat": "开始对话",
+      "createWorkflow": "新建工作流",
+      "runRecentWorkflow": "运行最近工作流",
+      "searchKnowledge": "搜索知识库",
+      "uploadToKnowledge": "上传文档到知识库",
+      "registerAgent": "注册新 Agent",
+      "viewScaleStats": "查看 SCALE 统计"
+    }
+  },
+  "language": {
+    "zh": "中文",
+    "en": "English",
+    "switch": "切换语言"
+  },
+  "mode": {
+    "selectTitle": "选择运行模式",
+    "local": "本地模式",
+    "localDesc": "无需登录，启动局域网服务器，设备 ID 自动创建临时账号",
+    "cloud": "云端模式",
+    "cloudDesc": "需要登录，连接云端服务器（即将开放）",
+    "comingSoon": "即将开放",
+    "startLocal": "启动本地模式",
+    "lanServer": "局域网服务器",
+    "lanServerRunning": "局域网服务器运行中",
+    "lanServerStarting": "正在启动局域网服务器...",
+    "deviceId": "设备 ID",
+    "tempAccount": "临时账号",
+    "connectedClients": "已连接客户端"
+  }
+}

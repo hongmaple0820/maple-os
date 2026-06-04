@@ -1,14 +1,16 @@
 "use client";
 
 import { useState } from "react";
-import { Button, Badge } from "@mapleos/ui";
+import { Button } from "@mapleos/ui";
 import { mapleApi, setAuthState } from "@/lib/api";
+import { useTranslation } from "react-i18next";
 
 interface AuthPageProps {
   onAuth: () => void;
 }
 
 export function AuthPage({ onAuth }: AuthPageProps) {
+  const { t } = useTranslation();
   const [mode, setMode] = useState<"login" | "register">("login");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -22,7 +24,7 @@ export function AuthPage({ onAuth }: AuthPageProps) {
     setLoading(true);
 
     try {
-type AuthResponse = { token?: string; error?: string; user_id?: string; username?: string; role?: string; refresh_token?: string };
+      type AuthResponse = { token?: string; error?: string; user_id?: string; username?: string; role?: string; refresh_token?: string };
 
       if (mode === "register") {
         const data = await mapleApi<AuthResponse>(
@@ -65,7 +67,7 @@ type AuthResponse = { token?: string; error?: string; user_id?: string; username
         onAuth();
       }
     } catch (err) {
-      setError(mode === "login" ? "Login failed, check username and password" : "Registration failed");
+      setError(mode === "login" ? t("auth.error.loginFailed") : t("auth.error.registerFailed"));
     } finally {
       setLoading(false);
     }
@@ -78,8 +80,8 @@ type AuthResponse = { token?: string; error?: string; user_id?: string; username
           <svg className="w-10 h-10 mx-auto text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
           </svg>
-          <h1 className="text-xl font-bold">MapleOS</h1>
-          <p className="text-sm text-muted-foreground">Agent Operating System</p>
+          <h1 className="text-xl font-bold">{t("common.appName")}</h1>
+          <p className="text-sm text-muted-foreground">{t("auth.tagline")}</p>
         </div>
 
         <div className="flex border rounded-md">
@@ -89,7 +91,7 @@ type AuthResponse = { token?: string; error?: string; user_id?: string; username
               mode === "login" ? "bg-primary text-primary-foreground" : "hover:bg-accent"
             }`}
           >
-            Login
+            {t("auth.login")}
           </button>
           <button
             onClick={() => { setMode("register"); setError(""); }}
@@ -97,13 +99,13 @@ type AuthResponse = { token?: string; error?: string; user_id?: string; username
               mode === "register" ? "bg-primary text-primary-foreground" : "hover:bg-accent"
             }`}
           >
-            Register
+            {t("auth.register")}
           </button>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-xs font-medium text-muted-foreground mb-1">Username</label>
+            <label className="block text-xs font-medium text-muted-foreground mb-1">{t("auth.username")}</label>
             <input
               type="text"
               value={username}
@@ -116,7 +118,7 @@ type AuthResponse = { token?: string; error?: string; user_id?: string; username
 
           {mode === "register" && (
             <div>
-              <label className="block text-xs font-medium text-muted-foreground mb-1">Email (Optional)</label>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">{t("auth.email")}</label>
               <input
                 type="email"
                 value={email}
@@ -127,7 +129,7 @@ type AuthResponse = { token?: string; error?: string; user_id?: string; username
           )}
 
           <div>
-            <label className="block text-xs font-medium text-muted-foreground mb-1">Password</label>
+            <label className="block text-xs font-medium text-muted-foreground mb-1">{t("auth.password")}</label>
             <input
               type="password"
               value={password}
@@ -137,7 +139,7 @@ type AuthResponse = { token?: string; error?: string; user_id?: string; username
               minLength={mode === "register" ? 6 : undefined}
             />
             {mode === "register" && (
-              <p className="text-[11px] text-muted-foreground mt-1">Min 6 characters</p>
+              <p className="text-[11px] text-muted-foreground mt-1">{t("auth.minChars")}</p>
             )}
           </div>
 
@@ -148,18 +150,18 @@ type AuthResponse = { token?: string; error?: string; user_id?: string; username
           )}
 
           <Button type="submit" className="w-full" disabled={loading}>
-            {loading ? "Processing..." : mode === "login" ? "Login" : "Register"}
+            {loading ? t("auth.processing") : mode === "login" ? t("auth.login") : t("auth.register")}
           </Button>
         </form>
 
         <div className="text-center text-[11px] text-muted-foreground">
-          {mode === "login" ? "Don't have an account? " : "Already have an account? "}
+          {mode === "login" ? t("auth.noAccount") : t("auth.hasAccount")}
           <button
             type="button"
             className="text-primary hover:underline"
             onClick={() => setMode(mode === "login" ? "register" : "login")}
           >
-            {mode === "login" ? "Register" : "Login"}
+            {mode === "login" ? t("auth.register") : t("auth.login")}
           </button>
         </div>
       </div>

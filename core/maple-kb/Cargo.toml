@@ -18,6 +18,7 @@ maple-llm = { workspace = true }
 maple-engine = { workspace = true }
 async-trait = { workspace = true }
 qdrant-client = "1.13"
+pdf-extract = { workspace = true }
 
 [features]
 default = []

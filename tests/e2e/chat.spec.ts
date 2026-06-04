@@ -12,7 +12,8 @@ test.describe("Chat", () => {
   });
 
   test("can type message in input", async ({ apiMock }) => {
-    const input = apiMock.locator("input[type='text'], textarea").first();
+    const input = apiMock.locator("input[placeholder*='消息'], input[placeholder*='对话'], textarea[placeholder*='消息']").first();
+    await input.waitFor({ state: "visible", timeout: 5000 });
     await input.fill("Hello test message");
     await expect(input).toHaveValue("Hello test message");
   });

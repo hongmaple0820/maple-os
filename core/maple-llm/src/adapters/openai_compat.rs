@@ -398,6 +398,7 @@ impl OpenAiSseStream {
                     chunks.push(StreamChunk {
                         delta: delta.to_string(),
                         finish_reason: None,
+                        reasoning: false,
                     });
                 }
                 if let Some(fr) = json["choices"][0]["finish_reason"].as_str() {
@@ -410,6 +411,7 @@ impl OpenAiSseStream {
             chunks.push(StreamChunk {
                 delta: String::new(),
                 finish_reason: Some(fr),
+                reasoning: false,
             });
         }
 

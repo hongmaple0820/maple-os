@@ -18,6 +18,7 @@ import {
   X
 } from "lucide-react";
 import { mapleApi } from "@/lib/api";
+import { useTranslation } from "react-i18next";
 
 export interface Comment {
   id: string;
@@ -126,28 +127,38 @@ const getFileIcon = (type: string) => {
 export function Comments({
   comments = defaultComments,
   taskId,
-  title = "讨论区",
-  placeholder = "发表你的看法...",
+  title,
+  placeholder,
   onSendComment,
   onReply,
   onEdit,
   onDelete,
   onLike,
 }: CommentsProps) {
+  const { t, i18n } = useTranslation();
+  const resolvedTitle = title ?? t("collab.comments.title");
+  const resolvedPlaceholder = placeholder ?? t("collab.comments.placeholder");
   const [commentList, setCommentList] = useState<Comment[]>(comments);
 
   useEffect(() => {
     if (!taskId) return;
-    mapleApi<{ comments: Array<{ id: string; parent_id?: string; author: { name: string; avatar?: string; role?: string }; content: string; likes: number; created_at: number }> }>(
+    mapleApi<{ comments: Array<{ id: string; author: { name: string; avatar?: string; role?: string }; content: string; likes: number; created_at: number; replies?: Array<{ id: string; author: { name: string; avatar?: string; role?: string }; content: string; likes: number; created_at: number }> }> }>(
       `/api/board/tasks/${taskId}/comments`
     ).then((res) => {
+      const locale = i18n.language?.startsWith("zh") ? "zh-CN" : "en-US";
       const mapped: Comment[] = (res.comments ?? []).map((c) => ({
         id: c.id,
         author: c.author,
         content: c.content,
-        timestamp: new Date(c.created_at * 1000).toLocaleString("zh-CN"),
+        timestamp: new Date(c.created_at * 1000).toLocaleString(locale),
         likes: c.likes,
-        replies: [],
+        replies: (c.replies ?? []).map((r) => ({
+          id: r.id,
+          author: r.author,
+          content: r.content,
+          timestamp: new Date(r.created_at * 1000).toLocaleString(locale),
+          likes: r.likes,
+        })),
       }));
       setCommentList(mapped);
     }).catch(() => {});
@@ -168,12 +179,12 @@ export function Comments({
     const comment: Comment = {
       id: `comment-${Date.now()}`,
       author: {
-        name: "我",
+        name: t("collab.comments.me"),
         avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=me",
         role: "产品经理",
       },
       content: newComment,
-      timestamp: "刚刚",
+      timestamp: t("collab.comments.justNow"),
       likes: 0,
     };
 
@@ -191,19 +202,19 @@ export function Comments({
 
   const handleReply = (commentId: string) => {
     if (!replyContent.trim()) return;
-    
+
     const reply: Comment = {
       id: `reply-${Date.now()}`,
       author: {
-        name: "我",
+        name: t("collab.comments.me"),
         avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=me",
         role: "产品经理",
       },
       content: replyContent,
-      timestamp: "刚刚",
+      timestamp: t("collab.comments.justNow"),
       likes: 0,
     };
-    
+
     setCommentList(
       commentList.map((c) =>
         c.id === commentId
@@ -214,11 +225,18 @@ export function Comments({
     setReplyContent("");
     setReplyTo(null);
     onReply?.(commentId, replyContent);
+
+    if (taskId) {
+      mapleApi("/api/board/comments", {
+        method: "POST",
+        body: { task_id: taskId, parent_id: commentId, author_name: reply.author.name, author_avatar: reply.author.avatar, author_role: reply.author.role, content: replyContent },
+      }).catch(() => {});
+    }
   };
 
   const handleEdit = (commentId: string) => {
     if (!editContent.trim()) return;
-    
+
     setCommentList(
       commentList.map((c) =>
         c.id === commentId ? { ...c, content: editContent } : c
@@ -227,6 +245,11 @@ export function Comments({
     setEditingId(null);
     setEditContent("");
     onEdit?.(commentId, editContent);
+
+    mapleApi(`/api/board/comments/${commentId}`, {
+      method: "PUT",
+      body: { content: editContent },
+    }).catch(() => {});
   };
 
   const handleDelete = (commentId: string) => {
@@ -263,9 +286,9 @@ export function Comments({
       <div className="px-6 py-4 border-b border-border">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <h2 className="text-lg font-semibold">{title}</h2>
+            <h2 className="text-lg font-semibold">{resolvedTitle}</h2>
             <span className="px-2.5 py-1 bg-muted rounded-full text-xs font-medium text-muted-foreground">
-              {commentList.length} 条讨论
+              {t("collab.comments.count", { count: commentList.length })}
             </span>
           </div>
           <button className="p-1.5 text-muted-foreground hover:text-foreground rounded-lg hover:bg-muted transition-colors">
@@ -279,7 +302,7 @@ export function Comments({
         <div className="flex gap-3">
           <img
             src="https://api.dicebear.com/7.x/avataaars/svg?seed=me"
-            alt="我"
+            alt={t("collab.comments.me")}
             className="w-10 h-10 rounded-full bg-muted shrink-0"
           />
           <div className="flex-1">
@@ -288,7 +311,7 @@ export function Comments({
                 ref={textareaRef}
                 value={newComment}
                 onChange={(e) => setNewComment(e.target.value)}
-                placeholder={placeholder}
+                placeholder={resolvedPlaceholder}
                 rows={3}
                 className="w-full px-4 py-3 bg-muted/50 border border-border rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary text-sm"
               />
@@ -320,15 +343,15 @@ export function Comments({
               <div className="flex items-center gap-2">
                 <button className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors">
                   <Paperclip className="w-4 h-4" />
-                  附件
+                  {t("collab.comments.attach")}
                 </button>
                 <button className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors">
                   <AtSign className="w-4 h-4" />
-                  提及
+                  {t("collab.comments.mention")}
                 </button>
                 <button className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors">
                   <Hash className="w-4 h-4" />
-                  标签
+                  {t("collab.comments.tag")}
                 </button>
               </div>
               <button
@@ -337,7 +360,7 @@ export function Comments({
                 className="flex items-center gap-1.5 px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <Send className="w-4 h-4" />
-                发送
+                {t("chat.send")}
               </button>
             </div>
           </div>
@@ -350,7 +373,7 @@ export function Comments({
           <div key={comment.id} className="group">
             <div className="flex gap-3">
               <img
-                src={comment.author.avatar}
+                src={comment.author.avatar ?? `https://api.dicebear.com/7.x/avataaars/svg?seed=${comment.author.name}`}
                 alt={comment.author.name}
                 className="w-10 h-10 rounded-full bg-muted shrink-0"
               />
@@ -375,7 +398,7 @@ export function Comments({
                         className="flex items-center gap-1 px-3 py-1 bg-primary text-primary-foreground rounded text-xs font-medium"
                       >
                         <Check className="w-3 h-3" />
-                        保存
+                        {t("common.save")}
                       </button>
                       <button
                         onClick={() => {
@@ -385,7 +408,7 @@ export function Comments({
                         className="flex items-center gap-1 px-3 py-1 border border-border rounded text-xs font-medium hover:bg-muted"
                       >
                         <X className="w-3 h-3" />
-                        取消
+                        {t("common.cancel")}
                       </button>
                     </div>
                   </div>
@@ -438,7 +461,7 @@ export function Comments({
                         }`}
                       >
                         <Reply className="w-3.5 h-3.5" />
-                        回复
+                        {t("collab.comments.reply")}
                       </button>
                       <button
                         onClick={() => {
@@ -448,14 +471,14 @@ export function Comments({
                         className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors opacity-0 group-hover:opacity-100"
                       >
                         <Edit2 className="w-3.5 h-3.5" />
-                        编辑
+                        {t("common.edit")}
                       </button>
                       <button
                         onClick={() => handleDelete(comment.id)}
                         className="flex items-center gap-1 text-xs text-muted-foreground hover:text-destructive transition-colors opacity-0 group-hover:opacity-100"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
-                        删除
+                        {t("common.delete")}
                       </button>
                     </div>
 
@@ -464,14 +487,14 @@ export function Comments({
                       <div className="mt-3 flex gap-2">
                         <img
                           src="https://api.dicebear.com/7.x/avataaars/svg?seed=me"
-                          alt="我"
+                          alt={t("collab.comments.me")}
                           className="w-8 h-8 rounded-full bg-muted shrink-0"
                         />
                         <div className="flex-1">
                           <textarea
                             value={replyContent}
                             onChange={(e) => setReplyContent(e.target.value)}
-                            placeholder={`回复 ${comment.author.name}...`}
+                            placeholder={`${t("collab.comments.reply")} ${comment.author.name}...`}
                             rows={2}
                             className="w-full px-3 py-2 bg-muted border border-border rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary text-sm"
                           />
@@ -480,7 +503,7 @@ export function Comments({
                               onClick={() => setReplyTo(null)}
                               className="px-3 py-1 text-xs text-muted-foreground hover:text-foreground"
                             >
-                              取消
+                              {t("common.cancel")}
                             </button>
                             <button
                               onClick={() => handleReply(comment.id)}
@@ -488,7 +511,7 @@ export function Comments({
                               className="flex items-center gap-1 px-3 py-1 bg-primary text-primary-foreground rounded text-xs font-medium disabled:opacity-50"
                             >
                               <Send className="w-3 h-3" />
-                              回复
+                              {t("collab.comments.reply")}
                             </button>
                           </div>
                         </div>

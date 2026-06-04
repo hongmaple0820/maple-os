@@ -58,6 +58,7 @@ urlencoding = "2"
 bcrypt = "0.16"
 prometheus = "0.13"
 tiktoken-rs = "0.11"
+pdf-extract = "0.7"
 
 maple-engine = { path = "core/maple-engine" }
 maple-llm = { path = "core/maple-llm" }

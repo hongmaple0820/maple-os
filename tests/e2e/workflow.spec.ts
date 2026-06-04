@@ -19,7 +19,8 @@ test.describe("Workflow", () => {
   test("can add node to canvas", async ({ apiMock }) => {
     const llmBtn = apiMock.locator("button >> text=LLM 调用");
     await llmBtn.click();
-    const node = apiMock.locator("[data-testid='wf-node'], .absolute.group").first();
-    await expect(node).toBeVisible({ timeout: 3000 });
+    // React Flow renders nodes as divs with role="group" or inside the viewport
+    const node = apiMock.locator(".react-flow__node").first();
+    await expect(node).toBeVisible({ timeout: 5000 });
   });
 });

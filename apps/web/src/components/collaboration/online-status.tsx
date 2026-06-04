@@ -14,6 +14,8 @@ import {
   MessageCircle,
   Mail
 } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import { mapleApi } from "@/lib/api";
 
 export interface UserStatus {
   id: string;
@@ -85,21 +87,54 @@ const defaultUsers: UserStatus[] = [
 ];
 
 const statusConfig = {
-  online: { color: "bg-emerald-500", text: "text-emerald-600", label: "在线", icon: Zap },
-  away: { color: "bg-amber-500", text: "text-amber-600", label: "离开", icon: Clock },
-  busy: { color: "bg-rose-500", text: "text-rose-600", label: "忙碌", icon: Briefcase },
-  offline: { color: "bg-slate-400", text: "text-slate-500", label: "离线", icon: Moon },
+  online: { color: "bg-emerald-500", text: "text-emerald-600", icon: Zap },
+  away: { color: "bg-amber-500", text: "text-amber-600", icon: Clock },
+  busy: { color: "bg-rose-500", text: "text-rose-600", icon: Briefcase },
+  offline: { color: "bg-slate-400", text: "text-slate-500", icon: Moon },
 };
 
-export function OnlineStatus({ users = defaultUsers, maxDisplay = 5, showActivity = true }: OnlineStatusProps) {
-  const [onlineCount, setOnlineCount] = useState(0);
+const statusLabelKeys: Record<string, string> = {
+  online: "collab.online.status.online",
+  away: "collab.online.status.away",
+  busy: "collab.online.status.busy",
+  offline: "collab.online.status.offline",
+};
+
+function timeAgo(timestamp: number): string {
+  const seconds = Math.floor(Date.now() / 1000 - timestamp);
+  if (seconds < 60) return `${seconds}秒前`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}分钟前`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}小时前`;
+  return `${Math.floor(seconds / 86400)}天前`;
+}
+
+export function OnlineStatus({ users: propUsers, maxDisplay = 5, showActivity = true }: OnlineStatusProps) {
+  const { t } = useTranslation();
+  const [agentUsers, setAgentUsers] = useState<UserStatus[]>([]);
   const [currentStatus, setCurrentStatus] = useState<UserStatus["status"]>("online");
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
 
   useEffect(() => {
-    const online = users.filter((u) => u.status === "online").length;
-    setOnlineCount(online);
-  }, [users]);
+    if (propUsers) return; // Don't fetch if users were provided as props
+    mapleApi<{ agents: Array<{ id: string; name: string; status: string; is_online: boolean; last_heartbeat?: number; description?: string }> }>("/api/agents/status")
+      .then((res) => {
+        const mapped: UserStatus[] = (res.agents || []).map((a, i) => ({
+          id: a.id,
+          name: a.name || a.id,
+          avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${a.id}`,
+          status: a.is_online ? "online" : (a.status === "Busy" ? "busy" : "offline"),
+          activity: a.description || undefined,
+          lastSeen: a.last_heartbeat ? timeAgo(a.last_heartbeat) : undefined,
+          role: "Agent",
+          isCurrentUser: i === 0,
+        }));
+        setAgentUsers(mapped);
+      })
+      .catch(() => {});
+  }, [propUsers]);
+
+  const users = propUsers ?? agentUsers;
+  const onlineCount = users.filter((u) => u.status === "online").length;
 
   const currentUser = users.find((u) => u.isCurrentUser);
   const otherUsers = users.filter((u) => !u.isCurrentUser);
@@ -116,10 +151,10 @@ export function OnlineStatus({ users = defaultUsers, maxDisplay = 5, showActivit
       <div className="px-6 py-4 border-b border-border">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <h2 className="text-lg font-semibold">团队成员</h2>
+            <h2 className="text-lg font-semibold">{t("collab.online.title")}</h2>
             <span className="flex items-center gap-1.5 px-2.5 py-1 bg-emerald-50 rounded-full text-xs font-medium text-emerald-600">
               <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-              {onlineCount} 人在线
+              {t("collab.online.count", { count: onlineCount })}
             </span>
           </div>
           <button className="p-1.5 text-muted-foreground hover:text-foreground rounded-lg hover:bg-muted transition-colors">
@@ -152,7 +187,7 @@ export function OnlineStatus({ users = defaultUsers, maxDisplay = 5, showActivit
                     className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
                   >
                     <span className={`w-2 h-2 rounded-full ${statusConfig[currentStatus].color}`} />
-                    {statusConfig[currentStatus].label}
+                    {t(statusLabelKeys[currentStatus])}
                   </button>
                   {isDropdownOpen && (
                     <div className="absolute top-full left-0 mt-1 py-1 bg-card border border-border rounded-lg shadow-lg z-10 min-w-[120px]">
@@ -163,7 +198,7 @@ export function OnlineStatus({ users = defaultUsers, maxDisplay = 5, showActivit
                           className="w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-muted transition-colors"
                         >
                           <span className={`w-2 h-2 rounded-full ${config.color}`} />
-                          <span>{config.label}</span>
+                          <span>{t(statusLabelKeys[status])}</span>
                         </button>
                       ))}
                     </div>
@@ -206,7 +241,7 @@ export function OnlineStatus({ users = defaultUsers, maxDisplay = 5, showActivit
                         <span className="truncate">{user.activity}</span>
                       </>
                     ) : (
-                      <span>上次活跃: {user.lastSeen}</span>
+                      <span>{t("collab.online.lastActive")} {user.lastSeen}</span>
                     )}
                   </div>
                 )}
@@ -227,7 +262,7 @@ export function OnlineStatus({ users = defaultUsers, maxDisplay = 5, showActivit
         {remainingCount > 0 && (
           <button className="w-full mt-2 py-2 flex items-center justify-center gap-2 text-sm text-muted-foreground hover:text-foreground hover:bg-muted rounded-lg transition-colors">
             <Users className="w-4 h-4" />
-            还有 {remainingCount} 位成员
+            {t("collab.online.moreMembers", { count: remainingCount })}
           </button>
         )}
       </div>
@@ -237,11 +272,11 @@ export function OnlineStatus({ users = defaultUsers, maxDisplay = 5, showActivit
         <div className="flex items-center gap-2">
           <button className="flex-1 flex items-center justify-center gap-1.5 py-2 px-3 bg-primary text-primary-foreground rounded-lg text-sm font-medium hover:opacity-90 transition-opacity">
             <Users className="w-4 h-4" />
-            邀请成员
+            {t("collab.online.invite")}
           </button>
           <button className="flex-1 flex items-center justify-center gap-1.5 py-2 px-3 border border-border rounded-lg text-sm font-medium hover:bg-muted transition-colors">
             <Video className="w-4 h-4" />
-            视频会议
+            {t("collab.online.videoCall")}
           </button>
         </div>
       </div>

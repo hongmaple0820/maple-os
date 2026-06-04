@@ -68,6 +68,23 @@ impl GroupRulesEngine {
         self.rules.len() < len_before
     }
 
+    pub fn list_rules(&self) -> Vec<GroupRule> {
+        self.rules.clone()
+    }
+
+    pub fn get_rule(&self, rule_id: &str) -> Option<GroupRule> {
+        self.rules.iter().find(|r| r.id == rule_id).cloned()
+    }
+
+    pub fn update_rule(&mut self, rule_id: &str, updated: GroupRule) -> bool {
+        if let Some(rule) = self.rules.iter_mut().find(|r| r.id == rule_id) {
+            *rule = updated;
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn evaluate(&self, context: &RuleContext) -> Vec<RuleMatch> {
         self.rules.iter()
             .filter(|r| r.enabled && self.matches(r, context))

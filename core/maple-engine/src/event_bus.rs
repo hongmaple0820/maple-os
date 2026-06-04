@@ -20,6 +20,11 @@ pub enum Event {
     ApprovalRequested { request_id: String, workflow_id: String, node_id: String },
     ApprovalCompleted { request_id: String, approved: bool },
     TaskProgress { task_id: String, progress: u32, output: String },
+    TaskCreated { task_id: String, title: String, status: String },
+    TaskUpdated { task_id: String, title: String, status: String },
+    TaskDeleted { task_id: String },
+    CommentCreated { comment_id: String, task_id: String, author: String },
+    ActivityLogged { actor: String, action: String, target: Option<String> },
 }
 
 impl Event {
@@ -37,6 +42,11 @@ impl Event {
             Event::ApprovalRequested { .. } => "approval.requested",
             Event::ApprovalCompleted { .. } => "approval.completed",
             Event::TaskProgress { .. } => "task.progress",
+            Event::TaskCreated { .. } => "task.created",
+            Event::TaskUpdated { .. } => "task.updated",
+            Event::TaskDeleted { .. } => "task.deleted",
+            Event::CommentCreated { .. } => "comment.created",
+            Event::ActivityLogged { .. } => "activity.logged",
         }.to_string()
     }
 }
@@ -91,6 +101,11 @@ impl EventBus {
             "approval.requested",
             "approval.completed",
             "task.progress",
+            "task.created",
+            "task.updated",
+            "task.deleted",
+            "comment.created",
+            "activity.logged",
         ] {
             self.subscribers
                 .entry(event_type.to_string())

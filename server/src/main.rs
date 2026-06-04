@@ -22,6 +22,7 @@ use maple_agent::registry::AgentRegistry;
 use maple_agent::security::SecurityManager;
 use maple_agent::session_store::SessionStore;
 use maple_agent::tool_use_context::ToolUseContext;
+use maple_collab::group_rules::{GroupRulesEngine, RuleContext};
 use maple_collab::workspace::WorkspaceManager;
 use maple_engine::checkpoint::CheckpointManager;
 use maple_engine::event_bus::EventBus;
@@ -91,17 +92,36 @@ async fn chat_handler(
     let session_id = req
         .session_id
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let evolver = state.evolver.clone();
+    let user_msg = req.message.clone();
 
     let _ = state
         .session_store
         .save_message(&session_id, "user", &req.message, None, None)
         .await;
 
-    let route_key = if req.model != "auto" {
-        req.model.as_str()
+    // Evaluate group rules for auto-assign
+    let mut route_key = if req.model != "auto" {
+        req.model.to_string()
     } else {
-        req.agent_id.as_deref().unwrap_or("default")
+        req.agent_id.clone().unwrap_or_else(|| "default".to_string())
     };
+    {
+        let rules = state.group_rules.read().await;
+        let ctx = RuleContext {
+            message: req.message.clone(),
+            sender_id: session_id.clone(),
+            sender_type: "user".to_string(),
+            sender_role: "user".to_string(),
+        };
+        for m in rules.evaluate(&ctx) {
+            if let maple_collab::group_rules::RuleAction::AssignToAgent { agent_id } = m.action {
+                tracing::info!(agent_id = %agent_id, rule = %m.rule.name, "Group rule auto-assigned agent");
+                route_key = agent_id;
+                break;
+            }
+        }
+    }
 
     let mut enhanced_message = req.message.clone();
     let mut kb_sources: Vec<serde_json::Value> = Vec::new();
@@ -156,7 +176,7 @@ async fn chat_handler(
         _ => {}
     }
 
-    let llm_request = maple_llm::request::LlmRequest::new(enhanced_message, route_key);
+    let llm_request = maple_llm::request::LlmRequest::new(enhanced_message, &route_key);
 
     let adapter = match state.llm_router.route(&llm_request).await {
         Ok(a) => a,
@@ -187,6 +207,16 @@ async fn chat_handler(
                         response.tool_calls.as_deref(),
                     )
                     .await;
+                // Fire-and-forget: extract knowledge from valuable conversations
+                let evolver_bg = evolver.clone();
+                let sid_bg = session_id.clone();
+                let user_bg = user_msg.clone();
+                let assistant_bg = response.content.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = evolver_bg.on_chat_complete(&sid_bg, &user_bg, &assistant_bg).await {
+                        tracing::warn!(error = %e, "Chat knowledge precipitation failed");
+                    }
+                });
                 Ok(axum::Json(ChatResponse {
                     reply: response.content,
                     model: Some(model_name),
@@ -310,6 +340,17 @@ async fn chat_handler(
                 let _ = memory_mgr
                     .extract_from_turn(&req.message, &summary.content, &extract_scope)
                     .await;
+
+                // Fire-and-forget: extract knowledge via evolver
+                let evolver_bg = evolver.clone();
+                let sid_bg = session_id.clone();
+                let user_bg = user_msg.clone();
+                let assistant_bg = summary.content.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = evolver_bg.on_chat_complete(&sid_bg, &user_bg, &assistant_bg).await {
+                        tracing::warn!(error = %e, "Chat knowledge precipitation failed");
+                    }
+                });
 
                 Ok(axum::Json(ChatResponse {
                     reply: summary.content,
@@ -503,8 +544,12 @@ async fn chat_stream_handler(
                             match llm_stream.next_chunk().await {
                                 Ok(Some(chunk)) => {
                                     if !chunk.delta.is_empty() {
-                                        full_content.push_str(&chunk.delta);
-                                        yield Ok(Event::default().event("token").data(serde_json::json!({"token": chunk.delta}).to_string()));
+                                        if chunk.reasoning {
+                                            yield Ok(Event::default().event("thinking").data(serde_json::json!({"token": chunk.delta}).to_string()));
+                                        } else {
+                                            full_content.push_str(&chunk.delta);
+                                            yield Ok(Event::default().event("token").data(serde_json::json!({"token": chunk.delta}).to_string()));
+                                        }
                                     }
                                     if chunk.finish_reason.is_some() {
                                         break;
@@ -550,7 +595,142 @@ async fn chat_stream_handler(
     )
 }
 
-#[allow(dead_code)]
+async fn feishu_webhook_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    // Feishu challenge/response verification
+    if body.get("type").and_then(|v| v.as_str()) == Some("url_verification") {
+        let challenge = body.get("challenge")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        return Ok(axum::Json(serde_json::json!({ "challenge": challenge })));
+    }
+
+    // Parse event callback (schema 2.0)
+    let header = match body.get("header") {
+        Some(h) => h,
+        None => return Ok(axum::Json(serde_json::json!({ "status": "ignored" }))),
+    };
+
+    let event_type = header.get("event_type").and_then(|v| v.as_str()).unwrap_or("");
+
+    match event_type {
+        "im.message.receive_v1" => {
+            let event = match body.get("event") {
+                Some(e) => e,
+                None => return Ok(axum::Json(serde_json::json!({ "status": "no_event" }))),
+            };
+
+            let message = event.get("message");
+            let sender = event.get("sender");
+
+            let chat_id = message
+                .and_then(|m| m.get("chat_id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let msg_type = message
+                .and_then(|m| m.get("message_type"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let content_str = message
+                .and_then(|m| m.get("content"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("{}");
+            let sender_id = sender
+                .and_then(|s| s.get("sender_id"))
+                .and_then(|s| s.get("open_id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            // Parse text content from Feishu's {"text":"..."} format
+            let text = if msg_type == "text" {
+                serde_json::from_str::<serde_json::Value>(content_str)
+                    .ok()
+                    .and_then(|c| c.get("text").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                    .unwrap_or_else(|| content_str.to_string())
+            } else {
+                format!("[{}]", msg_type)
+            };
+
+            tracing::info!(
+                chat_id = chat_id,
+                sender_id = sender_id,
+                msg_type = msg_type,
+                text = text,
+                "Feishu message received"
+            );
+
+            // Route message through LLM pipeline
+            let session_id = format!("feishu:{}:{}", chat_id, sender_id);
+            let _ = state.session_store
+                .save_message(&session_id, "user", &text, None, None)
+                .await;
+
+            // RAG enrichment
+            let mut enhanced_message = text.clone();
+            let query_embedding = match state.embedder.embed(&text).await {
+                Ok(emb) => emb,
+                Err(_) => maple_llm::embedding::simple_embedding(&text, 128),
+            };
+            let vector_results = state.vector_store.search(&query_embedding, 3).await;
+            let bm25_results = state.bm25_searcher.search(&text, 3);
+            let kb_results = state.hybrid_retriever
+                .search(&text, 3, vector_results, bm25_results)
+                .await
+                .unwrap_or_default();
+
+            if !kb_results.is_empty() {
+                let context: Vec<String> = kb_results.iter().map(|r| r.content.clone()).collect();
+                enhanced_message = format!(
+                    "[Knowledge Base Context]\n{}\n---\n[User Question]\n{}",
+                    context.join("\n---\n"),
+                    text
+                );
+            }
+
+            // Synchronous LLM completion
+            let llm_request = maple_llm::request::LlmRequest::new(enhanced_message, "default");
+            let response_text = match state.llm_router.route(&llm_request).await {
+                Ok(adapter) => {
+                    match adapter.complete(llm_request).await {
+                        Ok(resp) => resp.text(),
+                        Err(e) => {
+                            tracing::error!(error = %e, "LLM completion failed for Feishu message");
+                            "Sorry, I encountered an error processing your message.".to_string()
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "LLM routing failed for Feishu message");
+                    "Sorry, no LLM provider available.".to_string()
+                }
+            };
+
+            let _ = state.session_store
+                .save_message(&session_id, "assistant", &response_text, None, None)
+                .await;
+
+            tracing::info!(
+                session_id = session_id,
+                response_len = response_text.len(),
+                "Feishu message processed"
+            );
+
+            Ok(axum::Json(serde_json::json!({
+                "status": "received",
+                "chat_id": chat_id,
+                "sender_id": sender_id,
+                "session_id": session_id,
+            })))
+        }
+        _ => {
+            tracing::debug!(event_type = event_type, "Ignoring Feishu event");
+            Ok(axum::Json(serde_json::json!({ "status": "ignored" })))
+        }
+    }
+}
+
 async fn kb_upload_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
     mut multipart: axum::extract::Multipart,
@@ -572,7 +752,9 @@ async fn kb_upload_handler(
             .bytes()
             .await
             .map_err(|_| axum::http::StatusCode::BAD_REQUEST)?;
-        let content = String::from_utf8_lossy(&bytes).to_string();
+        let parser = maple_kb::DocumentParserRegistry::new();
+        let content = parser.parse_by_extension(&filename, &bytes)
+            .map_err(|_| axum::http::StatusCode::BAD_REQUEST)?;
 
         let source_type = if filename.ends_with(".pdf") {
             "pdf"
@@ -729,6 +911,20 @@ async fn kb_documents_handler(
             })
         }).collect::<Vec<_>>()
     }))
+}
+
+async fn kb_delete_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(doc_id): axum::extract::Path<String>,
+) -> axum::Json<serde_json::Value> {
+    let result = sqlx::query("DELETE FROM kb_documents WHERE id = ?")
+        .bind(&doc_id)
+        .execute(&state.db)
+        .await;
+    match result {
+        Ok(r) => axum::Json(serde_json::json!({ "deleted": r.rows_affected() > 0, "id": doc_id })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
 }
 
 async fn kb_search_handler(
@@ -1442,6 +1638,83 @@ async fn register_handler(
 }
 
 #[derive(Debug, Deserialize)]
+struct DeviceLoginRequest {
+    device_id: String,
+}
+
+async fn device_login_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    Json(req): Json<DeviceLoginRequest>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    let device_id = req.device_id.trim().to_string();
+    if device_id.is_empty() {
+        return Err(axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    let username = format!("device-{}", device_id);
+    let now = chrono::Utc::now().timestamp();
+
+    // Try to find existing device user
+    let existing: Option<(String, String)> =
+        sqlx::query_as("SELECT id, role FROM users WHERE username = ?")
+            .bind(&username)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let (user_id, role) = if let Some((id, role)) = existing {
+        (id, role)
+    } else {
+        // Create a new device user with a random password hash (not used for login)
+        let user_id = uuid::Uuid::new_v4().to_string();
+        let password_hash = bcrypt::hash(&uuid::Uuid::new_v4().to_string(), bcrypt::DEFAULT_COST)
+            .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        sqlx::query(
+            "INSERT INTO users (id, username, password_hash, email, role, created_at) VALUES (?, ?, ?, ?, 'user', ?)"
+        )
+        .bind(&user_id)
+        .bind(&username)
+        .bind(&password_hash)
+        .bind(format!("{}@device.local", username))
+        .bind(now)
+        .execute(&state.db)
+        .await
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+        (user_id, "user".to_string())
+    };
+
+    let token = state
+        .auth_service
+        .create_token_for_user(&user_id, &role, 3600)
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let refresh_token = uuid::Uuid::new_v4().to_string();
+    let refresh_hash = bcrypt::hash(&refresh_token, bcrypt::DEFAULT_COST)
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+    let _ = sqlx::query(
+        "INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)"
+    )
+    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(&user_id)
+    .bind(&refresh_hash)
+    .bind(now + 7 * 86400)
+    .bind(now)
+    .execute(&state.db)
+    .await;
+
+    Ok(axum::Json(serde_json::json!({
+        "token": token,
+        "refresh_token": refresh_token,
+        "user_id": user_id,
+        "username": username,
+        "role": role,
+        "expires_in": 3600,
+    })))
+}
+
+#[derive(Debug, Deserialize)]
 struct RefreshRequest {
     refresh_token: String,
 }
@@ -1667,6 +1940,92 @@ async fn sync_status_handler(
     }))
 }
 
+// ── Workspace CRUD ────────────────────────────────────────────────
+
+async fn list_workspaces_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::Json<serde_json::Value> {
+    let rows: Vec<(String, String, Option<String>, String, i64)> =
+        sqlx::query_as("SELECT id, name, description, owner_id, created_at FROM workspaces ORDER BY created_at DESC")
+            .fetch_all(&state.db).await.unwrap_or_default();
+    let workspaces: Vec<serde_json::Value> = rows.into_iter()
+        .map(|(id, name, desc, owner, created)| {
+            serde_json::json!({ "id": id, "name": name, "description": desc, "owner_id": owner, "created_at": created })
+        }).collect();
+    axum::Json(serde_json::json!({ "workspaces": workspaces }))
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateWorkspaceRequest {
+    name: String,
+    description: Option<String>,
+    owner_id: Option<String>,
+}
+
+async fn create_workspace_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    Json(req): Json<CreateWorkspaceRequest>,
+) -> axum::Json<serde_json::Value> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().timestamp();
+    let owner = req.owner_id.unwrap_or_else(|| "default-user".to_string());
+    let _ = sqlx::query(
+        "INSERT INTO workspaces (id, name, description, owner_id, created_at) VALUES (?, ?, ?, ?, ?)"
+    ).bind(&id).bind(&req.name).bind(&req.description).bind(&owner).bind(now)
+    .execute(&state.db).await;
+    axum::Json(serde_json::json!({ "id": id, "name": req.name }))
+}
+
+// ── Workspace Members ─────────────────────────────────────────────
+
+async fn list_workspace_members_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(workspace_id): axum::extract::Path<String>,
+) -> axum::Json<serde_json::Value> {
+    let rows: Vec<(String, String, String, String)> =
+        sqlx::query_as("SELECT member_id, name, member_type, role FROM workspace_members WHERE workspace_id = ?")
+            .bind(&workspace_id)
+            .fetch_all(&state.db).await.unwrap_or_default();
+    let members: Vec<serde_json::Value> = rows.into_iter()
+        .map(|(id, name, mtype, role)| {
+            serde_json::json!({ "id": id, "name": name, "member_type": mtype, "role": role })
+        }).collect();
+    axum::Json(serde_json::json!({ "members": members }))
+}
+
+#[derive(Debug, Deserialize)]
+struct AddWorkspaceMemberRequest {
+    member_id: String,
+    name: String,
+    member_type: Option<String>,
+    role: Option<String>,
+}
+
+async fn add_workspace_member_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(workspace_id): axum::extract::Path<String>,
+    Json(req): Json<AddWorkspaceMemberRequest>,
+) -> axum::Json<serde_json::Value> {
+    let mtype = req.member_type.unwrap_or_else(|| "human".to_string());
+    let role = req.role.unwrap_or_else(|| "member".to_string());
+    let _ = sqlx::query(
+        "INSERT OR REPLACE INTO workspace_members (workspace_id, member_id, name, member_type, role) VALUES (?, ?, ?, ?, ?)"
+    ).bind(&workspace_id).bind(&req.member_id).bind(&req.name).bind(&mtype).bind(&role)
+    .execute(&state.db).await;
+    axum::Json(serde_json::json!({ "workspace_id": workspace_id, "member_id": req.member_id, "status": "added" }))
+}
+
+async fn remove_workspace_member_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path((workspace_id, member_id)): axum::extract::Path<(String, String)>,
+) -> axum::Json<serde_json::Value> {
+    let _ = sqlx::query(
+        "DELETE FROM workspace_members WHERE workspace_id = ? AND member_id = ? AND role != 'owner'"
+    ).bind(&workspace_id).bind(&member_id)
+    .execute(&state.db).await;
+    axum::Json(serde_json::json!({ "workspace_id": workspace_id, "member_id": member_id, "status": "removed" }))
+}
+
 async fn get_workspace_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
     axum::extract::Path(workspace_id): axum::extract::Path<String>,
@@ -1848,6 +2207,12 @@ async fn create_task_handler(
     .bind(&tags).bind(now).bind(now)
     .execute(&state.db).await;
 
+    state.event_bus.publish(maple_engine::event_bus::Event::TaskCreated {
+        task_id: id.clone(),
+        title: req.title.clone(),
+        status: status.clone(),
+    }).await;
+
     axum::Json(serde_json::json!({ "id": id, "status": status }))
 }
 
@@ -1922,6 +2287,11 @@ async fn update_task_handler(
         .await
         .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
     if result.rows_affected() > 0 {
+        state.event_bus.publish(maple_engine::event_bus::Event::TaskUpdated {
+            task_id: task_id.clone(),
+            title: req.title.unwrap_or_default(),
+            status: req.status.unwrap_or_default(),
+        }).await;
         Ok(axum::Json(
             serde_json::json!({ "id": task_id, "updated": true }),
         ))
@@ -1940,6 +2310,9 @@ async fn delete_task_handler(
         .await
         .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
     if result.rows_affected() > 0 {
+        state.event_bus.publish(maple_engine::event_bus::Event::TaskDeleted {
+            task_id: task_id.clone(),
+        }).await;
         Ok(axum::Json(
             serde_json::json!({ "id": task_id, "deleted": true }),
         ))
@@ -1972,29 +2345,34 @@ async fn list_comments_handler(
             .await
             .unwrap_or_default();
 
-    let comments: Vec<serde_json::Value> = rows
+    // Separate top-level comments and replies
+    let mut top_level: Vec<serde_json::Value> = Vec::new();
+    let mut replies: std::collections::HashMap<String, Vec<serde_json::Value>> = std::collections::HashMap::new();
+
+    for (id, parent_id, author_name, author_avatar, author_role, content, likes, created_at) in rows {
+        let comment = serde_json::json!({
+            "id": id,
+            "author": { "name": author_name, "avatar": author_avatar, "role": author_role },
+            "content": content,
+            "likes": likes,
+            "created_at": created_at,
+        });
+        if let Some(pid) = &parent_id {
+            replies.entry(pid.clone()).or_default().push(comment);
+        } else {
+            top_level.push(comment);
+        }
+    }
+
+    // Attach replies to their parent comments
+    let comments: Vec<serde_json::Value> = top_level
         .into_iter()
-        .map(
-            |(
-                id,
-                parent_id,
-                author_name,
-                author_avatar,
-                author_role,
-                content,
-                likes,
-                created_at,
-            )| {
-                serde_json::json!({
-                    "id": id,
-                    "parent_id": parent_id,
-                    "author": { "name": author_name, "avatar": author_avatar, "role": author_role },
-                    "content": content,
-                    "likes": likes,
-                    "created_at": created_at,
-                })
-            },
-        )
+        .map(|mut c| {
+            let cid = c["id"].as_str().unwrap_or_default().to_string();
+            let r = replies.remove(&cid).unwrap_or_default();
+            c["replies"] = serde_json::json!(r);
+            c
+        })
         .collect();
 
     axum::Json(serde_json::json!({ "comments": comments }))
@@ -2013,6 +2391,12 @@ async fn create_comment_handler(
     .bind(&id).bind(&req.task_id).bind(&req.parent_id).bind(&req.author_name)
     .bind(&req.author_avatar).bind(&req.author_role).bind(&req.content).bind(now)
     .execute(&state.db).await;
+
+    state.event_bus.publish(maple_engine::event_bus::Event::CommentCreated {
+        comment_id: id.clone(),
+        task_id: req.task_id.clone(),
+        author: req.author_name.clone(),
+    }).await;
 
     axum::Json(serde_json::json!({ "id": id }))
 }
@@ -2053,6 +2437,149 @@ async fn like_comment_handler(
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct UpdateCommentRequest {
+    content: String,
+}
+
+async fn update_comment_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(comment_id): axum::extract::Path<String>,
+    Json(req): Json<UpdateCommentRequest>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    let result = sqlx::query("UPDATE board_comments SET content = ? WHERE id = ?")
+        .bind(&req.content).bind(&comment_id)
+        .execute(&state.db).await
+        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+    if result.rows_affected() > 0 {
+        Ok(axum::Json(serde_json::json!({ "id": comment_id, "updated": true })))
+    } else {
+        Err(axum::http::StatusCode::NOT_FOUND)
+    }
+}
+
+// ── Activity Feed ─────────────────────────────────────────────────
+
+async fn list_activity_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::Json<serde_json::Value> {
+    let rows: Vec<(i64, String, String, Option<String>, Option<String>, i64)> =
+        sqlx::query_as("SELECT id, actor_name, action, target, details, created_at FROM activity_log ORDER BY created_at DESC LIMIT 50")
+            .fetch_all(&state.db).await.unwrap_or_default();
+    let activities: Vec<serde_json::Value> = rows.into_iter()
+        .map(|(id, actor, action, target, details, created_at)| {
+            serde_json::json!({
+                "id": id,
+                "actor": actor,
+                "action": action,
+                "target": target,
+                "details": details.and_then(|d| serde_json::from_str::<serde_json::Value>(&d).ok()),
+                "created_at": created_at,
+            })
+        }).collect();
+    axum::Json(serde_json::json!({ "activities": activities }))
+}
+
+async fn create_activity_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    Json(req): Json<serde_json::Value>,
+) -> axum::Json<serde_json::Value> {
+    let now = chrono::Utc::now().timestamp();
+    let actor = req["actor"].as_str().unwrap_or("system").to_string();
+    let action = req["action"].as_str().unwrap_or("unknown").to_string();
+    let target = req["target"].as_str().map(|s| s.to_string());
+    let details = req["details"].as_object().map(|_| req["details"].to_string());
+    let id: i64 = sqlx::query_scalar(
+        "INSERT INTO activity_log (workspace_id, actor_name, action, target, details, created_at) VALUES ('default', ?, ?, ?, ?, ?) RETURNING id"
+    ).bind(&actor).bind(&action).bind(&target).bind(&details).bind(now)
+    .fetch_one(&state.db).await.unwrap_or(0);
+
+    state.event_bus.publish(maple_engine::event_bus::Event::ActivityLogged {
+        actor: actor.clone(),
+        action: action.clone(),
+        target: target.clone(),
+    }).await;
+
+    axum::Json(serde_json::json!({ "id": id }))
+}
+
+// ── Board Attachments ──────────────────────────────────────────────
+
+async fn upload_attachment_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(task_id): axum::extract::Path<String>,
+    multipart: axum::extract::Multipart,
+) -> axum::Json<serde_json::Value> {
+    let now = chrono::Utc::now().timestamp();
+    let mut uploaded = Vec::new();
+    let mut mp = multipart;
+
+    while let Some(mut field) = mp.next_field().await.unwrap_or(None) {
+        let filename = field.file_name().unwrap_or("unknown").to_string();
+        let content_type = field.content_type().unwrap_or("application/octet-stream").to_string();
+        let mut data = Vec::new();
+        while let Some(chunk) = field.chunk().await.unwrap_or(None) {
+            data.extend_from_slice(&chunk);
+        }
+        let size = data.len() as i64;
+        let id = format!("att-{}", uuid::Uuid::new_v4());
+        let _ = sqlx::query(
+            "INSERT INTO board_attachments (id, task_id, filename, content_type, size, data, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        ).bind(&id).bind(&task_id).bind(&filename).bind(&content_type).bind(size).bind(&data).bind(now)
+        .execute(&state.db).await;
+        uploaded.push(serde_json::json!({ "id": id, "filename": filename, "size": size, "content_type": content_type }));
+    }
+
+    axum::Json(serde_json::json!({ "uploaded": uploaded }))
+}
+
+async fn list_attachments_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(task_id): axum::extract::Path<String>,
+) -> axum::Json<serde_json::Value> {
+    let rows: Vec<(String, String, String, i64, i64)> = sqlx::query_as(
+        "SELECT id, filename, content_type, size, created_at FROM board_attachments WHERE task_id = ? ORDER BY created_at DESC"
+    ).bind(&task_id).fetch_all(&state.db).await.unwrap_or_default();
+
+    let attachments: Vec<serde_json::Value> = rows.into_iter()
+        .map(|(id, filename, ct, size, created)| serde_json::json!({
+            "id": id, "filename": filename, "content_type": ct, "size": size, "created_at": created
+        })).collect();
+
+    axum::Json(serde_json::json!({ "attachments": attachments }))
+}
+
+async fn download_attachment_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(att_id): axum::extract::Path<String>,
+) -> Result<(axum::http::HeaderMap, Vec<u8>), axum::http::StatusCode> {
+    let row: Option<(String, String, Vec<u8>)> = sqlx::query_as(
+        "SELECT filename, content_type, data FROM board_attachments WHERE id = ?"
+    ).bind(&att_id).fetch_optional(&state.db).await.map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    match row {
+        Some((filename, ct, data)) => {
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert("content-type", ct.parse().unwrap_or_else(|_| "application/octet-stream".parse().unwrap()));
+            headers.insert("content-disposition", format!("attachment; filename=\"{}\"", filename).parse().unwrap());
+            Ok((headers, data))
+        }
+        None => Err(axum::http::StatusCode::NOT_FOUND),
+    }
+}
+
+async fn delete_attachment_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(att_id): axum::extract::Path<String>,
+) -> axum::Json<serde_json::Value> {
+    let result = sqlx::query("DELETE FROM board_attachments WHERE id = ?")
+        .bind(&att_id).execute(&state.db).await;
+    match result {
+        Ok(r) => axum::Json(serde_json::json!({ "deleted": r.rows_affected() > 0 })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
 async fn deep_health_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> axum::Json<serde_json::Value> {
@@ -2084,17 +2611,24 @@ async fn agent_status_handler(
     let agents = state.agent_registry.list_agents().await;
     let tasks = state.task_queue.stats().await.unwrap_or_default();
 
-    let agent_details: Vec<serde_json::Value> = agents
-        .iter()
-        .map(|(id, name, status)| {
-            serde_json::json!({
-                "id": id,
-                "name": name,
-                "status": format!("{:?}", status),
-                "is_online": *status == maple_agent::registry::AgentStatus::Online,
-            })
-        })
-        .collect();
+    let mut agent_details: Vec<serde_json::Value> = Vec::new();
+    for (id, name, status) in &agents {
+        let last_hb: Option<i64> = sqlx::query_scalar(
+            "SELECT last_heartbeat FROM agents WHERE id = ?"
+        )
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten();
+        agent_details.push(serde_json::json!({
+            "id": id,
+            "name": name,
+            "status": format!("{:?}", status),
+            "is_online": *status == maple_agent::registry::AgentStatus::Online,
+            "last_heartbeat": last_hb,
+        }));
+    }
 
     axum::Json(serde_json::json!({
         "agents": agent_details,
@@ -2121,6 +2655,13 @@ async fn agent_heartbeat_handler(
     match state.agent_registry.get_agent(&agent_id).await {
         Some(_) => {
             state.agent_registry.update_heartbeat(&agent_id).await;
+            // Persist heartbeat to DB
+            let now = chrono::Utc::now().timestamp();
+            let _ = sqlx::query("UPDATE agents SET last_heartbeat = ?, status = 'online' WHERE id = ?")
+                .bind(now)
+                .bind(&agent_id)
+                .execute(&state.db)
+                .await;
             Ok(axum::Json(serde_json::json!({
                 "agent_id": agent_id,
                 "status": "ok",
@@ -2129,6 +2670,224 @@ async fn agent_heartbeat_handler(
         }
         None => Err(axum::http::StatusCode::NOT_FOUND),
     }
+}
+
+// ── Scheduler CRUD handlers ──
+
+async fn list_scheduler_jobs_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::Json<serde_json::Value> {
+    let jobs = state.scheduler.list_jobs().await;
+    axum::Json(serde_json::json!({
+        "jobs": jobs,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateSchedulerJobRequest {
+    workflow_id: String,
+    cron_expr: String,
+    #[serde(default)]
+    timezone: Option<String>,
+    #[serde(default)]
+    enabled: Option<bool>,
+}
+
+async fn create_scheduler_job_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    Json(req): Json<CreateSchedulerJobRequest>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    let job_id = format!("job-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("x"));
+    let now = chrono::Utc::now().timestamp();
+    let enabled = req.enabled.unwrap_or(true);
+    let timezone = req.timezone.unwrap_or_else(|| "UTC".to_string());
+
+    // Compute next_run_at from cron
+    let next_run = maple_engine::scheduler::next_timestamp_from_cron(&req.cron_expr, now)
+        .unwrap_or(now + 3600);
+
+    let _ = sqlx::query(
+        "INSERT INTO scheduled_jobs (id, workflow_id, cron_expr, timezone, next_run_at, enabled) VALUES (?, ?, ?, ?, ?, ?)"
+    )
+    .bind(&job_id)
+    .bind(&req.workflow_id)
+    .bind(&req.cron_expr)
+    .bind(&timezone)
+    .bind(next_run)
+    .bind(enabled)
+    .execute(&state.db)
+    .await
+    .map_err(|e| {
+        tracing::error!("Failed to create scheduled job: {}", e);
+        e
+    });
+
+    let job = maple_engine::scheduler::ScheduledJob {
+        id: job_id.clone(),
+        workflow_id: req.workflow_id.clone(),
+        cron_expr: req.cron_expr.clone(),
+        timezone,
+        last_run_at: None,
+        next_run_at: next_run,
+        enabled,
+    };
+    if enabled {
+        let _ = state.scheduler.add_job(job).await;
+    }
+
+    Ok(axum::Json(serde_json::json!({
+        "id": job_id,
+        "workflow_id": req.workflow_id,
+        "cron_expr": req.cron_expr,
+        "enabled": enabled,
+        "next_run_at": next_run,
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateSchedulerJobRequest {
+    cron_expr: Option<String>,
+    enabled: Option<bool>,
+}
+
+async fn update_scheduler_job_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(job_id): axum::extract::Path<String>,
+    Json(req): Json<UpdateSchedulerJobRequest>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    let now = chrono::Utc::now().timestamp();
+
+    if let Some(ref cron) = req.cron_expr {
+        let next_run = maple_engine::scheduler::next_timestamp_from_cron(cron, now).unwrap_or(now + 3600);
+        let _ = sqlx::query("UPDATE scheduled_jobs SET cron_expr = ?, next_run_at = ? WHERE id = ?")
+            .bind(cron)
+            .bind(next_run)
+            .bind(&job_id)
+            .execute(&state.db)
+            .await;
+        // Update in-memory scheduler
+        state.scheduler.remove_job(&job_id).await.ok();
+        // Re-add with updated cron
+        if let Some(job) = sqlx::query_as::<_, (String, String, String, String, Option<i64>, i64, bool)>(
+            "SELECT id, workflow_id, cron_expr, timezone, last_run_at, next_run_at, enabled FROM scheduled_jobs WHERE id = ?"
+        )
+        .bind(&job_id)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten() {
+            let _ = state.scheduler.add_job(maple_engine::scheduler::ScheduledJob {
+                id: job.0, workflow_id: job.1, cron_expr: job.2, timezone: job.3,
+                last_run_at: job.4, next_run_at: job.5, enabled: job.6,
+            }).await;
+        }
+    }
+
+    if let Some(enabled) = req.enabled {
+        let _ = sqlx::query("UPDATE scheduled_jobs SET enabled = ? WHERE id = ?")
+            .bind(enabled)
+            .bind(&job_id)
+            .execute(&state.db)
+            .await;
+        if enabled {
+            // Re-add to scheduler if enabling
+            if let Some(job) = sqlx::query_as::<_, (String, String, String, String, Option<i64>, i64, bool)>(
+                "SELECT id, workflow_id, cron_expr, timezone, last_run_at, next_run_at, enabled FROM scheduled_jobs WHERE id = ?"
+            )
+            .bind(&job_id)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten() {
+                state.scheduler.remove_job(&job_id).await.ok();
+                let _ = state.scheduler.add_job(maple_engine::scheduler::ScheduledJob {
+                    id: job.0, workflow_id: job.1, cron_expr: job.2, timezone: job.3,
+                    last_run_at: job.4, next_run_at: job.5, enabled: job.6,
+                }).await;
+            }
+        } else {
+            state.scheduler.remove_job(&job_id).await.ok();
+        }
+    }
+
+    Ok(axum::Json(serde_json::json!({ "id": job_id, "status": "updated" })))
+}
+
+async fn delete_scheduler_job_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(job_id): axum::extract::Path<String>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    let _ = sqlx::query("DELETE FROM scheduled_jobs WHERE id = ?")
+        .bind(&job_id)
+        .execute(&state.db)
+        .await;
+    state.scheduler.remove_job(&job_id).await.ok();
+    Ok(axum::Json(serde_json::json!({ "id": job_id, "status": "deleted" })))
+}
+
+// ── Group Rules CRUD ──────────────────────────────────────────────
+
+async fn list_group_rules_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::Json<serde_json::Value> {
+    let rules = state.group_rules.read().await;
+    let rules_list = rules.list_rules();
+    axum::Json(serde_json::json!({ "rules": rules_list }))
+}
+
+async fn create_group_rule_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    Json(rule): Json<maple_collab::group_rules::GroupRule>,
+) -> axum::Json<serde_json::Value> {
+    let id = rule.id.clone();
+    let now = chrono::Utc::now().timestamp();
+    let rule_type_json = serde_json::to_string(&rule.rule_type).unwrap_or_default();
+    let _ = sqlx::query(
+        "INSERT OR REPLACE INTO group_rules (id, name, rule_type, enabled, created_at) VALUES (?, ?, ?, ?, ?)"
+    ).bind(&id).bind(&rule.name).bind(&rule_type_json).bind(rule.enabled).bind(now)
+    .execute(&state.db).await;
+    let mut engine = state.group_rules.write().await;
+    engine.add_rule(rule);
+    axum::Json(serde_json::json!({ "id": id, "status": "created" }))
+}
+
+async fn get_group_rule_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(rule_id): axum::extract::Path<String>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    let rules = state.group_rules.read().await;
+    match rules.get_rule(&rule_id) {
+        Some(rule) => Ok(axum::Json(serde_json::json!(rule))),
+        None => Err(axum::http::StatusCode::NOT_FOUND),
+    }
+}
+
+async fn update_group_rule_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(rule_id): axum::extract::Path<String>,
+    Json(rule): Json<maple_collab::group_rules::GroupRule>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    let rule_type_json = serde_json::to_string(&rule.rule_type).unwrap_or_default();
+    let _ = sqlx::query("UPDATE group_rules SET name = ?, rule_type = ?, enabled = ? WHERE id = ?")
+        .bind(&rule.name).bind(&rule_type_json).bind(rule.enabled).bind(&rule_id)
+        .execute(&state.db).await;
+    let mut engine = state.group_rules.write().await;
+    if engine.update_rule(&rule_id, rule) {
+        Ok(axum::Json(serde_json::json!({ "id": rule_id, "status": "updated" })))
+    } else {
+        Err(axum::http::StatusCode::NOT_FOUND)
+    }
+}
+
+async fn delete_group_rule_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(rule_id): axum::extract::Path<String>,
+) -> axum::Json<serde_json::Value> {
+    let _ = sqlx::query("DELETE FROM group_rules WHERE id = ?")
+        .bind(&rule_id).execute(&state.db).await;
+    let mut engine = state.group_rules.write().await;
+    let removed = engine.remove_rule(&rule_id);
+    axum::Json(serde_json::json!({ "id": rule_id, "status": if removed { "deleted" } else { "not_found" } }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -2205,6 +2964,20 @@ struct AgentRegisterRequest {
     #[serde(default)]
     capabilities: Option<Vec<String>>,
     #[serde(default)]
+    skills: Option<Vec<String>>,
+    #[serde(default)]
+    supports_image: Option<bool>,
+    #[serde(default)]
+    supports_streaming: Option<bool>,
+    #[serde(default)]
+    max_context_length: Option<usize>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    tags: Option<Vec<String>>,
+    #[serde(default)]
+    triggers: Option<serde_json::Value>,
+    #[serde(default)]
     max_concurrent_tasks: Option<u32>,
 }
 
@@ -2232,10 +3005,12 @@ async fn register_agent_handler(
 
     let capabilities_json = serde_json::json!({
         "tools": req.capabilities.unwrap_or_default(),
-        "skills": [],
-        "max_context_length": 128000,
-        "supports_streaming": true,
+        "skills": req.skills.unwrap_or_default(),
+        "max_context_length": req.max_context_length.unwrap_or(128_000),
+        "supports_streaming": req.supports_streaming.unwrap_or(true),
+        "supports_image": req.supports_image.unwrap_or(false),
         "supports_function_calling": true,
+        "model": req.model,
     });
 
     let transport_type = req
@@ -2244,15 +3019,20 @@ async fn register_agent_handler(
     let transport_config = req
         .transport_config
         .unwrap_or_else(|| serde_json::json!({}));
+    let triggers_json = req.triggers.map(|t| t.to_string());
+    let tags_json = req.tags.map(|t| serde_json::to_string(&t).unwrap_or_default());
 
     let _ = sqlx::query(
-        "INSERT INTO agents (id, name, transport_type, transport_config, capabilities, status, max_concurrent_tasks, created_at) VALUES (?, ?, ?, ?, ?, 'offline', ?, ?)"
+        "INSERT INTO agents (id, name, description, transport_type, transport_config, capabilities, triggers, tags, status, max_concurrent_tasks, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'offline', ?, ?)"
     )
     .bind(&agent_id)
     .bind(&req.name)
+    .bind(&req.description)
     .bind(&transport_type)
     .bind(transport_config.to_string())
     .bind(capabilities_json.to_string())
+    .bind(&triggers_json)
+    .bind(&tags_json)
     .bind(req.max_concurrent_tasks.unwrap_or(3) as i64)
     .bind(now)
     .execute(&state.db)
@@ -2275,6 +3055,7 @@ async fn register_agent_handler(
         "id": agent_id,
         "name": req.name,
         "description": req.description,
+        "capabilities": capabilities_json,
         "status": "registered",
     }))
 }
@@ -2283,12 +3064,30 @@ async fn list_agents_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> axum::Json<serde_json::Value> {
     let agents = state.agent_registry.list_agents().await;
-    axum::Json(serde_json::json!({
-        "agents": agents.into_iter().map(|(id, name, status)| serde_json::json!({
+    let mut agent_list = Vec::new();
+    for (id, name, status) in agents {
+        // Fetch heartbeat and description from DB
+        let db_row: Option<(Option<i64>, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT last_heartbeat, description, tags FROM agents WHERE id = ?"
+        )
+        .bind(&id)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten();
+        let (last_hb, description, tags) = db_row.unwrap_or((None, None, None));
+        agent_list.push(serde_json::json!({
             "id": id,
             "name": name,
             "status": format!("{:?}", status),
-        })).collect::<Vec<_>>(),
+            "is_online": status == maple_agent::registry::AgentStatus::Online,
+            "last_heartbeat": last_hb,
+            "description": description,
+            "tags": tags.and_then(|t| serde_json::from_str::<Vec<String>>(&t).ok()),
+        }));
+    }
+    axum::Json(serde_json::json!({
+        "agents": agent_list,
     }))
 }
 
@@ -2297,14 +3096,29 @@ async fn get_agent_handler(
     axum::extract::Path(agent_id): axum::extract::Path<String>,
 ) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
     match state.agent_registry.get_agent(&agent_id).await {
-        Some(agent) => Ok(axum::Json(serde_json::json!({
-            "id": agent.id,
-            "name": agent.name,
-            "description": agent.description,
-            "transport": agent.transport,
-            "capabilities": agent.capabilities,
-            "max_concurrent_tasks": agent.max_concurrent_tasks,
-        }))),
+        Some(agent) => {
+            // Fetch DB-only fields
+            let db_row: Option<(Option<String>, Option<i64>, Option<String>)> = sqlx::query_as(
+                "SELECT triggers, last_heartbeat, tags FROM agents WHERE id = ?"
+            )
+            .bind(&agent_id)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten();
+            let (_triggers_str, last_hb, tags) = db_row.unwrap_or((None, None, None));
+            Ok(axum::Json(serde_json::json!({
+                "id": agent.id,
+                "name": agent.name,
+                "description": agent.description,
+                "transport": agent.transport,
+                "capabilities": agent.capabilities,
+                "triggers": agent.triggers,
+                "max_concurrent_tasks": agent.max_concurrent_tasks,
+                "last_heartbeat": last_hb,
+                "tags": tags.and_then(|t| serde_json::from_str::<Vec<String>>(&t).ok()),
+            })))
+        }
         None => Err(axum::http::StatusCode::NOT_FOUND),
     }
 }
@@ -2559,6 +3373,67 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    // Background task: sweep stale agents (mark offline if no heartbeat for 5 minutes)
+    let sweep_pool = pool.clone();
+    let sweep_registry = agent_registry.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            let threshold = chrono::Utc::now().timestamp() - 300;
+            match sqlx::query("UPDATE agents SET status = 'offline' WHERE status != 'offline' AND last_heartbeat < ?")
+                .bind(threshold)
+                .execute(&sweep_pool)
+                .await
+            {
+                Ok(result) => {
+                    let count = result.rows_affected();
+                    if count > 0 {
+                        tracing::info!(count = count, "Swept stale agents to offline");
+                        // Only mark stale agents offline in-memory (not all agents)
+                        let agents = sweep_registry.list_agents().await;
+                        for (agent_id, _, _status) in agents {
+                            // Check if this agent's heartbeat is stale via DB
+                            let stale: bool = sqlx::query_scalar(
+                                "SELECT last_heartbeat < ? FROM agents WHERE id = ?"
+                            )
+                            .bind(threshold)
+                            .bind(&agent_id)
+                            .fetch_optional(&sweep_pool)
+                            .await
+                            .ok()
+                            .flatten()
+                            .unwrap_or(false);
+                            if stale {
+                                let _ = sweep_registry.set_offline(&agent_id).await;
+                            }
+                        }
+                    }
+                }
+                Err(e) => tracing::warn!(error = %e, "Agent sweep failed"),
+            }
+        }
+    });
+
+    // Background task: periodic knowledge distillation (every 6 hours)
+    let evolve_evolver = evolver.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(6 * 3600)).await;
+            tracing::info!("Starting periodic knowledge distillation");
+            match evolve_evolver.batch_evolve().await {
+                Ok(stats) => {
+                    tracing::info!(
+                        pruned = stats.pruned_count,
+                        semantic_created = stats.semantic_memories_created,
+                        consolidated = stats.episodic_memories_consolidated,
+                        "Knowledge distillation completed"
+                    );
+                }
+                Err(e) => tracing::warn!(error = %e, "Knowledge distillation failed"),
+            }
+        }
+    });
+
     let rate_limiter = state::RateLimiter::new(100, 60);
 
     let state = Arc::new(AppState {
@@ -2582,6 +3457,25 @@ async fn main() -> anyhow::Result<()> {
         evolver: evolver.clone(),
         prompt_version_mgr: prompt_version_mgr.clone(),
         task_queue: task_queue.clone(),
+        scheduler: scheduler.clone(),
+        group_rules: {
+            let engine = GroupRulesEngine::new();
+            let gr = Arc::new(tokio::sync::RwLock::new(engine));
+            // Load persisted rules from DB
+            let rows: Vec<(String, String, String, bool)> = sqlx::query_as(
+                "SELECT id, name, rule_type, enabled FROM group_rules"
+            ).fetch_all(&pool).await.unwrap_or_default();
+            {
+                let mut eng = gr.write().await;
+                for (id, name, rule_type_json, enabled) in rows {
+                    if let Ok(rule_type) = serde_json::from_str::<maple_collab::group_rules::GroupRuleType>(&rule_type_json) {
+                        eng.add_rule(maple_collab::group_rules::GroupRule { id, name, rule_type, enabled });
+                    }
+                }
+                tracing::info!(count = eng.list_rules().len(), "Loaded group rules from DB");
+            }
+            gr
+        },
         mcp_host: Arc::new(McpHostManager::new()),
         rate_limiter,
         cache: cache::AppCache::new(),
@@ -2628,7 +3522,17 @@ async fn main() -> anyhow::Result<()> {
             get(get_config_handler).put(update_config_handler),
         )
         .route("/api/kb/index", post(kb_index_handler))
+        .route("/api/kb/upload", post(kb_upload_handler))
         .route("/api/kb/search", post(kb_search_handler))
+        .route("/api/kb/documents/:id", delete(kb_delete_handler))
+        .route(
+            "/api/board/tasks/:id/attachments",
+            get(list_attachments_handler).post(upload_attachment_handler),
+        )
+        .route(
+            "/api/board/attachments/:id",
+            get(download_attachment_handler).delete(delete_attachment_handler),
+        )
         .route(
             "/api/agents",
             get(list_agents_handler).post(register_agent_handler),
@@ -2672,16 +3576,32 @@ async fn main() -> anyhow::Result<()> {
             get(get_workflow_executions_handler),
         )
         .route("/api/workflows/:id/stats", get(workflow_stats_handler))
+        .route("/api/scheduler/jobs", get(list_scheduler_jobs_handler).post(create_scheduler_job_handler))
+        .route("/api/scheduler/jobs/:id", put(update_scheduler_job_handler).delete(delete_scheduler_job_handler))
+        .route("/api/group-rules", get(list_group_rules_handler).post(create_group_rule_handler))
+        .route("/api/group-rules/:id", get(get_group_rule_handler).put(update_group_rule_handler).delete(delete_group_rule_handler))
         .route("/api/executions/:id", get(get_execution_handler))
         .route(
             "/api/executions/:id/checkpoints",
             get(get_checkpoints_handler),
         )
         .route(
+            "/api/workspaces",
+            get(list_workspaces_handler).post(create_workspace_handler),
+        )
+        .route(
             "/api/workspaces/:id",
             get(get_workspace_handler)
                 .put(update_workspace_handler)
                 .delete(delete_workspace_handler),
+        )
+        .route(
+            "/api/workspaces/:id/members",
+            get(list_workspace_members_handler).post(add_workspace_member_handler),
+        )
+        .route(
+            "/api/workspaces/:id/members/:member_id",
+            axum::routing::delete(remove_workspace_member_handler),
         )
         // Collaboration board APIs
         .route(
@@ -2694,11 +3614,15 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/api/board/tasks/:id/comments", get(list_comments_handler))
         .route("/api/board/comments", post(create_comment_handler))
-        .route("/api/board/comments/:id", delete(delete_comment_handler))
+        .route("/api/board/comments/:id", delete(delete_comment_handler).put(update_comment_handler))
         .route("/api/board/comments/:id/like", post(like_comment_handler))
+        .route("/api/activity", get(list_activity_handler).post(create_activity_handler))
         .route("/api/auth/login", post(login_handler))
         .route("/api/auth/token", post(token_handler))
         .route("/api/auth/register", post(register_handler))
+        .route("/api/auth/device-login", post(device_login_handler))
+        // Bot webhook endpoints
+        .route("/webhook/feishu", post(feishu_webhook_handler))
         .route("/api/auth/refresh", post(refresh_handler))
         .with_state(state.clone());
 

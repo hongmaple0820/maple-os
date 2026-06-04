@@ -17,8 +17,8 @@ test.describe("Knowledge", () => {
   });
 
   test("index upload form visible", async ({ apiMock }) => {
-    await apiMock.locator("[data-testid='tab-index'], button").filter({ hasText: /索引/ }).click();
-    const upload = apiMock.locator("textarea, input[placeholder*='内容']");
-    await expect(upload.first()).toBeVisible({ timeout: 3000 });
+    await apiMock.getByRole("button", { name: "上传" }).click();
+    const upload = apiMock.locator("textarea");
+    await expect(upload.first()).toBeVisible({ timeout: 5000 });
   });
 });

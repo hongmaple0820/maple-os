@@ -178,6 +178,20 @@ fn next_timestamp(cron: &CronExpr, from: i64) -> Result<i64> {
     Err(anyhow::anyhow!("No matching time found within 1 year"))
 }
 
+/// Public helper: compute next timestamp from a cron expression
+pub fn next_timestamp_from_cron(expr: &str, from: i64) -> Result<i64> {
+    let cron = parse_cron(expr)?;
+    next_timestamp(&cron, from)
+}
+
+/// Public helper: list all jobs from the scheduler
+impl Scheduler {
+    pub async fn list_jobs(&self) -> Vec<ScheduledJob> {
+        let jobs = self.jobs.lock().await;
+        jobs.clone()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

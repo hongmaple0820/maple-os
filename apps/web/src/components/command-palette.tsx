@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { Input } from "@mapleos/ui";
 
 interface CommandItem {
@@ -11,17 +12,17 @@ interface CommandItem {
 }
 
 const COMMANDS: CommandItem[] = [
-  { id: "nav-dashboard", label: "前往工作台", category: "导航", action: () => {} },
-  { id: "nav-workflow", label: "前往工作流", category: "导航", action: () => {} },
-  { id: "nav-agent", label: "前往 Agent 中心", category: "导航", action: () => {} },
-  { id: "nav-knowledge", label: "前往知识库", category: "导航", action: () => {} },
-  { id: "nav-chat", label: "开始对话", category: "导航", action: () => {} },
-  { id: "wf-create", label: "新建工作流", category: "操作", action: () => {} },
-  { id: "wf-run", label: "运行最近工作流", category: "操作", action: () => {} },
-  { id: "kb-search", label: "搜索知识库", category: "操作", action: () => {} },
-  { id: "kb-index", label: "上传文档到知识库", category: "操作", action: () => {} },
-  { id: "agent-register", label: "注册新 Agent", category: "操作", action: () => {} },
-  { id: "scale-stats", label: "查看 SCALE 统计", category: "操作", action: () => {} },
+  { id: "nav-dashboard", label: "command.commands.gotoDashboard", category: "command.categories.navigation", action: () => {} },
+  { id: "nav-workflow", label: "command.commands.gotoWorkflow", category: "command.categories.navigation", action: () => {} },
+  { id: "nav-agent", label: "command.commands.gotoAgent", category: "command.categories.navigation", action: () => {} },
+  { id: "nav-knowledge", label: "command.commands.gotoKnowledge", category: "command.categories.navigation", action: () => {} },
+  { id: "nav-chat", label: "command.commands.startChat", category: "command.categories.navigation", action: () => {} },
+  { id: "wf-create", label: "command.commands.createWorkflow", category: "command.categories.action", action: () => {} },
+  { id: "wf-run", label: "command.commands.runRecentWorkflow", category: "command.categories.action", action: () => {} },
+  { id: "kb-search", label: "command.commands.searchKnowledge", category: "command.categories.action", action: () => {} },
+  { id: "kb-index", label: "command.commands.uploadToKnowledge", category: "command.categories.action", action: () => {} },
+  { id: "agent-register", label: "command.commands.registerAgent", category: "command.categories.action", action: () => {} },
+  { id: "scale-stats", label: "command.commands.viewScaleStats", category: "command.categories.action", action: () => {} },
 ];
 
 interface CommandPaletteProps {
@@ -31,6 +32,7 @@ interface CommandPaletteProps {
 }
 
 export function CommandPalette({ open, onClose, onNavigate }: CommandPaletteProps) {
+  const { t } = useTranslation();
   const [query, setQuery] = useState("");
 
   useEffect(() => {
@@ -49,7 +51,7 @@ export function CommandPalette({ open, onClose, onNavigate }: CommandPaletteProp
   if (!open) return null;
 
   const filtered = COMMANDS.filter((c) =>
-    c.label.toLowerCase().includes(query.toLowerCase())
+    t(c.label).toLowerCase().includes(query.toLowerCase())
   );
 
   return (
@@ -59,14 +61,14 @@ export function CommandPalette({ open, onClose, onNavigate }: CommandPaletteProp
           <Input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="输入命令或搜索..."
+            placeholder={t("command.searchPlaceholder")}
             className="text-[15px] h-10"
             autoFocus
           />
         </div>
         <div className="max-h-[320px] overflow-y-auto p-2">
           {filtered.length === 0 && (
-            <div className="text-center text-muted-foreground text-sm py-4">未找到匹配命令</div>
+            <div className="text-center text-muted-foreground text-sm py-4">{t("command.noResults")}</div>
           )}
           {filtered.map((cmd) => (
             <button
@@ -74,15 +76,15 @@ export function CommandPalette({ open, onClose, onNavigate }: CommandPaletteProp
               onClick={() => { onNavigate(cmd.id); onClose(); setQuery(""); }}
               className="w-full text-left px-3 py-2 rounded-md text-sm hover:bg-accent transition-colors flex items-center justify-between"
             >
-              <span>{cmd.label}</span>
-              <span className="text-xs text-muted-foreground">{cmd.category}</span>
+              <span>{t(cmd.label)}</span>
+              <span className="text-xs text-muted-foreground">{t(cmd.category)}</span>
             </button>
           ))}
         </div>
         <div className="p-2 border-t text-xs text-muted-foreground flex items-center gap-4">
-          <span>&#8984;K 打开</span>
-          <span>ESC 关闭</span>
-          <span>Enter 执行</span>
+          <span>{t("command.openHint")}</span>
+          <span>{t("command.closeHint")}</span>
+          <span>{t("command.executeHint")}</span>
         </div>
       </div>
     </div>

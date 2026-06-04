@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Card, CardContent, Badge, Button, Input, Spinner } from "@mapleos/ui";
-import { rpcCall } from "@/lib/api";
+import { rpcCall, mapleApi } from "@/lib/api";
+import { useTranslation } from "react-i18next";
 
 interface ModelInfo { id: string; name: string; provider: string }
 interface AppConfig {
@@ -15,6 +16,13 @@ interface AppConfig {
   qdrant_url: string;
   gateway_mode: string;
   data_local_only: boolean;
+}
+
+interface GroupRule {
+  id: string;
+  name: string;
+  rule_type: { type: string;[key: string]: unknown };
+  enabled: boolean;
 }
 
 const defaultConfig: AppConfig = {
@@ -30,12 +38,37 @@ const defaultConfig: AppConfig = {
 };
 
 export function SettingsPage() {
+  const { t } = useTranslation();
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [config, setConfig] = useState<AppConfig>(defaultConfig);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [activeSection, setActiveSection] = useState("models");
+
+  // Group rules state
+  const [rules, setRules] = useState<GroupRule[]>([]);
+  const [showNewRule, setShowNewRule] = useState(false);
+  const [newRuleName, setNewRuleName] = useState("");
+  const [newRuleType, setNewRuleType] = useState("auto_assign");
+  const [newRuleKeyword, setNewRuleKeyword] = useState("");
+  const [newRuleAgentId, setNewRuleAgentId] = useState("");
+  const [newRuleThreshold, setNewRuleThreshold] = useState("0.8");
+  const [newRuleRateLimit, setNewRuleRateLimit] = useState("10");
+  const [newRuleHours, setNewRuleHours] = useState("9,10,11,12,13,14,15,16,17");
+  const [newRuleTimezone, setNewRuleTimezone] = useState("8");
+  const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
+  const [editRuleName, setEditRuleName] = useState("");
+  const [editRuleKeyword, setEditRuleKeyword] = useState("");
+  const [editRuleAgentId, setEditRuleAgentId] = useState("");
+  const [editRuleExtra, setEditRuleExtra] = useState("");
+
+  const loadRules = useCallback(async () => {
+    try {
+      const res = await mapleApi<{ rules: GroupRule[] }>("/api/group-rules");
+      setRules(res.rules ?? []);
+    } catch { setRules([]); }
+  }, []);
 
   useEffect(() => {
     const load = async () => {
@@ -49,6 +82,28 @@ export function SettingsPage() {
     load();
   }, []);
 
+  useEffect(() => {
+    if (activeSection === "rules") loadRules();
+  }, [activeSection, loadRules]);
+
+  // Agents state
+  const [agents, setAgents] = useState<Array<{ id: string; name: string; status: string; is_online: boolean; description?: string; tags?: string }>>([]);
+  const [showRegisterAgent, setShowRegisterAgent] = useState(false);
+  const [regAgentName, setRegAgentName] = useState("");
+  const [regAgentDesc, setRegAgentDesc] = useState("");
+  const [regAgentModel, setRegAgentModel] = useState("");
+
+  const loadAgents = useCallback(async () => {
+    try {
+      const res = await mapleApi<{ agents: Array<{ id: string; name: string; status: string; is_online: boolean; description?: string; tags?: string }> }>("/api/agents/status");
+      setAgents(res.agents ?? []);
+    } catch { setAgents([]); }
+  }, []);
+
+  useEffect(() => {
+    if (activeSection === "agents") loadAgents();
+  }, [activeSection, loadAgents]);
+
   const handleSave = async () => {
     setSaving(true);
     setSaved(false);
@@ -57,7 +112,7 @@ export function SettingsPage() {
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
     } catch (err) {
-      alert(`保存失败: ${(err as Error).message}`);
+      alert(t("settings.errors.saveFailed", { error: (err as Error).message }));
     } finally { setSaving(false); }
   };
 
@@ -69,20 +124,22 @@ export function SettingsPage() {
   if (loading) return <div className="flex items-center justify-center h-full"><Spinner className="w-8 h-8" /></div>;
 
   const sections = [
-    { id: "models", label: "模型配置" },
-    { id: "sync", label: "同步配置" },
-    { id: "security", label: "安全配置" },
-    { id: "teams", label: "团队配置" },
+    { id: "models", label: t("settings.sections.models") },
+    { id: "sync", label: t("settings.sections.sync") },
+    { id: "security", label: t("settings.sections.security") },
+    { id: "rules", label: t("settings.automation.title") },
+    { id: "agents", label: t("settings.agents.title") },
+    { id: "teams", label: t("settings.sections.teams") },
   ];
 
   return (
     <div className="flex flex-col h-full">
       <div className="h-10 border-b bg-card flex items-center justify-between px-4">
-        <h2 className="text-[15px] font-semibold">设置</h2>
+        <h2 className="text-[15px] font-semibold">{t("settings.title")}</h2>
         <div className="flex gap-2">
-          {saved && <Badge variant="default" className="text-[11px]">已保存</Badge>}
-          <Button size="sm" onClick={handleSave} disabled={saving}>{saving ? "保存中..." : "保存配置"}</Button>
-          <Button size="sm" variant="ghost" onClick={handleReset}>重置</Button>
+          {saved && <Badge variant="default" className="text-[11px]">{t("common.saved")}</Badge>}
+          <Button size="sm" onClick={handleSave} disabled={saving}>{saving ? t("settings.saving") : t("settings.saveConfig")}</Button>
+          <Button size="sm" variant="ghost" onClick={handleReset}>{t("common.reset")}</Button>
         </div>
       </div>
 
@@ -106,38 +163,38 @@ export function SettingsPage() {
             <>
               <Card className="shadow-card">
                 <CardContent className="p-4 space-y-3">
-                  <div className="text-[15px] font-medium">LLM 模型</div>
+                  <div className="text-[15px] font-medium">{t("settings.models.llmTitle")}</div>
                   <div className="space-y-2">
-                    <label className="text-[11px] text-muted-foreground">Ollama 地址</label>
+                    <label className="text-[11px] text-muted-foreground">{t("settings.models.ollamaUrl")}</label>
                     <Input value={config.ollama_url} onChange={(e) => setConfig({ ...config, ollama_url: e.target.value })} placeholder="http://localhost:11434" className="h-7 text-xs" />
                   </div>
                   <div className="space-y-2">
-                    <label className="text-[11px] text-muted-foreground">OpenAI API Key</label>
+                    <label className="text-[11px] text-muted-foreground">{t("settings.models.openaiKey")}</label>
                     <Input value={config.openai_api_key} onChange={(e) => setConfig({ ...config, openai_api_key: e.target.value })} placeholder="sk-..." type="password" className="h-7 text-xs" />
                   </div>
                   <div className="space-y-2">
-                    <label className="text-[11px] text-muted-foreground">默认模型路由</label>
+                    <label className="text-[11px] text-muted-foreground">{t("settings.models.defaultModel")}</label>
                     <select value={config.default_model} onChange={(e) => setConfig({ ...config, default_model: e.target.value })} className="h-7 rounded border bg-background text-xs px-2 w-full">
-                      <option value="auto">auto (自动选择)</option>
+                      <option value="auto">{t("settings.models.autoSelect")}</option>
                       {models.map((m) => <option key={m.id} value={m.id}>{m.name ?? m.id} ({m.provider})</option>)}
                     </select>
                   </div>
-                  <div className="text-[11px] text-muted-foreground">已注册模型:</div>
+                  <div className="text-[11px] text-muted-foreground">{t("settings.models.registeredModels")}</div>
                   <div className="flex flex-wrap gap-1.5">
                     {models.map((m) => <Badge key={m.id} variant="secondary" className="text-[11px]">{m.name ?? m.id} ({m.provider})</Badge>)}
-                    {models.length === 0 && <span className="text-xs text-muted-foreground">暂无模型 — 请检查 Ollama 地址</span>}
+                    {models.length === 0 && <span className="text-xs text-muted-foreground">{t("settings.models.noModels")}</span>}
                   </div>
                 </CardContent>
               </Card>
 
               <Card className="shadow-card">
                 <CardContent className="p-4 space-y-3">
-                  <div className="text-[15px] font-medium">向量数据库</div>
+                  <div className="text-[15px] font-medium">{t("settings.models.vectorDb")}</div>
                   <div className="space-y-2">
-                    <label className="text-[11px] text-muted-foreground">Qdrant 地址 (可选)</label>
-                    <Input value={config.qdrant_url} onChange={(e) => setConfig({ ...config, qdrant_url: e.target.value })} placeholder="http://localhost:6333 (留空使用内存模式)" className="h-7 text-xs" />
+                    <label className="text-[11px] text-muted-foreground">{t("settings.models.qdrantUrl")}</label>
+                    <Input value={config.qdrant_url} onChange={(e) => setConfig({ ...config, qdrant_url: e.target.value })} placeholder="http://localhost:6333" className="h-7 text-xs" />
                   </div>
-                  <div className="text-[11px] text-muted-foreground">留空 Qdrant 地址时，系统自动使用内存向量检索模式</div>
+                  <div className="text-[11px] text-muted-foreground">{t("settings.models.qdrantHint")}</div>
                 </CardContent>
               </Card>
             </>
@@ -146,22 +203,22 @@ export function SettingsPage() {
           {activeSection === "sync" && (
             <Card className="shadow-card">
               <CardContent className="p-4 space-y-3">
-                <div className="text-[15px] font-medium">同步配置</div>
+                <div className="text-[15px] font-medium">{t("settings.sync.title")}</div>
                 <div className="space-y-2">
-                  <label className="text-[11px] text-muted-foreground">WebDAV 地址</label>
+                  <label className="text-[11px] text-muted-foreground">{t("settings.sync.webdavUrl")}</label>
                   <Input value={config.webdav_url} onChange={(e) => setConfig({ ...config, webdav_url: e.target.value })} placeholder="https://your-webdav-server/dav" className="h-7 text-xs" />
                 </div>
                 <div className="space-y-2">
-                  <label className="text-[11px] text-muted-foreground">WebDAV 用户名</label>
+                  <label className="text-[11px] text-muted-foreground">{t("settings.sync.webdavUser")}</label>
                   <Input value={config.webdav_username} onChange={(e) => setConfig({ ...config, webdav_username: e.target.value })} placeholder="username" className="h-7 text-xs" />
                 </div>
                 <div className="space-y-2">
-                  <label className="text-[11px] text-muted-foreground">WebDAV 密码</label>
+                  <label className="text-[11px] text-muted-foreground">{t("settings.sync.webdavPass")}</label>
                   <Input value={config.webdav_password} onChange={(e) => setConfig({ ...config, webdav_password: e.target.value })} placeholder="password" type="password" className="h-7 text-xs" />
                 </div>
                 <div className="text-[11px] text-muted-foreground">
-                  同步策略: Local-first (CRDT + Automerge)
-                  <br />数据优先存储在本地 SQLite，WebDAV 用于跨设备同步
+                  {t("settings.sync.strategy")}
+                  <br />{t("settings.sync.strategyDetail")}
                 </div>
                 <Badge variant="outline" className="text-[11px]">Automerge CRDT</Badge>
               </CardContent>
@@ -171,23 +228,248 @@ export function SettingsPage() {
           {activeSection === "security" && (
             <Card className="shadow-card">
               <CardContent className="p-4 space-y-3">
-                <div className="text-[15px] font-medium">安全配置</div>
+                <div className="text-[15px] font-medium">{t("settings.security.title")}</div>
                 <div className="space-y-2">
-                  <label className="text-[11px] text-muted-foreground">SCALE Gateway 模式</label>
+                  <label className="text-[11px] text-muted-foreground">{t("settings.security.gatewayMode")}</label>
                   <select value={config.gateway_mode} onChange={(e) => setConfig({ ...config, gateway_mode: e.target.value })} className="h-7 rounded border bg-background text-xs px-2 w-full">
-                    <option value="strict">strict (严格: 所有工具调用需审批)</option>
-                    <option value="permissive">permissive (宽松: 仅敏感操作需审批)</option>
-                    <option value="off">off (关闭: 无拦截)</option>
+                    <option value="strict">{t("settings.security.strict")}</option>
+                    <option value="permissive">{t("settings.security.permissive")}</option>
+                    <option value="off">{t("settings.security.off")}</option>
                   </select>
                 </div>
                 <div className="space-y-2 flex items-center gap-2">
                   <input type="checkbox" checked={config.data_local_only} onChange={(e) => setConfig({ ...config, data_local_only: e.target.checked })} className="rounded" />
-                  <label className="text-[12px]">数据仅存储本地 (不发送到云端)</label>
+                  <label className="text-[12px]">{t("settings.security.localOnly")}</label>
                 </div>
                 <div className="text-[11px] text-muted-foreground">
-                  <div>SCALE Gateway: 工具调用拦截、敏感操作检测、暴力破解检测</div>
-                  <div>本地优先: 数据默认存储在本地 SQLite</div>
-                  <div>向量数据库: Qdrant 可选，无地址时自动使用内存模式</div>
+                  <div>{t("settings.security.gatewayDesc")}</div>
+                  <div>{t("settings.security.localFirst")}</div>
+                  <div>{t("settings.security.vectorNote")}</div>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {activeSection === "rules" && (
+            <Card className="shadow-card">
+              <CardContent className="p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="text-[15px] font-medium">自动化规则</div>
+                  <Button size="sm" onClick={() => setShowNewRule(true)}>+ 新建规则</Button>
+                </div>
+                <div className="text-[11px] text-muted-foreground">
+                  配置自动分配、审批、限流和时间窗口规则。规则在聊天消息到达时自动评估。
+                </div>
+
+                {showNewRule && (
+                  <div className="border border-border rounded-lg p-3 space-y-2 bg-muted/30">
+                    <Input value={newRuleName} onChange={(e) => setNewRuleName(e.target.value)} placeholder={t("settings.automation.ruleName")} className="h-7 text-xs" />
+                    <select value={newRuleType} onChange={(e) => setNewRuleType(e.target.value)} className="h-7 rounded border bg-background text-xs px-2 w-full">
+                      <option value="auto_assign">自动分配 (AutoAssign)</option>
+                      <option value="auto_approve">自动审批 (AutoApprove)</option>
+                      <option value="rate_limit">限流 (RateLimit)</option>
+                      <option value="time_window">时间窗口 (TimeWindow)</option>
+                    </select>
+                    {(newRuleType === "auto_assign" || newRuleType === "auto_approve" || newRuleType === "rate_limit" || newRuleType === "time_window") && (
+                      <Input value={newRuleAgentId} onChange={(e) => setNewRuleAgentId(e.target.value)} placeholder="目标 Agent ID" className="h-7 text-xs" />
+                    )}
+                    {newRuleType === "auto_assign" && (
+                      <Input value={newRuleKeyword} onChange={(e) => setNewRuleKeyword(e.target.value)} placeholder="触发关键词" className="h-7 text-xs" />
+                    )}
+                    {newRuleType === "auto_approve" && (
+                      <Input value={newRuleThreshold} onChange={(e) => setNewRuleThreshold(e.target.value)} placeholder="置信度阈值 (0-1)" className="h-7 text-xs" />
+                    )}
+                    {newRuleType === "rate_limit" && (
+                      <Input value={newRuleRateLimit} onChange={(e) => setNewRuleRateLimit(e.target.value)} placeholder="每分钟最大消息数" className="h-7 text-xs" />
+                    )}
+                    {newRuleType === "time_window" && (
+                      <>
+                        <Input value={newRuleHours} onChange={(e) => setNewRuleHours(e.target.value)} placeholder="允许的小时 (逗号分隔, 如 9,10,11)" className="h-7 text-xs" />
+                        <Input value={newRuleTimezone} onChange={(e) => setNewRuleTimezone(e.target.value)} placeholder="时区偏移 (如 8 表示 UTC+8)" className="h-7 text-xs" />
+                      </>
+                    )}
+                    <div className="flex gap-2">
+                      <Button size="sm" onClick={async () => {
+                        if (!newRuleName.trim()) return;
+                        const rule_type = newRuleType === "auto_assign"
+                          ? { type: "auto_assign", keyword: newRuleKeyword, agent_id: newRuleAgentId }
+                          : newRuleType === "auto_approve"
+                          ? { type: "auto_approve", agent_id: newRuleAgentId, confidence_threshold: parseFloat(newRuleThreshold) || 0.8, auto_approve_roles: [] }
+                          : newRuleType === "rate_limit"
+                          ? { type: "rate_limit", agent_id: newRuleAgentId, max_messages_per_minute: parseInt(newRuleRateLimit) || 10 }
+                          : { type: "time_window", agent_id: newRuleAgentId, allowed_hours: newRuleHours, timezone: newRuleTimezone };
+                        await mapleApi("/api/group-rules", { method: "POST", body: { id: `rule-${Date.now()}`, name: newRuleName.trim(), rule_type, enabled: true } });
+                        setShowNewRule(false); setNewRuleName(""); setNewRuleKeyword(""); setNewRuleAgentId("");
+                        loadRules();
+                      }}>保存</Button>
+                      <Button size="sm" variant="ghost" onClick={() => setShowNewRule(false)}>取消</Button>
+                    </div>
+                  </div>
+                )}
+
+                <div className="space-y-2">
+                  {rules.length === 0 && <div className="text-xs text-muted-foreground py-4 text-center">暂无规则</div>}
+                  {rules.map((rule) => (
+                    editingRuleId === rule.id ? (
+                      <div key={rule.id} className="border border-primary/30 rounded-lg p-3 space-y-2 bg-muted/30">
+                        <Input value={editRuleName} onChange={(e) => setEditRuleName(e.target.value)} placeholder={t("settings.automation.ruleName")} className="h-7 text-xs" />
+                        <Input value={editRuleAgentId} onChange={(e) => setEditRuleAgentId(e.target.value)} placeholder="目标 Agent ID" className="h-7 text-xs" />
+                        {rule.rule_type.type === "auto_assign" && (
+                          <Input value={editRuleKeyword} onChange={(e) => setEditRuleKeyword(e.target.value)} placeholder="触发关键词" className="h-7 text-xs" />
+                        )}
+                        {rule.rule_type.type === "auto_approve" && (
+                          <Input value={editRuleExtra} onChange={(e) => setEditRuleExtra(e.target.value)} placeholder="置信度阈值 (0-1)" className="h-7 text-xs" />
+                        )}
+                        {rule.rule_type.type === "rate_limit" && (
+                          <Input value={editRuleExtra} onChange={(e) => setEditRuleExtra(e.target.value)} placeholder="每分钟最大消息数" className="h-7 text-xs" />
+                        )}
+                        {rule.rule_type.type === "time_window" && (
+                          <Input value={editRuleExtra} onChange={(e) => setEditRuleExtra(e.target.value)} placeholder="允许小时 (逗号分隔) + 时区，如 9,10,11|8" className="h-7 text-xs" />
+                        )}
+                        <div className="flex gap-2">
+                          <Button size="sm" onClick={async () => {
+                            let updated_type: Record<string, unknown>;
+                            const rt = rule.rule_type as { type: string;[key: string]: unknown };
+                            if (rt.type === "auto_assign") {
+                              updated_type = { type: "auto_assign", keyword: editRuleKeyword, agent_id: editRuleAgentId };
+                            } else if (rt.type === "auto_approve") {
+                              updated_type = { type: "auto_approve", agent_id: editRuleAgentId, confidence_threshold: parseFloat(editRuleExtra) || 0.8, auto_approve_roles: rt.auto_approve_roles || [] };
+                            } else if (rt.type === "rate_limit") {
+                              updated_type = { type: "rate_limit", agent_id: editRuleAgentId, max_messages_per_minute: parseInt(editRuleExtra) || 10 };
+                            } else if (rt.type === "time_window") {
+                              const parts = editRuleExtra.split("|");
+                              updated_type = { type: "time_window", agent_id: editRuleAgentId, allowed_hours: parts[0] || "9,10,11", timezone: parts[1] || "8" };
+                            } else {
+                              updated_type = rt;
+                            }
+                            await mapleApi(`/api/group-rules/${rule.id}`, { method: "PUT", body: { id: rule.id, name: editRuleName.trim(), rule_type: updated_type, enabled: rule.enabled } });
+                            setEditingRuleId(null); loadRules();
+                          }}>保存</Button>
+                          <Button size="sm" variant="ghost" onClick={() => setEditingRuleId(null)}>取消</Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div key={rule.id} className="flex items-center justify-between p-2.5 border border-border rounded-lg">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-medium truncate">{rule.name}</span>
+                            <Badge variant="outline" className="text-[10px] shrink-0">{rule.rule_type.type}</Badge>
+                            <span className={`w-2 h-2 rounded-full shrink-0 ${rule.enabled ? "bg-emerald-500" : "bg-slate-300"}`} />
+                          </div>
+                          <div className="text-[11px] text-muted-foreground mt-0.5">
+                            {JSON.stringify(Object.fromEntries(Object.entries(rule.rule_type).filter(([k]) => k !== "type")))}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1 ml-2">
+                          <button
+                            onClick={() => {
+                              setEditingRuleId(rule.id); setEditRuleName(rule.name);
+                              const rt = rule.rule_type as { type: string; keyword?: string; agent_id?: string; confidence_threshold?: number; max_messages_per_minute?: number; allowed_hours?: string; timezone?: string };
+                              setEditRuleKeyword(rt.keyword || ""); setEditRuleAgentId(rt.agent_id || "");
+                              if (rt.type === "auto_approve") setEditRuleExtra(String(rt.confidence_threshold ?? 0.8));
+                              else if (rt.type === "rate_limit") setEditRuleExtra(String(rt.max_messages_per_minute ?? 10));
+                              else if (rt.type === "time_window") setEditRuleExtra(`${rt.allowed_hours || ""}|${rt.timezone || ""}`);
+                              else setEditRuleExtra("");
+                            }}
+                            className="px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground border border-border rounded hover:bg-muted transition-colors"
+                          >编辑</button>
+                          <button
+                            onClick={async () => {
+                              await mapleApi(`/api/group-rules/${rule.id}`, { method: "PUT", body: { ...rule, enabled: !rule.enabled } });
+                              loadRules();
+                            }}
+                            className="px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground border border-border rounded hover:bg-muted transition-colors"
+                          >{rule.enabled ? t("settings.automation.disabled") : t("settings.automation.enabled")}</button>
+                          <button
+                            onClick={async () => {
+                              await mapleApi(`/api/group-rules/${rule.id}`, { method: "DELETE" });
+                              loadRules();
+                            }}
+                            className="px-2 py-1 text-[11px] text-destructive hover:bg-destructive/10 border border-border rounded transition-colors"
+                          >删除</button>
+                        </div>
+                      </div>
+                    )
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {activeSection === "agents" && (
+            <Card className="shadow-card">
+              <CardContent className="p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="text-[15px] font-medium">已注册 Agent</div>
+                  <Button size="sm" onClick={() => setShowRegisterAgent(true)}>+ 注册 Agent</Button>
+                </div>
+                <div className="text-[11px] text-muted-foreground">
+                  查看所有已注册的 Agent 及其状态。Agent 通过 WebSocket 或 HTTP 连接注册。
+                </div>
+
+                {showRegisterAgent && (
+                  <div className="border border-border rounded-lg p-3 space-y-2 bg-muted/30">
+                    <Input value={regAgentName} onChange={(e) => setRegAgentName(e.target.value)} placeholder="Agent 名称" className="h-7 text-xs" />
+                    <Input value={regAgentDesc} onChange={(e) => setRegAgentDesc(e.target.value)} placeholder="描述（可选）" className="h-7 text-xs" />
+                    <Input value={regAgentModel} onChange={(e) => setRegAgentModel(e.target.value)} placeholder="模型（可选，如 gpt-4）" className="h-7 text-xs" />
+                    <div className="flex gap-2">
+                      <Button size="sm" onClick={async () => {
+                        if (!regAgentName.trim()) return;
+                        const agentId = `agent-${Date.now()}`;
+                        await mapleApi("/api/agents", {
+                          method: "POST",
+                          body: {
+                            id: agentId, name: regAgentName.trim(),
+                            description: regAgentDesc.trim() || undefined,
+                            model: regAgentModel.trim() || undefined,
+                            transport_type: "http", transport_config: "{}", capabilities: "[]",
+                          },
+                        });
+                        setShowRegisterAgent(false); setRegAgentName(""); setRegAgentDesc(""); setRegAgentModel("");
+                        loadAgents();
+                      }}>注册</Button>
+                      <Button size="sm" variant="ghost" onClick={() => setShowRegisterAgent(false)}>取消</Button>
+                    </div>
+                  </div>
+                )}
+
+                <div className="space-y-2">
+                  {agents.length === 0 && <div className="text-xs text-muted-foreground py-4 text-center">暂无已注册 Agent</div>}
+                  {agents.map((agent) => (
+                    <div key={agent.id} className="flex items-center justify-between p-2.5 border border-border rounded-lg">
+                      <div className="flex items-center gap-3">
+                        <span className={`w-2.5 h-2.5 rounded-full ${agent.is_online ? "bg-emerald-500 animate-pulse" : "bg-slate-300"}`} />
+                        <div>
+                          <div className="text-xs font-medium">{agent.name || agent.id}</div>
+                          <div className="text-[11px] text-muted-foreground flex items-center gap-2">
+                            <span>{agent.is_online ? t("settings.agents.online") : t("settings.agents.offline")}</span>
+                            {agent.description && <span>| {agent.description}</span>}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {agent.tags && (
+                          <div className="flex gap-1">
+                            {(() => {
+                              try { return JSON.parse(agent.tags); } catch { return []; }
+                            })().slice(0, 3).map((tag: string, i: number) => (
+                              <span key={i} className="px-1.5 py-0.5 bg-muted rounded text-[10px] text-muted-foreground">{tag}</span>
+                            ))}
+                          </div>
+                        )}
+                        <Badge variant={agent.is_online ? "default" : "secondary"} className="text-[10px]">
+                          {agent.status}
+                        </Badge>
+                        <button
+                          onClick={async () => {
+                            await mapleApi(`/api/agents/${agent.id}`, { method: "DELETE" });
+                            loadAgents();
+                          }}
+                          className="px-2 py-1 text-[11px] text-destructive hover:bg-destructive/10 border border-border rounded transition-colors"
+                        >删除</button>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </CardContent>
             </Card>
@@ -196,15 +478,15 @@ export function SettingsPage() {
           {activeSection === "teams" && (
             <Card className="shadow-card">
               <CardContent className="p-4 space-y-3">
-                <div className="text-[15px] font-medium">团队配置</div>
+                <div className="text-[15px] font-medium">{t("settings.teams.title")}</div>
                 <div className="text-[11px] text-muted-foreground">
-                  多用户协作功能 (Phase 3 开发中):
-                  <br />- 多租户隔离
-                  <br />- 角色 & 权限管理
-                  <br />- 共享工作流 & 知识库
-                  <br />- 审计日志
+                  {t("settings.teams.desc")}
+                  <br />{t("settings.teams.multiTenant")}
+                  <br />{t("settings.teams.rbac")}
+                  <br />{t("settings.teams.shared")}
+                  <br />{t("settings.teams.audit")}
                 </div>
-                <Badge variant="outline" className="text-[11px]">企业版功能 — Phase 3</Badge>
+                <Badge variant="outline" className="text-[11px]">{t("settings.teams.enterprise")}</Badge>
               </CardContent>
             </Card>
           )}

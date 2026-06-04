@@ -223,6 +223,7 @@ impl AnthropicSseStream {
                                 chunks.push(StreamChunk {
                                     delta: delta_text.to_string(),
                                     finish_reason: None,
+                                    reasoning: false,
                                 });
                             }
                         }
@@ -231,6 +232,7 @@ impl AnthropicSseStream {
                                 chunks.push(StreamChunk {
                                     delta: String::new(),
                                     finish_reason: Some(fr.to_string()),
+                                    reasoning: false,
                                 });
                             }
                         }
@@ -240,6 +242,7 @@ impl AnthropicSseStream {
                             chunks.push(StreamChunk {
                                 delta: String::new(),
                                 finish_reason: Some("end_turn".to_string()),
+                                reasoning: false,
                             });
                         }
                         _ => {}

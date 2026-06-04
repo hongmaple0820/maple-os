@@ -1,53 +1,166 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
+import {
+  ReactFlow,
+  Controls,
+  MiniMap,
+  Background,
+  useNodesState,
+  useEdgesState,
+  addEdge,
+  type Node,
+  type Edge,
+  type OnConnect,
+  type NodeProps,
+  Handle,
+  Position,
+  MarkerType,
+} from "@xyflow/react";
+import "@xyflow/react/dist/style.css";
 import { Card, CardContent, Badge, Button, Input, Spinner } from "@mapleos/ui";
 import { rpcCall, mapleApi } from "@/lib/api";
+import { useTranslation } from "react-i18next";
 
-interface WorkflowItem { id: string; name: string; version: number; status: string; created_at: number; updated_at: number }
+/* ─── types ─── */
 
-interface WFNode {
+interface WorkflowItem {
   id: string;
-  type: "llm" | "tool" | "condition" | "human_approval" | "trigger";
+  name: string;
+  version: number;
+  status: string;
+  created_at: number;
+  updated_at: number;
+}
+
+interface WFNodeData {
   label: string;
+  labelKey?: string;
+  nodeType: "llm" | "tool" | "condition" | "human_approval" | "trigger";
   model?: string;
   skillId?: string;
+  expression?: string;
   status?: "idle" | "running" | "completed" | "failed" | "waiting";
-  dependsOn: string[];
-  x: number;
-  y: number;
 }
 
-interface WFEdge {
-  from: string;
-  to: string;
-}
+type RFNode = Node<WFNodeData>;
+type RFEdge = Edge;
 
-const statusLabel: Record<string, string> = { active: "活跃", draft: "草稿", paused: "暂停", failed: "失败" };
-const statusVariant: Record<string, "default" | "secondary" | "outline" | "destructive"> = { active: "default", draft: "secondary", paused: "outline", failed: "destructive" };
+/* ─── constants ─── */
 
-const nodeTypeLabel: Record<string, string> = { llm: "LLM 调用", tool: "工具调用", condition: "条件判断", human_approval: "人工审批", trigger: "触发器" };
-const nodeTypeIcon: Record<string, string> = { llm: "M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 14a4 4 0 1 1 4-4 4 4 0 0 1-4 4z", tool: "M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z", condition: "M16 3h5v5M4 20h5v5M21 3l-7 7M3 20l7-7", human_approval: "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 7a4 4 0 1 0 8 0 4 4 0 0 0-8 0M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75", trigger: "M13 2L3 14h9l-1 8 10-12h-9l1-8z" };
-const nodeTypeColor: Record<string, { bg: string; border: string; accent: string }> = {
-  llm: { bg: "fill-primary/10", border: "stroke-primary", accent: "text-primary" },
-  tool: { bg: "fill-warning/10", border: "stroke-warning", accent: "text-warning" },
-  condition: { bg: "fill-success/10", border: "stroke-success", accent: "text-success" },
-  human_approval: { bg: "fill-destructive/10", border: "stroke-destructive", accent: "text-destructive" },
-  trigger: { bg: "fill-muted", border: "stroke-muted-foreground", accent: "text-muted-foreground" },
+const statusLabel: Record<string, string> = {
+  active: "workflow.status.active",
+  draft: "workflow.status.draft",
+  paused: "workflow.status.paused",
+  failed: "workflow.status.failed",
+};
+const statusVariant: Record<string, "default" | "secondary" | "outline" | "destructive"> = {
+  active: "default",
+  draft: "secondary",
+  paused: "outline",
+  failed: "destructive",
 };
 
-const NODE_PALETTE: WFNode[] = [
-  { id: "node-llm", type: "llm", label: "LLM 调用", model: "auto", dependsOn: [], x: 0, y: 0 },
-  { id: "node-tool", type: "tool", label: "工具调用", skillId: "", dependsOn: [], x: 0, y: 0 },
-  { id: "node-condition", type: "condition", label: "条件判断", dependsOn: [], x: 0, y: 0 },
-  { id: "node-human", type: "human_approval", label: "人工审批", dependsOn: [], x: 0, y: 0 },
-  { id: "node-trigger", type: "trigger", label: "触发器", dependsOn: [], x: 0, y: 0 },
+const nodeTypeLabel: Record<string, string> = {
+  llm: "workflow.nodeTypes.llm",
+  tool: "workflow.nodeTypes.tool",
+  condition: "workflow.nodeTypes.condition",
+  human_approval: "workflow.nodeTypes.humanApproval",
+  trigger: "workflow.nodeTypes.trigger",
+};
+const nodeTypeIcon: Record<string, string> = {
+  llm: "M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 14a4 4 0 1 1 4-4 4 4 0 0 1-4 4z",
+  tool: "M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z",
+  condition: "M16 3h5v5M4 20h5v5M21 3l-7 7M3 20l7-7",
+  human_approval:
+    "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 7a4 4 0 1 0 8 0 4 4 0 0 0-8 0M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75",
+  trigger: "M13 2L3 14h9l-1 8 10-12h-9l1-8z",
+};
+const nodeTypeColor: Record<string, { bg: string; border: string; accent: string }> = {
+  llm: { bg: "bg-primary/10", border: "border-primary", accent: "text-primary" },
+  tool: { bg: "bg-warning/10", border: "border-warning", accent: "text-warning" },
+  condition: { bg: "bg-success/10", border: "border-success", accent: "text-success" },
+  human_approval: { bg: "bg-destructive/10", border: "border-destructive", accent: "text-destructive" },
+  trigger: { bg: "bg-muted", border: "border-muted-foreground", accent: "text-muted-foreground" },
+};
+
+const statusBorder: Record<string, string> = {
+  idle: "border",
+  running: "border-2 border-warning animate-pulse",
+  completed: "border-2 border-success",
+  failed: "border-2 border-destructive",
+  waiting: "border-2 border-muted-foreground",
+};
+
+const PALETTE_ITEMS = [
+  { type: "llm" as const, labelKey: "workflow.nodeTypes.llm" },
+  { type: "tool" as const, labelKey: "workflow.nodeTypes.tool" },
+  { type: "condition" as const, labelKey: "workflow.nodeTypes.condition" },
+  { type: "human_approval" as const, labelKey: "workflow.nodeTypes.humanApproval" },
+  { type: "trigger" as const, labelKey: "workflow.nodeTypes.trigger" },
 ];
 
-const NODE_W = 160;
-const NODE_H = 72;
+const defaultEdgeOptions = {
+  type: "smoothstep" as const,
+  markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
+  style: { strokeWidth: 1.5 },
+};
+
+/* ─── custom node component ─── */
+
+function WFNodeComponent({ data, selected }: NodeProps<RFNode>) {
+  const { t } = useTranslation();
+  const colors = nodeTypeColor[data.nodeType];
+
+  return (
+    <div
+      className={`rounded-lg shadow-card transition-shadow hover:shadow-lg p-3 bg-card min-w-[160px] ${
+        statusBorder[data.status ?? "idle"] ?? "border"
+      } ${selected ? "ring-2 ring-primary" : ""}`}
+    >
+      <Handle type="target" position={Position.Top} className="!w-3 !h-3 !bg-muted-foreground/30 !border-2 !border-card hover:!bg-primary hover:!border-primary" />
+
+      <div className="flex items-center gap-1.5 mb-1">
+        <svg className={`w-4 h-4 ${colors?.accent ?? "text-muted-foreground"}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <path d={nodeTypeIcon[data.nodeType]} />
+        </svg>
+        <span className="text-[13px] font-medium truncate">{data.labelKey ? t(data.labelKey) : data.label}</span>
+      </div>
+
+      <div className="flex items-center gap-1">
+        <Badge variant="outline" className="text-[10px]">{t(nodeTypeLabel[data.nodeType])}</Badge>
+        {data.status && data.status !== "idle" && (
+          <Badge
+            variant={data.status === "running" ? "secondary" : data.status === "completed" ? "default" : data.status === "failed" ? "destructive" : "outline"}
+            className="text-[10px]"
+          >
+            {data.status === "running"
+              ? t("workflow.status.running")
+              : data.status === "completed"
+                ? t("workflow.status.completed")
+                : data.status === "failed"
+                  ? t("workflow.status.failed")
+                  : t("workflow.status.waiting")}
+          </Badge>
+        )}
+      </div>
+
+      {data.nodeType === "llm" && <div className="text-[11px] text-muted-foreground mt-1 font-mono">model: {data.model ?? "auto"}</div>}
+      {data.nodeType === "tool" && <div className="text-[11px] text-muted-foreground mt-1 font-mono">skill: {data.skillId ?? "-"}</div>}
+
+      <Handle type="source" position={Position.Bottom} className="!w-3 !h-3 !bg-muted-foreground/30 !border-2 !border-card hover:!bg-primary hover:!border-primary" />
+    </div>
+  );
+}
+
+const nodeTypes = { wfNode: WFNodeComponent };
+
+/* ─── main component ─── */
 
 export function WorkflowManager() {
+  const { t, i18n } = useTranslation();
+
+  /* ── workflow list state ── */
   const [workflows, setWorkflows] = useState<WorkflowItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -55,481 +168,684 @@ export function WorkflowManager() {
   const [showCreate, setShowCreate] = useState(false);
   const [executing, setExecuting] = useState<string | null>(null);
   const [selectedWf, setSelectedWf] = useState<string | null>(null);
-  const [canvasNodes, setCanvasNodes] = useState<WFNode[]>([]);
-  const [edges, setEdges] = useState<WFEdge[]>([]);
+
+  /* ── canvas state (React Flow) ── */
+  const [nodes, setNodes, onNodesChange] = useNodesState<RFNode>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<RFEdge>([]);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+
+  /* ── sidebar state ── */
   const [consoleLogs, setConsoleLogs] = useState<string[]>([]);
-  const [rightTab, setRightTab] = useState<"console" | "history" | "config">("console");
+  const [rightTab, setRightTab] = useState<"console" | "history" | "config" | "scheduler">("console");
   const [execHistory, setExecHistory] = useState<{ id: string; status: string; started_at: number; completed_at: number | null }[]>([]);
-  const [selectedNode, setSelectedNode] = useState<WFNode | null>(null);
-  const [connectingFrom, setConnectingFrom] = useState<string | null>(null);
-  const [draggingNode, setDraggingNode] = useState<string | null>(null);
-  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
-  const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [isPanning, setIsPanning] = useState(false);
-  const [panStart, setPanStart] = useState({ x: 0, y: 0 });
-  const canvasRef = useRef<HTMLDivElement>(null);
+  const [selectedWfName, setSelectedWfName] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [schedulerJobs, setSchedulerJobs] = useState<{ id: string; workflow_id: string; cron_expr: string; enabled: boolean; next_run_at: number; last_run_at: number | null }[]>([]);
+  const [newJobCron, setNewJobCron] = useState("");
+  const [showNewJob, setShowNewJob] = useState(false);
+
+  /* ── derived ── */
+  const selectedNode = useMemo(() => nodes.find((n) => n.id === selectedNodeId) ?? null, [nodes, selectedNodeId]);
+  const selectedData = selectedNode?.data;
 
   const loadWorkflows = async () => {
     try {
       const result = await rpcCall<{ workflows: WorkflowItem[] }>("workflow.list");
       setWorkflows(result.workflows ?? []);
-    } catch { setWorkflows([]); }
+    } catch {
+      setWorkflows([]);
+    }
     setLoading(false);
   };
 
-  useEffect(() => { loadWorkflows(); }, []);
-
-  const nextPos = useCallback(() => {
-    const baseX = 80 + pan.x;
-    const baseY = 40 + pan.y;
-    const offsetY = canvasNodes.length * (NODE_H + 40);
-    return { x: baseX, y: baseY + offsetY };
-  }, [canvasNodes, pan]);
-
-  const addNode = (template: WFNode) => {
-    const pos = nextPos();
-    const node: WFNode = { ...template, id: `${template.type}-${Date.now()}`, status: "idle", dependsOn: [], x: pos.x, y: pos.y };
-    setCanvasNodes((prev) => [...prev, node]);
-    setConsoleLogs((prev) => [...prev, `[编辑器] 添加节点: ${node.label} (${node.id})`]);
-    if (canvasNodes.length > 0) {
-      const lastNode = canvasNodes[canvasNodes.length - 1];
-      setEdges((prev) => [...prev, { from: lastNode.id, to: node.id }]);
-      setConsoleLogs((prev) => [...prev, `[连线] ${lastNode.label} → ${node.label}`]);
-    }
-  };
-
-  const removeNode = (nodeId: string) => {
-    setCanvasNodes((prev) => prev.filter((n) => n.id !== nodeId));
-    setEdges((prev) => prev.filter((e) => e.from !== nodeId && e.to !== nodeId));
-    if (selectedNode?.id === nodeId) setSelectedNode(null);
-    if (connectingFrom === nodeId) setConnectingFrom(null);
-    setConsoleLogs((prev) => [...prev, `[编辑器] 移除节点: ${nodeId}`]);
-  };
-
-  const toggleConnection = (fromId: string, toId: string) => {
-    const exists = edges.some((e) => e.from === fromId && e.to === toId);
-    if (exists) {
-      setEdges((prev) => prev.filter((e) => !(e.from === fromId && e.to === toId)));
-      setConsoleLogs((prev) => [...prev, `[连线] 移除连接`]);
-    } else {
-      setEdges((prev) => [...prev, { from: fromId, to: toId }]);
-      setConsoleLogs((prev) => [...prev, `[连线] 添加连接`]);
-    }
-  };
-
-  const handleNodeMouseDown = (e: React.MouseEvent, nodeId: string) => {
-    e.stopPropagation();
-    if (connectingFrom) {
-      if (connectingFrom !== nodeId) {
-        toggleConnection(connectingFrom, nodeId);
-      }
-      setConnectingFrom(null);
-      return;
-    }
-    const node = canvasNodes.find((n) => n.id === nodeId);
-    if (!node) return;
-    setSelectedNode(node);
-    setDraggingNode(nodeId);
-    setDragOffset({ x: e.clientX - node.x, y: e.clientY - node.y });
-  };
-
-  const handleCanvasMouseMove = useCallback((e: React.MouseEvent) => {
-    if (draggingNode) {
-      const newX = e.clientX - dragOffset.x;
-      const newY = e.clientY - dragOffset.y;
-      setCanvasNodes((prev) => prev.map((n) => n.id === draggingNode ? { ...n, x: newX, y: newY } : n));
-    }
-    if (isPanning) {
-      const dx = e.clientX - panStart.x;
-      const dy = e.clientY - panStart.y;
-      setPan((prev) => ({ x: prev.x + dx, y: prev.y + dy }));
-      setPanStart({ x: e.clientX, y: e.clientY });
-      setCanvasNodes((prev) => prev.map((n) => ({ ...n, x: n.x + dx, y: n.y + dy })));
-    }
-  }, [draggingNode, dragOffset, isPanning, panStart]);
-
-  const handleCanvasMouseUp = useCallback(() => {
-    setDraggingNode(null);
-    setIsPanning(false);
+  useEffect(() => {
+    loadWorkflows();
   }, []);
 
-  const handleCanvasMouseDown = (e: React.MouseEvent) => {
-    if (e.button === 1 || (e.button === 0 && e.altKey)) {
-      setIsPanning(true);
-      setPanStart({ x: e.clientX, y: e.clientY });
-      return;
-    }
-    if (connectingFrom) {
-      setConnectingFrom(null);
-      return;
-    }
-    setSelectedNode(null);
-  };
+  /* ── load workflow definition into canvas ── */
+  const loadWorkflowDefinition = useCallback(async (wfId: string) => {
+    try {
+      const wf = await mapleApi<{ id: string; name: string; yaml_content: string; version: number }>(`/api/workflows/${wfId}`);
+      setSelectedWfName(wf.name);
 
-  const startConnecting = (nodeId: string) => {
-    setConnectingFrom(nodeId);
-    setConsoleLogs((prev) => [...prev, `[连线] 点击目标节点完成连接`]);
-  };
+      let definition: { nodes?: Array<{ id: string; name: string; node_type: { type: string; model_route?: string; skill_id?: string; [key: string]: unknown }; depends_on?: string[] }> };
+      try {
+        definition = JSON.parse(wf.yaml_content);
+      } catch {
+        setConsoleLogs((prev) => [...prev, t("workflow.log.loadFailed", { id: wfId })]);
+        return;
+      }
 
+      const parsedNodes: RFNode[] = (definition.nodes ?? []).map((n, i) => ({
+        id: n.id,
+        type: "wfNode",
+        position: { x: 100 + i * 220, y: 100 + (i % 2) * 80 },
+        data: {
+          label: n.name,
+          nodeType: n.node_type.type as WFNodeData["nodeType"],
+          model: n.node_type.model_route,
+          skillId: n.node_type.skill_id,
+          status: "idle",
+        },
+      }));
+
+      const parsedEdges: RFEdge[] = [];
+      for (const n of definition.nodes ?? []) {
+        for (const dep of n.depends_on ?? []) {
+          parsedEdges.push({
+            id: `e-${dep}-${n.id}`,
+            source: dep,
+            target: n.id,
+            type: "smoothstep",
+            markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
+          });
+        }
+      }
+
+      setNodes(parsedNodes);
+      setEdges(parsedEdges);
+      setConsoleLogs((prev) => [...prev, t("workflow.log.loaded", { name: wf.name, count: parsedNodes.length })]);
+    } catch (err) {
+      setConsoleLogs((prev) => [...prev, t("workflow.log.loadError", { error: (err as Error).message })]);
+    }
+  }, [setNodes, setEdges, t]);
+
+  /* ── save current canvas as workflow update ── */
+  const saveWorkflow = useCallback(async () => {
+    if (!selectedWf) return;
+    setSaving(true);
+    try {
+      const yamlNodes = nodes.map((n) => ({
+        id: n.id,
+        name: n.data.label,
+        node_type: {
+          type: n.data.nodeType,
+          ...(n.data.nodeType === "llm" && { model_route: n.data.model ?? "auto", prompt_ref: "" }),
+          ...(n.data.nodeType === "tool" && { skill_id: n.data.skillId ?? "", config: {} }),
+        },
+        depends_on: edges.filter((e) => e.target === n.id).map((e) => e.source),
+      }));
+      const definition = JSON.stringify({
+        id: selectedWf,
+        name: selectedWfName ?? selectedWf,
+        version: 1,
+        description: "",
+        trigger: { type: "webhook", path: `/hook/${selectedWf}`, method: "POST" },
+        variables: {},
+        nodes: yamlNodes,
+        hooks: {},
+      });
+      await mapleApi(`/api/workflows/${selectedWf}`, {
+        method: "PUT",
+        body: { yaml_content: definition },
+      });
+      setConsoleLogs((prev) => [...prev, t("workflow.log.saved", { name: selectedWfName ?? selectedWf })]);
+      await loadWorkflows();
+    } catch (err) {
+      setConsoleLogs((prev) => [...prev, t("workflow.log.saveError", { error: (err as Error).message })]);
+    } finally {
+      setSaving(false);
+    }
+  }, [selectedWf, selectedWfName, nodes, edges, loadWorkflows, t]);
+
+  /* ── node palette: add new node to canvas ── */
+  const addNode = useCallback(
+    (template: (typeof PALETTE_ITEMS)[number]) => {
+      const id = `${template.type}-${Date.now()}`;
+      const rfNode: RFNode = {
+        id,
+        type: "wfNode",
+        position: { x: 100 + nodes.length * 40, y: 80 + nodes.length * 120 },
+        data: { label: t(template.labelKey), labelKey: template.labelKey, nodeType: template.type, status: "idle" },
+      };
+      setNodes((prev) => [...prev, rfNode]);
+      const nodeLabel = t(template.labelKey);
+      setConsoleLogs((prev) => [...prev, t("workflow.log.addNode", { label: nodeLabel, id })]);
+
+      if (nodes.length > 0) {
+        const last = nodes[nodes.length - 1];
+        const lastLabel = last.data.labelKey ? t(last.data.labelKey) : last.data.label;
+        setEdges((prev) => [
+          ...prev,
+          { id: `e-${last.id}-${id}`, source: last.id, target: id, type: "smoothstep", markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 } },
+        ]);
+        setConsoleLogs((prev) => [...prev, t("workflow.log.connect", { from: lastLabel, to: nodeLabel })]);
+      }
+    },
+    [nodes, setNodes, setEdges, t],
+  );
+
+  /* ── remove node ── */
+  const removeNode = useCallback(
+    (nodeId: string) => {
+      setNodes((prev) => prev.filter((n) => n.id !== nodeId));
+      setEdges((prev) => prev.filter((e) => e.source !== nodeId && e.target !== nodeId));
+      if (selectedNodeId === nodeId) setSelectedNodeId(null);
+      setConsoleLogs((prev) => [...prev, t("workflow.log.removeNode", { id: nodeId })]);
+    },
+    [setNodes, setEdges, selectedNodeId, t],
+  );
+
+  /* ── connection handler ── */
+  const onConnect: OnConnect = useCallback(
+    (params) => {
+      setEdges((eds) => addEdge({ ...params, type: "smoothstep", markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 } }, eds));
+      setConsoleLogs((prev) => [...prev, t("workflow.log.addConnect")]);
+    },
+    [setEdges, t],
+  );
+
+  /* ── node click → select ── */
+  const onNodeClick = useCallback((_event: React.MouseEvent, node: RFNode) => {
+    setSelectedNodeId(node.id);
+  }, []);
+
+  const onPaneClick = useCallback(() => {
+    setSelectedNodeId(null);
+  }, []);
+
+  /* ── update node data helper ── */
+  const updateNodeData = useCallback(
+    (nodeId: string, patch: Partial<WFNodeData>) => {
+      setNodes((prev) =>
+        prev.map((n) => (n.id === nodeId ? { ...n, data: { ...n.data, ...patch } } : n)),
+      );
+    },
+    [setNodes],
+  );
+
+  /* ── create workflow from canvas ── */
   const handleCreate = async () => {
     if (!createName.trim()) return;
     try {
-      const yamlNodes = canvasNodes.map((n) => ({
-        id: n.id, name: n.label, node_type: { type: n.type, ...(n.type === "llm" && { model_route: n.model ?? "auto", prompt_ref: "" }), ...(n.type === "tool" && { skill_id: n.skillId ?? "", config: {} }) },
-        depends_on: edges.filter((e) => e.to === n.id).map((e) => e.from),
+      const yamlNodes = nodes.map((n) => ({
+        id: n.id,
+        name: n.data.label,
+        node_type: {
+          type: n.data.nodeType,
+          ...(n.data.nodeType === "llm" && { model_route: n.data.model ?? "auto", prompt_ref: "" }),
+          ...(n.data.nodeType === "tool" && { skill_id: n.data.skillId ?? "", config: {} }),
+        },
+        depends_on: edges.filter((e) => e.target === n.id).map((e) => e.source),
       }));
-      const definition = JSON.stringify({ id: createName.trim().replace(/\s+/g, "-").toLowerCase(), name: createName.trim(), version: 1, description: "", trigger: { type: "webhook", path: `/hook/${createName}`, method: "POST" }, variables: {}, nodes: yamlNodes, hooks: {} });
+      const definition = JSON.stringify({
+        id: createName.trim().replace(/\s+/g, "-").toLowerCase(),
+        name: createName.trim(),
+        version: 1,
+        description: "",
+        trigger: { type: "webhook", path: `/hook/${createName}`, method: "POST" },
+        variables: {},
+        nodes: yamlNodes,
+        hooks: {},
+      });
       await rpcCall("workflow.create", { name: createName.trim(), yaml_content: definition });
-      setShowCreate(false); setCreateName(""); setCanvasNodes([]); setEdges([]); setConsoleLogs([]);
+      setShowCreate(false);
+      setCreateName("");
+      setNodes([]);
+      setEdges([]);
+      setConsoleLogs([]);
       await loadWorkflows();
-    } catch (err) { alert(`创建失败: ${(err as Error).message}`); }
+    } catch (err) {
+      alert(`${t("common.failed")}: ${(err as Error).message}`);
+    }
   };
 
+  /* ── execute workflow ── */
   const handleExecute = async (workflowId: string) => {
     setExecuting(workflowId);
-    setCanvasNodes((prev) => prev.map((n) => ({ ...n, status: "idle" as WFNode["status"] })));
-    setConsoleLogs((prev) => [...prev, `[执行] 开始执行工作流 ${workflowId}`]);
+    setNodes((prev) => prev.map((n) => ({ ...n, data: { ...n.data, status: "idle" as const } })));
+    setConsoleLogs((prev) => [...prev, t("workflow.log.execStart", { id: workflowId })]);
     try {
-      const result = await rpcCall<{ exec_id: string; status: string; result?: string; error?: string }>("workflow.execute", { workflow_id: workflowId });
+      const result = await rpcCall<{ exec_id: string; status: string; result?: string; error?: string }>("workflow.execute", {
+        workflow_id: workflowId,
+      });
       if (result.error) {
-        setConsoleLogs((prev) => [...prev, `[执行] 失败: ${result.error}`]);
+        setConsoleLogs((prev) => [...prev, t("workflow.log.execFailed", { error: result.error })]);
       } else {
-        setConsoleLogs((prev) => [...prev, `[执行] 已提交! exec_id=${result.exec_id}, 状态=${result.status}`]);
+        setConsoleLogs((prev) => [...prev, t("workflow.log.execSubmit", { id: result.exec_id, status: result.status })]);
       }
     } catch (err) {
-      setConsoleLogs((prev) => [...prev, `[执行] 出错: ${(err as Error).message}`]);
-    } finally { setExecuting(null); }
+      setConsoleLogs((prev) => [...prev, t("workflow.log.execError", { error: (err as Error).message })]);
+    } finally {
+      setExecuting(null);
+    }
   };
 
+  /* ── SSE: real-time node status updates ── */
   useEffect(() => {
     let es: EventSource | null = null;
     try {
       es = new EventSource("/api/maple/api/events");
+
+      const updateNodeStatus = (nodeId: string, status: WFNodeData["status"], extra?: Partial<WFNodeData>) => {
+        setNodes((prev) => prev.map((n) => (n.id === nodeId ? { ...n, data: { ...n.data, status, ...extra } } : n)));
+      };
+
       es.addEventListener("node.started", (e) => {
         try {
           const d = JSON.parse(e.data);
-          setCanvasNodes((prev) => prev.map((n) => n.id === d.node_id ? { ...n, status: "running" } : n));
-          setConsoleLogs((prev) => [...prev, `[SSE] 节点开始: ${d.node_id}`]);
-        } catch { /* ignore */ }
+          updateNodeStatus(d.node_id, "running");
+          setConsoleLogs((prev) => [...prev, t("workflow.log.nodeStart", { id: d.node_id })]);
+        } catch {
+          /* ignore */
+        }
       });
       es.addEventListener("node.completed", (e) => {
         try {
           const d = JSON.parse(e.data);
-          setCanvasNodes((prev) => prev.map((n) => n.id === d.node_id ? { ...n, status: "completed" } : n));
-          setConsoleLogs((prev) => [...prev, `[SSE] 节点完成: ${d.node_id}`]);
-        } catch { /* ignore */ }
+          updateNodeStatus(d.node_id, "completed");
+          setConsoleLogs((prev) => [...prev, t("workflow.log.nodeComplete", { id: d.node_id })]);
+        } catch {
+          /* ignore */
+        }
       });
       es.addEventListener("node.failed", (e) => {
         try {
           const d = JSON.parse(e.data);
-          setCanvasNodes((prev) => prev.map((n) => n.id === d.node_id ? { ...n, status: "failed" } : n));
-          setConsoleLogs((prev) => [...prev, `[SSE] 节点失败: ${d.node_id} - ${d.error}`]);
-        } catch { /* ignore */ }
+          updateNodeStatus(d.node_id, "failed");
+          setConsoleLogs((prev) => [...prev, t("workflow.log.nodeFail", { id: d.node_id, error: d.error })]);
+        } catch {
+          /* ignore */
+        }
       });
       es.addEventListener("workflow.completed", (e) => {
         try {
           const d = JSON.parse(e.data);
-          setConsoleLogs((prev) => [...prev, `[SSE] 工作流完成: ${d.workflow_id}`]);
-        } catch { /* ignore */ }
+          setConsoleLogs((prev) => [...prev, t("workflow.log.wfComplete", { id: d.workflow_id })]);
+        } catch {
+          /* ignore */
+        }
       });
       es.addEventListener("workflow.failed", (e) => {
         try {
           const d = JSON.parse(e.data);
-          setConsoleLogs((prev) => [...prev, `[SSE] 工作流失败: ${d.workflow_id} - ${d.error}`]);
-        } catch { /* ignore */ }
+          setConsoleLogs((prev) => [...prev, t("workflow.log.wfFail", { id: d.workflow_id, error: d.error })]);
+        } catch {
+          /* ignore */
+        }
       });
-    } catch { /* EventSource unavailable */ }
-    return () => { es?.close(); };
-  }, []);
+    } catch {
+      /* EventSource unavailable */
+    }
+    return () => {
+      es?.close();
+    };
+  }, [setNodes, t]);
 
+  /* ── load execution history ── */
   const loadExecHistory = async (wfId: string) => {
     try {
-      const res = await mapleApi<{ executions: { id: string; status: string; started_at: number; completed_at: number | null }[] }>("/api/workflows/" + wfId + "/executions");
+      const res = await mapleApi<{ executions: { id: string; status: string; started_at: number; completed_at: number | null }[] }>(
+        "/api/workflows/" + wfId + "/executions",
+      );
       setExecHistory(res.executions ?? []);
       setRightTab("history");
-    } catch { setExecHistory([]); }
+    } catch {
+      setExecHistory([]);
+    }
   };
 
+  /* ── scheduler jobs ── */
+  const loadSchedulerJobs = async () => {
+    try {
+      const res = await mapleApi<{ jobs: { id: string; workflow_id: string; cron_expr: string; enabled: boolean; next_run_at: number; last_run_at: number | null }[] }>("/api/scheduler/jobs");
+      setSchedulerJobs(res.jobs ?? []);
+    } catch {
+      setSchedulerJobs([]);
+    }
+  };
+
+  const toggleJob = async (jobId: string, enabled: boolean) => {
+    try {
+      await mapleApi(`/api/scheduler/jobs/${jobId}`, { method: "PUT", body: { enabled } });
+      await loadSchedulerJobs();
+    } catch { /* ignore */ }
+  };
+
+  const deleteJob = async (jobId: string) => {
+    try {
+      await mapleApi(`/api/scheduler/jobs/${jobId}`, { method: "DELETE" });
+      await loadSchedulerJobs();
+    } catch { /* ignore */ }
+  };
+
+  const createJob = async () => {
+    if (!selectedWf || !newJobCron.trim()) return;
+    try {
+      await mapleApi("/api/scheduler/jobs", { method: "POST", body: { workflow_id: selectedWf, cron_expr: newJobCron.trim(), enabled: true } });
+      setNewJobCron("");
+      setShowNewJob(false);
+      await loadSchedulerJobs();
+    } catch { /* ignore */ }
+  };
+
+  /* ── filtered workflow list ── */
   const filtered = workflows.filter((wf) => wf.name.toLowerCase().includes(search.toLowerCase()));
-  if (loading) return <div className="flex items-center justify-center h-full"><Spinner className="w-8 h-8" /></div>;
 
-  const renderEdge = (edge: WFEdge) => {
-    const fromNode = canvasNodes.find((n) => n.id === edge.from);
-    const toNode = canvasNodes.find((n) => n.id === edge.to);
-    if (!fromNode || !toNode) return null;
-    const x1 = fromNode.x + NODE_W / 2;
-    const y1 = fromNode.y + NODE_H;
-    const x2 = toNode.x + NODE_W / 2;
-    const y2 = toNode.y;
-    const midY = (y1 + y2) / 2;
+  if (loading)
     return (
-      <path
-        key={`${edge.from}-${edge.to}`}
-        d={`M${x1},${y1} C${x1},${midY} ${x2},${midY} ${x2},${y2}`}
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        className="text-muted-foreground/50"
-        markerEnd="url(#arrowhead)"
-      />
+      <div className="flex items-center justify-center h-full">
+        <Spinner className="w-8 h-8" />
+      </div>
     );
-  };
-
-  const statusBorder: Record<string, string> = { idle: "border", running: "border-2 border-warning animate-pulse", completed: "border-2 border-success", failed: "border-2 border-destructive", waiting: "border-2 border-muted-foreground" };
-  const nodeColors = nodeTypeColor;
 
   return (
     <div className="flex flex-col h-full">
+      {/* ── top bar ── */}
       <div className="h-10 border-b bg-card flex items-center justify-between px-4">
         <div className="flex items-center gap-2">
-          <h2 className="text-[15px] font-semibold">工作流编辑器</h2>
-          <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索..." className="w-36 h-7 text-xs" />
-          {connectingFrom && <Badge variant="secondary" className="text-[11px]">连线模式 — 点击目标节点</Badge>}
+          <h2 className="text-[15px] font-semibold">{t("workflow.title")}</h2>
+          <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={t("workflow.search")} className="w-36 h-7 text-xs" />
         </div>
         <div className="flex gap-2">
-          <Button size="sm" onClick={() => setShowCreate(true)}>新建</Button>
-          {selectedWf && <Button size="sm" variant="destructive" onClick={() => setSelectedWf(null)}>关闭编辑</Button>}
+          <Button size="sm" onClick={() => setShowCreate(true)}>
+            {t("workflow.create")}
+          </Button>
+          {selectedWf && (
+            <>
+              <Button size="sm" onClick={saveWorkflow} disabled={saving}>
+                {saving ? t("common.saving") : t("common.save")}
+              </Button>
+              <Button size="sm" variant="destructive" onClick={() => { setSelectedWf(null); setSelectedWfName(null); setNodes([]); setEdges([]); }}>
+                {t("workflow.closeEdit")}
+              </Button>
+            </>
+          )}
         </div>
       </div>
 
+      {/* ── create bar ── */}
       {showCreate && (
         <div className="h-9 border-b bg-muted/50 flex items-center gap-2 px-4">
-          <Input value={createName} onChange={(e) => setCreateName(e.target.value)} placeholder="工作流名称..." className="w-36 h-7 text-xs" />
-          <Button size="sm" onClick={handleCreate} disabled={!createName.trim()}>创建</Button>
-          <Button size="sm" variant="ghost" onClick={() => { setShowCreate(false); setCreateName(""); }}>取消</Button>
+          <Input value={createName} onChange={(e) => setCreateName(e.target.value)} placeholder={t("workflow.createTitle")} className="w-36 h-7 text-xs" />
+          <Button size="sm" onClick={handleCreate} disabled={!createName.trim()}>
+            {t("common.create")}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              setShowCreate(false);
+              setCreateName("");
+            }}
+          >
+            {t("common.cancel")}
+          </Button>
         </div>
       )}
 
+      {/* ── main area ── */}
       <div className="flex flex-1 overflow-hidden">
+        {/* ── left sidebar ── */}
         <div className="w-52 border-r bg-card flex flex-col">
+          {/* palette */}
           <div className="p-2 border-b">
-            <div className="text-[11px] text-muted-foreground mb-1.5">节点库 — 点击添加</div>
+            <div className="text-[11px] text-muted-foreground mb-1.5">{t("workflow.nodeLibrary")}</div>
             <div className="space-y-1">
-              {NODE_PALETTE.map((template) => (
+              {PALETTE_ITEMS.map((item) => (
                 <button
-                  key={template.id}
-                  onClick={() => addNode(template)}
+                  key={item.type}
+                  onClick={() => addNode(item)}
                   className="w-full text-left px-2 py-1.5 rounded text-xs hover:bg-accent transition-colors flex items-center gap-1.5"
                 >
-                  <svg className={`w-3.5 h-3.5 ${nodeColors[template.type]?.accent}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d={nodeTypeIcon[template.type]} /></svg>
-                  {nodeTypeLabel[template.type]}
+                  <svg className={`w-3.5 h-3.5 ${nodeTypeColor[item.type]?.accent}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d={nodeTypeIcon[item.type]} />
+                  </svg>
+                  {t(item.labelKey)}
                 </button>
               ))}
             </div>
           </div>
+
+          {/* workflow list */}
           <div className="p-2 border-b overflow-y-auto">
-            <div className="text-[11px] text-muted-foreground mb-1.5">已保存工作流</div>
+            <div className="text-[11px] text-muted-foreground mb-1.5">{t("workflow.savedWorkflows")}</div>
             <div className="space-y-1">
               {filtered.map((wf) => (
                 <button
                   key={wf.id}
-                  onClick={() => { setSelectedWf(wf.id); setConsoleLogs((prev) => [...prev, `[导航] 选择工作流: ${wf.name}`]); }}
+                  onClick={() => {
+                    setSelectedWf(wf.id);
+                    setConsoleLogs((prev) => [...prev, t("workflow.log.selectWf", { name: wf.name })]);
+                    loadWorkflowDefinition(wf.id);
+                  }}
                   className={`w-full text-left px-2 py-1.5 rounded text-xs transition-colors ${
                     selectedWf === wf.id ? "bg-primary/10 text-primary font-medium" : "hover:bg-accent"
                   }`}
                 >
                   <div className="flex items-center justify-between">
                     <span>{wf.name}</span>
-                    <Badge variant={statusVariant[wf.status] ?? "outline"} className="text-[10px] px-1">{statusLabel[wf.status] ?? wf.status}</Badge>
+                    <Badge variant={statusVariant[wf.status] ?? "outline"} className="text-[10px] px-1">
+                      {t(statusLabel[wf.status] ?? wf.status)}
+                    </Badge>
                   </div>
                 </button>
               ))}
-              {filtered.length === 0 && <div className="text-xs text-muted-foreground py-2">暂无工作流</div>}
+              {filtered.length === 0 && <div className="text-xs text-muted-foreground py-2">{t("workflow.noWorkflows")}</div>}
             </div>
           </div>
+
+          {/* workflow actions */}
           {selectedWf && (
             <div className="p-2 space-y-1">
               <Button size="sm" className="w-full" onClick={() => handleExecute(selectedWf)} disabled={executing === selectedWf}>
-                {executing === selectedWf ? "执行中..." : "运行此工作流"}
+                {executing === selectedWf ? t("workflow.executing") : t("workflow.runWorkflow")}
               </Button>
-              <Button size="sm" variant="outline" className="w-full" onClick={() => loadExecHistory(selectedWf)}>执行历史</Button>
+              <Button size="sm" variant="outline" className="w-full" onClick={() => loadExecHistory(selectedWf)}>
+                {t("workflow.execHistory")}
+              </Button>
             </div>
           )}
-          <div className="p-2 text-[10px] text-muted-foreground">
-            <div>Alt+拖拽 = 平移画布</div>
-            <div>点击节点出口 = 连线模式</div>
-          </div>
         </div>
 
-        <div
-          ref={canvasRef}
-          className="flex-1 bg-background overflow-hidden relative"
-          onMouseDown={handleCanvasMouseDown}
-          onMouseMove={handleCanvasMouseMove}
-          onMouseUp={handleCanvasMouseUp}
-          style={{ cursor: isPanning ? "grabbing" : draggingNode ? "grabbing" : connectingFrom ? "crosshair" : "default" }}
-        >
-          <svg className="absolute inset-0 w-full h-full" style={{ pointerEvents: "none" }}>
-            <defs>
-              <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
-                <path d="M 20 0 L 0 0 0 20" fill="none" stroke="currentColor" strokeWidth="0.3" className="text-muted-foreground/20" />
-              </pattern>
-              <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-                <polygon points="0 0, 8 3, 0 6" fill="currentColor" className="text-muted-foreground/50" />
-              </marker>
-            </defs>
-            <rect width="100%" height="100%" fill="url(#grid)" />
-            {edges.map(renderEdge)}
-          </svg>
-
-          {canvasNodes.length === 0 && !selectedWf && (
-            <div className="absolute inset-0 flex items-center justify-center text-muted-foreground text-sm pointer-events-none">
-              点击左侧节点库添加节点，开始编排工作流
+        {/* ── canvas: React Flow ── */}
+        <div className="flex-1 bg-background relative">
+          {nodes.length === 0 && !selectedWf && (
+            <div className="absolute inset-0 flex items-center justify-center text-muted-foreground text-sm pointer-events-none z-10">
+              {t("workflow.canvasHint")}
             </div>
           )}
 
-          {canvasNodes.map((node) => {
-            const colors = nodeColors[node.type];
-            return (
-              <div
-                key={node.id}
-                onMouseDown={(e) => handleNodeMouseDown(e, node.id)}
-                onClick={(e) => e.stopPropagation()}
-                className={`absolute group cursor-grab active:cursor-grabbing select-none ${
-                  selectedNode?.id === node.id ? "ring-2 ring-primary z-10" : ""
-                } ${connectingFrom === node.id ? "ring-2 ring-warning z-10" : ""}`}
-                style={{ left: node.x, top: node.y, width: NODE_W }}
-              >
-                <div className={`rounded-lg shadow-card transition-shadow hover:shadow-lg p-3 ${
-                  statusBorder[node.status ?? "idle"] ?? "border"
-                }`}>
-                  <div className="flex items-center gap-1.5 mb-1">
-                    <svg className={`w-4 h-4 ${colors?.accent ?? "text-muted-foreground"}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d={nodeTypeIcon[node.type]} /></svg>
-                    <span className="text-[13px] font-medium truncate">{node.label}</span>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <Badge variant="outline" className="text-[10px]">{nodeTypeLabel[node.type]}</Badge>
-                    {node.status && node.status !== "idle" && (
-                      <Badge variant={node.status === "running" ? "secondary" : node.status === "completed" ? "default" : node.status === "failed" ? "destructive" : "outline"} className="text-[10px]">
-                        {node.status === "running" ? "运行中" : node.status === "completed" ? "已完成" : node.status === "failed" ? "失败" : "等待"}
-                      </Badge>
-                    )}
-                  </div>
-                  {node.type === "llm" && <div className="text-[11px] text-muted-foreground mt-1 font-mono">model: {node.model ?? "auto"}</div>}
-                  {node.type === "tool" && <div className="text-[11px] text-muted-foreground mt-1 font-mono">skill: {node.skillId ?? "-"}</div>}
-                </div>
-
-                <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 w-4 h-4 rounded-full border-2 border-card bg-muted-foreground/30 hover:bg-primary hover:border-primary cursor-crosshair transition-colors z-20 opacity-0 group-hover:opacity-100"
-                  onMouseDown={(e) => { e.stopPropagation(); startConnecting(node.id); }}
-                />
-
-                <button
-                  onClick={(e) => { e.stopPropagation(); removeNode(node.id); }}
-                  className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-destructive text-white text-[10px] flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-20"
-                >
-                  x
-                </button>
-              </div>
-            );
-          })}
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            onConnect={onConnect}
+            onNodeClick={onNodeClick}
+            onPaneClick={onPaneClick}
+            nodeTypes={nodeTypes}
+            defaultEdgeOptions={defaultEdgeOptions}
+            fitView
+            snapToGrid
+            snapGrid={[20, 20]}
+            proOptions={{ hideAttribution: true }}
+          >
+            <Controls />
+            <MiniMap
+              nodeStrokeWidth={3}
+              zoomable
+              pannable
+              className="!bg-card !border"
+            />
+            <Background gap={20} size={1} className="text-muted-foreground/20" />
+          </ReactFlow>
         </div>
 
+        {/* ── right sidebar ── */}
         <div className="w-52 border-l bg-card flex flex-col">
-          {selectedNode && (
+          {/* node config */}
+          {selectedNode && selectedData && (
             <div className="p-3 border-b">
-              <div className="text-[11px] text-muted-foreground mb-1">节点配置</div>
-              <div className="text-[13px] font-medium">{selectedNode.label}</div>
-              <Badge variant="outline" className="text-[10px] mt-1">{nodeTypeLabel[selectedNode.type]}</Badge>
-              <div className="text-[11px] text-muted-foreground mt-1 font-mono">pos: ({Math.round(selectedNode.x)}, {Math.round(selectedNode.y)})</div>
+              <div className="text-[11px] text-muted-foreground mb-1">{t("workflow.nodeConfig")}</div>
+              <div className="text-[13px] font-medium">{selectedData.labelKey ? t(selectedData.labelKey) : selectedData.label}</div>
+              <Badge variant="outline" className="text-[10px] mt-1">
+                {t(nodeTypeLabel[selectedData.nodeType])}
+              </Badge>
+              <div className="text-[11px] text-muted-foreground mt-1 font-mono">
+                pos: ({Math.round(selectedNode.position.x)}, {Math.round(selectedNode.position.y)})
+              </div>
+
+              {/* label */}
               <div className="mt-2 space-y-1">
-                <label className="text-[11px] text-muted-foreground">节点名称</label>
+                <label className="text-[11px] text-muted-foreground">{t("workflow.nodeName")}</label>
                 <Input
-                  value={selectedNode.label}
-                  onChange={(e) => {
-                    const newLabel = e.target.value;
-                    setCanvasNodes((prev) => prev.map((n) => n.id === selectedNode.id ? { ...n, label: newLabel } : n));
-                    setSelectedNode((prev) => prev ? { ...prev, label: newLabel } : prev);
-                  }}
+                  value={selectedData.label}
+                  onChange={(e) => updateNodeData(selectedNode.id, { label: e.target.value })}
                   className="h-7 text-xs"
                 />
               </div>
-              {selectedNode.type === "llm" && (
+
+              {/* llm model */}
+              {selectedData.nodeType === "llm" && (
                 <div className="mt-2 space-y-1">
-                  <label className="text-[11px] text-muted-foreground">模型路由</label>
-                  <Input
-                    value={selectedNode.model ?? "auto"}
-                    onChange={(e) => {
-                      const newModel = e.target.value;
-                      setCanvasNodes((prev) => prev.map((n) => n.id === selectedNode.id ? { ...n, model: newModel } : n));
-                      setSelectedNode((prev) => prev ? { ...prev, model: newModel } : prev);
-                    }}
-                    className="h-7 text-xs"
-                  />
+                  <label className="text-[11px] text-muted-foreground">{t("workflow.modelRoute")}</label>
+                  <Input value={selectedData.model ?? "auto"} onChange={(e) => updateNodeData(selectedNode.id, { model: e.target.value })} className="h-7 text-xs" />
                 </div>
               )}
-              {selectedNode.type === "tool" && (
+
+              {/* tool skillId */}
+              {selectedData.nodeType === "tool" && (
                 <div className="mt-2 space-y-1">
-                  <label className="text-[11px] text-muted-foreground">技能 ID</label>
+                  <label className="text-[11px] text-muted-foreground">{t("workflow.skillId")}</label>
                   <Input
-                    value={selectedNode.skillId ?? ""}
-                    onChange={(e) => {
-                      const newSkillId = e.target.value;
-                      setCanvasNodes((prev) => prev.map((n) => n.id === selectedNode.id ? { ...n, skillId: newSkillId } : n));
-                      setSelectedNode((prev) => prev ? { ...prev, skillId: newSkillId } : prev);
-                    }}
+                    value={selectedData.skillId ?? ""}
+                    onChange={(e) => updateNodeData(selectedNode.id, { skillId: e.target.value })}
                     className="h-7 text-xs"
                     placeholder="skill_id"
                   />
                 </div>
               )}
-              {selectedNode.type === "condition" && (
+
+              {/* condition expression */}
+              {selectedData.nodeType === "condition" && (
                 <div className="mt-2 space-y-1">
-                  <label className="text-[11px] text-muted-foreground">条件表达式</label>
-                  <Input defaultValue="" className="h-7 text-xs" placeholder="e.g. result.status == 'ok'" />
+                  <label className="text-[11px] text-muted-foreground">{t("workflow.conditionExpr")}</label>
+                  <Input
+                    value={selectedData.expression ?? ""}
+                    onChange={(e) => updateNodeData(selectedNode.id, { expression: e.target.value })}
+                    className="h-7 text-xs"
+                    placeholder="e.g. result.status == 'ok'"
+                  />
                 </div>
               )}
+
+              {/* depends on */}
               <div className="mt-2 space-y-1">
-                <label className="text-[11px] text-muted-foreground">依赖节点</label>
+                <label className="text-[11px] text-muted-foreground">{t("workflow.dependsOn")}</label>
                 <div className="flex flex-wrap gap-1">
-                  {edges.filter((e) => e.to === selectedNode.id).map((e) => {
-                    const src = canvasNodes.find((n) => n.id === e.from);
-                    return <Badge key={e.from} variant="secondary" className="text-[10px]">{src?.label ?? e.from}</Badge>;
-                  })}
-                  {edges.filter((e) => e.to === selectedNode.id).length === 0 && <span className="text-[11px] text-muted-foreground">无依赖</span>}
+                  {edges
+                    .filter((e) => e.target === selectedNode.id)
+                    .map((e) => {
+                      const src = nodes.find((n) => n.id === e.source);
+                      return (
+                        <Badge key={e.source} variant="secondary" className="text-[10px]">
+                          {src?.data.labelKey ? t(src.data.labelKey) : src?.data.label ?? e.source}
+                        </Badge>
+                      );
+                    })}
+                  {edges.filter((e) => e.target === selectedNode.id).length === 0 && (
+                    <span className="text-[11px] text-muted-foreground">{t("workflow.noDeps")}</span>
+                  )}
                 </div>
               </div>
             </div>
           )}
-          {!selectedNode && canvasNodes.length > 0 && (
-            <div className="p-3 border-b text-[11px] text-muted-foreground">点击节点查看配置</div>
+          {!selectedNode && nodes.length > 0 && (
+            <div className="p-3 border-b text-[11px] text-muted-foreground">{t("workflow.clickNodeConfig")}</div>
           )}
+
+          {/* tabs: console / history / config */}
           <div className="flex-1 overflow-y-auto p-3">
             <div className="flex gap-2 mb-2">
-              {(["console", "history", "config"] as const).map((tab) => (
+              {(["console", "history", "config", "scheduler"] as const).map((tab) => (
                 <button
                   key={tab}
-                  onClick={() => setRightTab(tab)}
+                  onClick={() => { setRightTab(tab); if (tab === "scheduler") loadSchedulerJobs(); }}
                   className={`text-[11px] px-2 py-0.5 rounded ${rightTab === tab ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent"}`}
                 >
-                  {tab === "console" ? "控制台" : tab === "history" ? "历史" : "配置"}
+                  {tab === "console" ? t("workflow.tabs.console") : tab === "history" ? t("workflow.tabs.history") : tab === "scheduler" ? t("workflow.tabs.scheduler") : t("workflow.tabs.config")}
                 </button>
               ))}
             </div>
+
             {rightTab === "console" && (
               <div className="space-y-0.5">
                 {consoleLogs.map((log, i) => (
-                  <div key={i} className="text-[11px] font-mono text-muted-foreground leading-tight">{log}</div>
+                  <div key={i} className="text-[11px] font-mono text-muted-foreground leading-tight">
+                    {log}
+                  </div>
                 ))}
-                {consoleLogs.length === 0 && <div className="text-[11px] text-muted-foreground">暂无日志</div>}
+                {consoleLogs.length === 0 && <div className="text-[11px] text-muted-foreground">{t("workflow.noLogs")}</div>}
               </div>
             )}
+
             {rightTab === "history" && (
               <div className="space-y-1">
                 {execHistory.map((exec) => (
                   <div key={exec.id} className="flex items-center gap-2 p-1.5 rounded border text-[11px]">
-                    <Badge variant={exec.status === "completed" ? "default" : exec.status === "failed" ? "destructive" : "secondary"} className="text-[10px]">{exec.status}</Badge>
-                    <span className="text-muted-foreground">{new Date(exec.started_at * 1000).toLocaleString("zh-CN")}</span>
-                    {exec.completed_at && <span className="text-muted-foreground">{((exec.completed_at - exec.started_at)).toFixed(1)}s</span>}
+                    <Badge variant={exec.status === "completed" ? "default" : exec.status === "failed" ? "destructive" : "secondary"} className="text-[10px]">
+                      {exec.status}
+                    </Badge>
+                    <span className="text-muted-foreground">
+                      {new Date(exec.started_at * 1000).toLocaleString(i18n.language?.startsWith("zh") ? "zh-CN" : "en-US")}
+                    </span>
+                    {exec.completed_at && <span className="text-muted-foreground">{(exec.completed_at - exec.started_at).toFixed(1)}s</span>}
                   </div>
                 ))}
-                {execHistory.length === 0 && <div className="text-[11px] text-muted-foreground">暂无执行历史</div>}
+                {execHistory.length === 0 && <div className="text-[11px] text-muted-foreground">{t("workflow.noExecHistory")}</div>}
               </div>
             )}
-            {rightTab === "config" && selectedNode && (
+
+            {rightTab === "config" && selectedNode && selectedData && (
               <div className="space-y-1">
                 <div className="text-[11px] text-muted-foreground">ID: {selectedNode.id}</div>
-                <div className="text-[11px] text-muted-foreground">类型: {nodeTypeLabel[selectedNode.type]}</div>
-                <div className="text-[11px] font-mono">pos: ({Math.round(selectedNode.x)}, {Math.round(selectedNode.y)})</div>
+                <div className="text-[11px] text-muted-foreground">
+                  {t("workflow.nodeType")}: {t(nodeTypeLabel[selectedData.nodeType])}
+                </div>
+                <div className="text-[11px] font-mono">
+                  pos: ({Math.round(selectedNode.position.x)}, {Math.round(selectedNode.position.y)})
+                </div>
+              </div>
+            )}
+
+            {rightTab === "scheduler" && (
+              <div className="space-y-2">
+                {selectedWf && (
+                  <div>
+                    {showNewJob ? (
+                      <div className="flex gap-1 mb-2">
+                        <Input value={newJobCron} onChange={(e) => setNewJobCron(e.target.value)} placeholder="0 */6 * * *" className="h-6 text-[10px] flex-1" />
+                        <Button size="sm" className="h-6 text-[10px]" onClick={createJob} disabled={!newJobCron.trim()}>+</Button>
+                        <Button size="sm" variant="ghost" className="h-6 text-[10px]" onClick={() => { setShowNewJob(false); setNewJobCron(""); }}>x</Button>
+                      </div>
+                    ) : (
+                      <Button size="sm" variant="outline" className="w-full h-6 text-[10px] mb-2" onClick={() => setShowNewJob(true)}>
+                        {t("workflow.scheduler.create")}
+                      </Button>
+                    )}
+                  </div>
+                )}
+                {schedulerJobs.map((job) => (
+                  <div key={job.id} className="rounded border p-1.5 text-[11px]">
+                    <div className="flex items-center justify-between">
+                      <span className="font-mono">{job.cron_expr}</span>
+                      <Badge variant={job.enabled ? "default" : "outline"} className="text-[9px]">
+                        {job.enabled ? "ON" : "OFF"}
+                      </Badge>
+                    </div>
+                    <div className="text-muted-foreground mt-0.5">{job.workflow_id}</div>
+                    <div className="flex gap-1 mt-1">
+                      <Button size="sm" variant="ghost" className="h-5 text-[9px] px-1" onClick={() => toggleJob(job.id, !job.enabled)}>
+                        {job.enabled ? t("common.disable") : t("common.enable")}
+                      </Button>
+                      <Button size="sm" variant="ghost" className="h-5 text-[9px] px-1 text-destructive" onClick={() => deleteJob(job.id)}>
+                        {t("common.delete")}
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+                {schedulerJobs.length === 0 && <div className="text-[11px] text-muted-foreground">{t("workflow.scheduler.noJobs")}</div>}
               </div>
             )}
           </div>

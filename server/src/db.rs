@@ -48,10 +48,12 @@ pub async fn run_migrations(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
         "CREATE TABLE IF NOT EXISTS agents (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
+            description TEXT,
             transport_type TEXT NOT NULL,
             transport_config TEXT NOT NULL,
             capabilities TEXT NOT NULL,
             triggers TEXT,
+            tags TEXT,
             status TEXT NOT NULL DEFAULT 'offline',
             last_heartbeat INTEGER,
             max_concurrent_tasks INTEGER NOT NULL DEFAULT 3,
@@ -60,6 +62,14 @@ pub async fn run_migrations(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
     )
     .execute(pool)
     .await?;
+
+    // Migrate: add new columns to existing agents table (safe if already exist)
+    for stmt in [
+        "ALTER TABLE agents ADD COLUMN description TEXT",
+        "ALTER TABLE agents ADD COLUMN tags TEXT",
+    ] {
+        let _ = sqlx::query(stmt).execute(pool).await; // ignore "duplicate column" errors
+    }
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS kb_documents (
@@ -290,6 +300,60 @@ pub async fn run_migrations(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
     )
     .execute(pool)
     .await?;
+
+    // Board attachments
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS board_attachments (
+            id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL,
+            comment_id TEXT,
+            filename TEXT NOT NULL,
+            content_type TEXT,
+            size INTEGER NOT NULL DEFAULT 0,
+            data BLOB NOT NULL,
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY (task_id) REFERENCES board_tasks(id) ON DELETE CASCADE
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_board_attachments_task ON board_attachments(task_id)",
+    )
+    .execute(pool)
+    .await?;
+
+    // Group rules persistence
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS group_rules (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            rule_type TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at INTEGER NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    // Activity feed
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS activity_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            workspace_id TEXT NOT NULL DEFAULT 'default',
+            actor_name TEXT NOT NULL,
+            action TEXT NOT NULL,
+            target TEXT,
+            details TEXT,
+            created_at INTEGER NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_activity_log_workspace ON activity_log(workspace_id, created_at DESC)")
+        .execute(pool)
+        .await?;
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS task_queue (

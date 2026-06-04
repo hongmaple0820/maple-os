@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { Card, CardContent, Badge, Button, Input, Spinner } from "@mapleos/ui";
 import { mapleApi } from "@/lib/api";
 
@@ -11,14 +12,15 @@ interface KbSearchResult {
 interface IndexLog { id: string; title: string; source_type: string; timestamp: number }
 
 const SOURCE_TYPES = [
-  { value: "document", label: "文档" },
-  { value: "code", label: "代码" },
-  { value: "conversation", label: "对话" },
-  { value: "web", label: "网页" },
-  { value: "note", label: "笔记" },
+  { value: "document", labelKey: "knowledge.sourceTypes.document" },
+  { value: "code", labelKey: "knowledge.sourceTypes.code" },
+  { value: "conversation", labelKey: "knowledge.sourceTypes.conversation" },
+  { value: "web", labelKey: "knowledge.sourceTypes.web" },
+  { value: "note", labelKey: "knowledge.sourceTypes.note" },
 ];
 
 export function KnowledgeManager() {
+  const { t, i18n } = useTranslation();
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<KbSearchResult | null>(null);
   const [searching, setSearching] = useState(false);
@@ -46,7 +48,7 @@ export function KnowledgeManager() {
     try {
       const result = await mapleApi<KbSearchResult>("/api/kb/search", { method: "POST", body: { query: searchQuery.trim(), top_k: 8 } });
       setSearchResults(result);
-    } catch (err) { alert(`搜索失败: ${(err as Error).message}`); }
+    } catch (err) { alert(t("knowledge.errors.searchFailed", { error: (err as Error).message })); }
     finally { setSearching(false); }
   };
 
@@ -56,12 +58,12 @@ export function KnowledgeManager() {
     try {
       await mapleApi("/api/kb/index", {
         method: "POST",
-        body: { title: uploadTitle.trim() || "未命名文档", content: uploadText.trim(), source_type: uploadSource },
+        body: { title: uploadTitle.trim() || "Untitled", content: uploadText.trim(), source_type: uploadSource },
       });
-      const log: IndexLog = { id: `idx-${Date.now()}`, title: uploadTitle.trim() || "未命名文档", source_type: uploadSource, timestamp: Date.now() };
+      const log: IndexLog = { id: `idx-${Date.now()}`, title: uploadTitle.trim() || "Untitled", source_type: uploadSource, timestamp: Date.now() };
       setIndexLogs((prev) => [log, ...prev]);
       setShowUpload(false); setUploadTitle(""); setUploadText(""); setUploadSource("document");
-    } catch (err) { alert(`索引失败: ${(err as Error).message}`); }
+    } catch (err) { alert(t("knowledge.errors.indexFailed", { error: (err as Error).message })); }
     finally { setUploading(false); }
   };
 
@@ -88,7 +90,7 @@ export function KnowledgeManager() {
           setIndexLogs((prev) => [log, ...prev]);
         }
       }
-    } catch (err) { alert(`File upload failed: ${(err as Error).message}`); }
+    } catch (err) { alert(t("knowledge.errors.uploadFailed", { error: (err as Error).message })); }
     finally { setFileUploading(false); e.target.value = ""; }
   };
 
@@ -101,36 +103,43 @@ export function KnowledgeManager() {
 
   const sourceLabel = (source: string) => {
     const found = SOURCE_TYPES.find((s) => s.value === source);
-    return found?.label ?? source;
+    return found ? t(found.labelKey) : source;
+  };
+
+  const handleDeleteDoc = async (docId: string) => {
+    try {
+      await mapleApi(`/api/kb/documents/${docId}`, { method: "DELETE" });
+      setIndexLogs((prev) => prev.filter((l) => l.id !== docId));
+    } catch (err) { alert("Delete failed: " + (err as Error).message); }
   };
 
   return (
     <div className="flex flex-col h-full">
       <div className="h-10 border-b bg-card flex items-center justify-between px-4">
-        <h2 className="text-[15px] font-semibold">知识库</h2>
+        <h2 className="text-[15px] font-semibold">{t("knowledge.title")}</h2>
         <div className="flex items-center gap-2">
-          <Input value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") handleSearch(); }} placeholder="搜索知识库..." className="w-48 h-7 text-xs" />
-          <Button size="sm" onClick={handleSearch} disabled={searching || !searchQuery.trim()}>{searching ? <Spinner className="w-4 h-4" /> : "搜索"}</Button>
-          <Button size="sm" onClick={() => setShowUpload(true)}>上传</Button>
+          <Input value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") handleSearch(); }} placeholder={t("knowledge.searchPlaceholder")} className="w-48 h-7 text-xs" />
+          <Button size="sm" onClick={handleSearch} disabled={searching || !searchQuery.trim()}>{searching ? <Spinner className="w-4 h-4" /> : t("common.search")}</Button>
+          <Button size="sm" onClick={() => setShowUpload(true)}>{t("knowledge.upload")}</Button>
         </div>
       </div>
 
       {showUpload && (
         <div className="border-b bg-muted/50 p-3 space-y-2">
           <div className="flex gap-2">
-            <Input value={uploadTitle} onChange={(e) => setUploadTitle(e.target.value)} placeholder="文档标题..." className="w-36 h-7 text-xs" />
+            <Input value={uploadTitle} onChange={(e) => setUploadTitle(e.target.value)} placeholder={t("knowledge.uploadForm.title")} className="w-36 h-7 text-xs" />
             <select value={uploadSource} onChange={(e) => setUploadSource(e.target.value)} className="h-7 rounded border bg-background text-xs px-2">
-              {SOURCE_TYPES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
+              {SOURCE_TYPES.map((s) => <option key={s.value} value={s.value}>{t(s.labelKey)}</option>)}
             </select>
           </div>
-          <textarea value={uploadText} onChange={(e) => setUploadText(e.target.value)} placeholder="输入要索引的文本内容..." className="w-full h-20 rounded-md border bg-transparent px-3 py-2 text-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
+          <textarea value={uploadText} onChange={(e) => setUploadText(e.target.value)} placeholder={t("knowledge.uploadForm.content")} className="w-full h-20 rounded-md border bg-transparent px-3 py-2 text-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
           <div className="flex gap-2">
-            <Button size="sm" onClick={handleIndex} disabled={uploading || !uploadText.trim()}>{uploading ? "索引中..." : "提交索引"}</Button>
+            <Button size="sm" onClick={handleIndex} disabled={uploading || !uploadText.trim()}>{uploading ? t("knowledge.uploadForm.indexing") : t("knowledge.uploadForm.submitIndex")}</Button>
             <label className="inline-flex items-center px-3 py-1.5 rounded-md text-xs font-medium bg-secondary text-secondary-foreground hover:bg-secondary/80 cursor-pointer">
-              {fileUploading ? "上传中..." : "上传文件"}
+              {fileUploading ? t("knowledge.uploadForm.uploading") : t("knowledge.uploadForm.uploadFile")}
               <input type="file" className="hidden" accept=".txt,.md,.pdf" multiple onChange={handleFileUpload} disabled={fileUploading} />
             </label>
-            <Button size="sm" variant="ghost" onClick={() => { setShowUpload(false); setUploadTitle(""); setUploadText(""); }}>取消</Button>
+            <Button size="sm" variant="ghost" onClick={() => { setShowUpload(false); setUploadTitle(""); setUploadText(""); }}>{t("common.cancel")}</Button>
           </div>
         </div>
       )}
@@ -144,7 +153,7 @@ export function KnowledgeManager() {
               activeTab === tab ? "bg-primary text-primary-foreground font-medium" : "text-muted-foreground hover:bg-accent"
             }`}
           >
-            {tab === "search" ? "搜索结果" : tab === "index" ? "索引文档" : "最近索引"}
+            {tab === "search" ? t("knowledge.searchResults") : tab === "index" ? t("knowledge.indexDocs") : t("knowledge.recentIndex")}
           </button>
         ))}
       </div>
@@ -152,8 +161,8 @@ export function KnowledgeManager() {
       <div className="flex-1 overflow-y-auto p-4 space-y-2">
         {activeTab === "search" && (
           <>
-            {searchResults === null && <div className="text-center text-muted-foreground py-8">输入关键词搜索知识库</div>}
-            {searchResults && searchResults.results.length === 0 && <div className="text-center text-muted-foreground py-8">未找到相关内容</div>}
+            {searchResults === null && <div className="text-center text-muted-foreground py-8">{t("knowledge.emptySearch")}</div>}
+            {searchResults && searchResults.results.length === 0 && <div className="text-center text-muted-foreground py-8">{t("knowledge.noResults")}</div>}
             {searchResults && searchResults.results.map((r) => (
               <Card key={r.id} className="shadow-card">
                 <CardContent className="p-3">
@@ -178,14 +187,14 @@ export function KnowledgeManager() {
 
         {activeTab === "index" && (
           <div className="space-y-3">
-            <div className="text-center text-muted-foreground py-4">点击上方"上传"按钮添加文档到知识库</div>
+            <div className="text-center text-muted-foreground py-4">{t("knowledge.uploadHint")}</div>
             <Card className="shadow-card">
               <CardContent className="p-4 space-y-2">
-                <div className="text-[13px] font-medium">支持的文档类型</div>
+                <div className="text-[13px] font-medium">{t("knowledge.supportedTypes")}</div>
                 <div className="flex flex-wrap gap-1.5">
-                  {SOURCE_TYPES.map((s) => <Badge key={s.value} variant="outline" className="text-[11px]">{s.label} ({s.value})</Badge>)}
+                  {SOURCE_TYPES.map((s) => <Badge key={s.value} variant="outline" className="text-[11px]">{t(s.labelKey)} ({s.value})</Badge>)}
                 </div>
-                <div className="text-[11px] text-muted-foreground">索引格式: title + content + source_type，后端使用 BM25 + Embedding 混合检索</div>
+                <div className="text-[11px] text-muted-foreground">{t("knowledge.indexFormat")}</div>
               </CardContent>
             </Card>
           </div>
@@ -193,7 +202,7 @@ export function KnowledgeManager() {
 
         {activeTab === "recent" && (
           <>
-            {indexLogs.length === 0 && <div className="text-center text-muted-foreground py-8">暂无索引记录</div>}
+            {indexLogs.length === 0 && <div className="text-center text-muted-foreground py-8">{t("knowledge.noIndexRecords")}</div>}
             {indexLogs.map((log) => (
               <Card key={log.id} className="shadow-card">
                 <CardContent className="p-3">
@@ -202,7 +211,10 @@ export function KnowledgeManager() {
                       <span className="text-[13px] font-medium">{log.title}</span>
                       <Badge variant="secondary" className="text-[10px]">{sourceLabel(log.source_type)}</Badge>
                     </div>
-                    <span className="text-[10px] text-muted-foreground font-mono">{new Date(log.timestamp).toLocaleTimeString("zh-CN")}</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] text-muted-foreground font-mono">{new Date(log.timestamp).toLocaleTimeString(i18n.language?.startsWith("zh") ? "zh-CN" : "en-US")}</span>
+                      <button onClick={() => handleDeleteDoc(log.id)} className="text-[10px] text-destructive hover:underline">删除</button>
+                    </div>
                   </div>
                 </CardContent>
               </Card>

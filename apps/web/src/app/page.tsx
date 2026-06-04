@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import { ChatPanel } from "@/components/chat-panel";
 import { WorkflowManager } from "@/components/workflow-manager";
 import { KnowledgeManager } from "@/components/knowledge-manager";
@@ -11,22 +12,12 @@ import { SettingsPage } from "@/components/settings-page";
 import { PluginsPage } from "@/components/plugins-page";
 import CollaborationWorkspace from "@/components/collaboration/workspace-page";
 import { Badge, Button } from "@mapleos/ui";
-import { rpcCall, mapleApi, isAuthenticated, getAuthState, clearAuthState } from "@/lib/api";
+import { rpcCall, mapleApi, isAuthenticated, getAuthState, clearAuthState, setAuthState } from "@/lib/api";
 import { AuthPage } from "@/components/auth-page";
+import { LanguageSwitcher } from "@/components/language-switcher";
+import { ModeSelection } from "@/components/mode-selection";
 
-const NAV_ITEMS = [
-  { id: "dashboard", label: "工作台", icon: "layout-dashboard" },
-  { id: "chat", label: "对话", icon: "message-square" },
-  { id: "workflows", label: "工作流", icon: "git-branch" },
-  { id: "agents", label: "Agent", icon: "bot" },
-  { id: "knowledge", label: "知识库", icon: "book-open" },
-  { id: "collaboration", label: "协作空间", icon: "users" },
-  { id: "scale", label: "SCALE 引擎", icon: "shield" },
-  { id: "plugins", label: "插件", icon: "puzzle" },
-  { id: "settings", label: "设置", icon: "settings" },
-] as const;
-
-type NavId = (typeof NAV_ITEMS)[number]["id"];
+type NavId = "dashboard" | "chat" | "workflows" | "agents" | "knowledge" | "collaboration" | "scale" | "plugins" | "settings";
 
 interface SystemInfo {
   version: string;
@@ -58,6 +49,7 @@ const iconPaths: Record<string, string> = {
 };
 
 export default function Home() {
+  const { t } = useTranslation();
   const [activeNav, setActiveNav] = useState<NavId>("dashboard");
   const [sysInfo, setSysInfo] = useState<SystemInfo | null>(null);
   const [taskStats, setTaskStats] = useState<TaskStats | null>(null);
@@ -65,16 +57,69 @@ export default function Home() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [appMode, setAppMode] = useState<"local" | "cloud" | null>(null);
 
   useEffect(() => {
-    setAuthenticated(isAuthenticated());
+    const savedMode = localStorage.getItem("mapleos-mode") as "local" | "cloud" | null;
+    if (savedMode === "local") {
+      handleLocalMode();
+    } else if (savedMode === "cloud") {
+      setAppMode("cloud");
+      setAuthenticated(isAuthenticated());
+    }
     setLoading(false);
     const handleLogout = () => setAuthenticated(false);
     window.addEventListener("auth:logout", handleLogout);
     return () => window.removeEventListener("auth:logout", handleLogout);
   }, []);
 
+  const getOrCreateDeviceId = (): string => {
+    let deviceId = localStorage.getItem("mapleos-device-id");
+    if (!deviceId) {
+      deviceId = `device-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      localStorage.setItem("mapleos-device-id", deviceId);
+    }
+    return deviceId;
+  };
 
+  const handleLocalMode = async () => {
+    localStorage.setItem("mapleos-mode", "local");
+    setAppMode("local");
+    const deviceId = getOrCreateDeviceId();
+    try {
+      const data = await mapleApi<{ token?: string; user_id?: string; username?: string; role?: string; error?: string }>(
+        "/api/auth/device-login",
+        { method: "POST", body: { device_id: deviceId } }
+      );
+      if (data.token) {
+        setAuthState(data.token, "", {
+          user_id: data.user_id ?? "",
+          username: data.username ?? deviceId.slice(0, 12),
+          role: data.role ?? "user",
+        });
+        setAuthenticated(true);
+      } else {
+        setAuthState("local-token", "", {
+          user_id: deviceId,
+          username: deviceId.slice(0, 12),
+          role: "user",
+        });
+        setAuthenticated(true);
+      }
+    } catch {
+      setAuthState("local-token", "", {
+        user_id: deviceId,
+        username: deviceId.slice(0, 12),
+        role: "user",
+      });
+      setAuthenticated(true);
+    }
+  };
+
+  const handleCloudMode = () => {
+    localStorage.setItem("mapleos-mode", "cloud");
+    setAppMode("cloud");
+  };
 
   const pollData = async () => {
     if (!authenticated) return;
@@ -104,9 +149,25 @@ export default function Home() {
     );
   }
 
+  if (!appMode) {
+    return <ModeSelection onSelectLocal={handleLocalMode} onSelectCloud={handleCloudMode} />;
+  }
+
   if (!authenticated) {
     return <AuthPage onAuth={() => setAuthenticated(true)} />;
   }
+
+  const NAV_ITEMS: { id: NavId; labelKey: string; icon: string }[] = [
+    { id: "dashboard", labelKey: "nav.dashboard", icon: "layout-dashboard" },
+    { id: "chat", labelKey: "nav.chat", icon: "message-square" },
+    { id: "workflows", labelKey: "nav.workflows", icon: "git-branch" },
+    { id: "agents", labelKey: "nav.agents", icon: "bot" },
+    { id: "knowledge", labelKey: "nav.knowledge", icon: "book-open" },
+    { id: "collaboration", labelKey: "nav.collaboration", icon: "users" },
+    { id: "scale", labelKey: "nav.scaleEngine", icon: "shield" },
+    { id: "plugins", labelKey: "nav.plugins", icon: "puzzle" },
+    { id: "settings", labelKey: "nav.settings", icon: "settings" },
+  ];
 
   const handleCommandNavigate = (id: string) => {
     if (id === "open-palette") { setPaletteOpen(true); return; }
@@ -126,19 +187,20 @@ export default function Home() {
           <svg className="w-5 h-5 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
           </svg>
-          <span className="font-semibold text-[15px]">MapleOS</span>
+          <span className="font-semibold text-[15px]">{t("common.appName")}</span>
           <Badge variant="outline" className="text-[10px] font-mono">v{sysInfo?.version ?? "0.1.0"}</Badge>
         </div>
         <div className="flex items-center gap-2">
           <Badge variant={serverOnline ? "default" : "destructive"} className="text-xs">
-            {serverOnline ? "已连接" : "离线"}
+            {serverOnline ? t("common.online") : t("common.offline")}
           </Badge>
           {(() => { const u = getAuthState().user; return u ? <Badge variant="outline" className="text-[10px]">{u.username} ({u.role})</Badge> : null; })()}
+          <LanguageSwitcher />
           <Button variant="ghost" size="sm" onClick={() => { clearAuthState(); setAuthenticated(false); }} className="text-xs">
-            Logout
+            {t("auth.logout")}
           </Button>
           <Button variant="ghost" size="sm" onClick={() => setPaletteOpen(true)} className="text-xs font-mono">
-            &#8984;K 命令
+            &#8984;K
           </Button>
         </div>
       </header>
@@ -160,16 +222,16 @@ export default function Home() {
                 <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
                   <path d={iconPaths[item.icon] ?? ""} />
                 </svg>
-                {item.label}
+                {t(item.labelKey)}
               </button>
             ))}
           </nav>
 
           {sysInfo && (
             <div className="p-3 border-t text-[11px] text-muted-foreground">
-              {sysInfo.agents_count} Agent / {sysInfo.workflows_count} 工作流
+              {sysInfo.agents_count} {t("dashboard.sidebar.agents")} / {sysInfo.workflows_count} {t("dashboard.sidebar.workflows")}
               {taskStats && (
-                <span> / {taskStats.total} 任务</span>
+                <span> / {taskStats.total} {t("dashboard.sidebar.tasks")}</span>
               )}
             </div>
           )}
@@ -177,7 +239,7 @@ export default function Home() {
 
         {/* Main Workspace */}
         <main className="flex-1 flex flex-col overflow-hidden">
-          {activeNav === "dashboard" && <DashboardView sysInfo={sysInfo} taskStats={taskStats} serverOnline={serverOnline} />}
+          {activeNav === "dashboard" && <DashboardView sysInfo={sysInfo} taskStats={taskStats} serverOnline={serverOnline} onNavigate={(id) => setActiveNav(id as NavId)} />}
           {activeNav === "chat" && <ChatPanel />}
           {activeNav === "workflows" && <WorkflowManager />}
           {activeNav === "agents" && <AgentManager />}
@@ -194,17 +256,17 @@ export default function Home() {
         <div className="flex items-center gap-3">
           {taskStats && (
             <>
-              <span className="text-success">{taskStats.completed} 完成</span>
-              <span className="text-warning">{taskStats.running} 运行</span>
-              <span>{taskStats.pending} 等待</span>
-              {taskStats.failed > 0 && <span className="text-destructive">{taskStats.failed} 失败</span>}
+              <span className="text-success">{taskStats.completed} {t("dashboard.status.completed")}</span>
+              <span className="text-warning">{taskStats.running} {t("dashboard.status.running")}</span>
+              <span>{taskStats.pending} {t("dashboard.status.pending")}</span>
+              {taskStats.failed > 0 && <span className="text-destructive">{taskStats.failed} {t("dashboard.status.failed")}</span>}
             </>
           )}
         </div>
         <div className="flex items-center gap-2 font-mono">
           <span>7788</span>
           <span>&middot;</span>
-          <span>&#8984;K 命令面板</span>
+          <span>&#8984;K</span>
         </div>
       </footer>
 
@@ -213,7 +275,8 @@ export default function Home() {
   );
 }
 
-function DashboardView({ sysInfo, taskStats, serverOnline }: { sysInfo: SystemInfo | null; taskStats: TaskStats | null; serverOnline: boolean }) {
+function DashboardView({ sysInfo, taskStats, serverOnline, onNavigate }: { sysInfo: SystemInfo | null; taskStats: TaskStats | null; serverOnline: boolean; onNavigate?: (id: string) => void }) {
+  const { t } = useTranslation();
   const uptimeMin = sysInfo ? Math.floor(sysInfo.uptime_secs / 60) : 0;
   const uptimeHour = Math.floor(uptimeMin / 60);
   const uptimeDisplay = uptimeHour > 0 ? `${uptimeHour}h ${uptimeMin % 60}m` : `${uptimeMin}m`;
@@ -221,30 +284,30 @@ function DashboardView({ sysInfo, taskStats, serverOnline }: { sysInfo: SystemIn
   return (
     <div className="flex-1 overflow-y-auto p-6 space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-h2">工作台</h2>
+        <h2 className="text-h2">{t("dashboard.title")}</h2>
         <div className="flex items-center gap-2">
-          <Badge variant={serverOnline ? "default" : "destructive"} className="text-xs">{serverOnline ? "系统正常" : "服务离线"}</Badge>
-          {sysInfo && <Badge variant="outline" className="text-[10px] font-mono">运行 {uptimeDisplay}</Badge>}
+          <Badge variant={serverOnline ? "default" : "destructive"} className="text-xs">{serverOnline ? t("dashboard.systemNormal") : t("dashboard.serviceOffline")}</Badge>
+          {sysInfo && <Badge variant="outline" className="text-[10px] font-mono">{t("dashboard.uptime", { time: uptimeDisplay })}</Badge>}
         </div>
       </div>
 
       <div className="grid grid-cols-4 gap-3">
-        <MetricCard label="Agent" value={sysInfo?.agents_count ?? 0} color="primary" icon="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 14a4 4 0 1 1 4-4 4 4 0 0 1-4 4z" />
-        <MetricCard label="工作流" value={sysInfo?.workflows_count ?? 0} color="secondary" icon="M6 3v12M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6M18 9c0 3-4 6-8 6" />
-        <MetricCard label="任务总数" value={taskStats?.total ?? 0} color="foreground" icon="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2M9 5a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2M9 5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2m-6 9 2 2 4-4" />
-        <MetricCard label="运行中" value={taskStats?.running ?? 0} color="warning" icon="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
+        <MetricCard label={t("dashboard.metrics.agents")} value={sysInfo?.agents_count ?? 0} color="primary" icon="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 14a4 4 0 1 1 4-4 4 4 0 0 1-4 4z" />
+        <MetricCard label={t("dashboard.metrics.workflows")} value={sysInfo?.workflows_count ?? 0} color="secondary" icon="M6 3v12M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6M18 9c0 3-4 6-8 6" />
+        <MetricCard label={t("dashboard.metrics.totalTasks")} value={taskStats?.total ?? 0} color="foreground" icon="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2M9 5a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2M9 5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2m-6 9 2 2 4-4" />
+        <MetricCard label={t("dashboard.metrics.running")} value={taskStats?.running ?? 0} color="warning" icon="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
       </div>
 
       {taskStats && (
         <div className="bg-card border rounded-lg p-4 shadow-card">
-          <h3 className="text-h3 mb-3">任务队列</h3>
+          <h3 className="text-h3 mb-3">{t("dashboard.taskQueue")}</h3>
           <div className="grid grid-cols-6 gap-3 text-center">
-            <StatusCell label="等待" value={taskStats.pending} color="text-warning" />
-            <StatusCell label="运行" value={taskStats.running} color="text-primary" />
-            <StatusCell label="完成" value={taskStats.completed} color="text-success" />
-            <StatusCell label="失败" value={taskStats.failed} color="text-destructive" />
-            <StatusCell label="死信" value={taskStats.dead_letter} color="text-muted-foreground" />
-            <StatusCell label="总计" value={taskStats.total} />
+            <StatusCell label={t("dashboard.status.pending")} value={taskStats.pending} color="text-warning" />
+            <StatusCell label={t("dashboard.status.running")} value={taskStats.running} color="text-primary" />
+            <StatusCell label={t("dashboard.status.completed")} value={taskStats.completed} color="text-success" />
+            <StatusCell label={t("dashboard.status.failed")} value={taskStats.failed} color="text-destructive" />
+            <StatusCell label={t("dashboard.status.deadLetter")} value={taskStats.dead_letter} color="text-muted-foreground" />
+            <StatusCell label={t("dashboard.status.total")} value={taskStats.total} />
           </div>
           {taskStats.total > 0 && (
             <div className="mt-3 flex gap-1 h-3 rounded-full overflow-hidden bg-muted">
@@ -258,33 +321,33 @@ function DashboardView({ sysInfo, taskStats, serverOnline }: { sysInfo: SystemIn
       )}
 
       <div className="bg-card border rounded-lg p-4 shadow-card">
-        <h3 className="text-h3 mb-3">快速操作</h3>
+        <h3 className="text-h3 mb-3">{t("dashboard.quickActions")}</h3>
         <div className="grid grid-cols-4 gap-2">
-          <QuickAction icon="M6 3v12M18 9a3 3 0 1 0 0-6" label="新建工作流" navId="workflows" />
-          <QuickAction icon="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" label="搜索知识库" navId="knowledge" />
-          <QuickAction icon="M12 2a10 10 0 1 0 10 10" label="注册 Agent" navId="agents" />
-          <QuickAction icon="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" label="开始对话" navId="chat" />
+          <QuickAction icon="M6 3v12M18 9a3 3 0 1 0 0-6" label={t("dashboard.actions.newWorkflow")} navId="workflows" onClick={onNavigate} />
+          <QuickAction icon="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" label={t("dashboard.actions.searchKnowledge")} navId="knowledge" onClick={onNavigate} />
+          <QuickAction icon="M12 2a10 10 0 1 0 10 10" label={t("dashboard.actions.registerAgent")} navId="agents" onClick={onNavigate} />
+          <QuickAction icon="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" label={t("dashboard.actions.startChat")} navId="chat" onClick={onNavigate} />
         </div>
       </div>
 
       {sysInfo && (
         <div className="bg-card border rounded-lg p-4 shadow-card">
-          <h3 className="text-h3 mb-2">系统信息</h3>
+          <h3 className="text-h3 mb-2">{t("dashboard.systemInfo")}</h3>
           <div className="grid grid-cols-2 gap-3 text-[13px]">
             <div className="rounded-md bg-muted/50 p-3">
-              <div className="text-[11px] text-muted-foreground mb-0.5">版本</div>
+              <div className="text-[11px] text-muted-foreground mb-0.5">{t("dashboard.info.version")}</div>
               <div className="font-mono font-medium">{sysInfo.version}</div>
             </div>
             <div className="rounded-md bg-muted/50 p-3">
-              <div className="text-[11px] text-muted-foreground mb-0.5">运行时长</div>
+              <div className="text-[11px] text-muted-foreground mb-0.5">{t("dashboard.info.uptime")}</div>
               <div className="font-mono font-medium">{uptimeDisplay}</div>
             </div>
             <div className="rounded-md bg-muted/50 p-3">
-              <div className="text-[11px] text-muted-foreground mb-0.5">Agent 数量</div>
+              <div className="text-[11px] text-muted-foreground mb-0.5">{t("dashboard.info.agentCount")}</div>
               <div className="font-mono font-medium">{sysInfo.agents_count}</div>
             </div>
             <div className="rounded-md bg-muted/50 p-3">
-              <div className="text-[11px] text-muted-foreground mb-0.5">工作流数量</div>
+              <div className="text-[11px] text-muted-foreground mb-0.5">{t("dashboard.info.workflowCount")}</div>
               <div className="font-mono font-medium">{sysInfo.workflows_count}</div>
             </div>
           </div>
@@ -294,9 +357,10 @@ function DashboardView({ sysInfo, taskStats, serverOnline }: { sysInfo: SystemIn
   );
 }
 
-function QuickAction({ icon, label, navId }: { icon: string; label: string; navId: string }) {
+function QuickAction({ icon, label, navId, onClick }: { icon: string; label: string; navId: string; onClick?: (id: string) => void }) {
   return (
     <button
+      onClick={() => onClick?.(navId)}
       className="flex items-center gap-2 rounded-md border p-3 hover:bg-accent hover:shadow-card transition-all text-left"
     >
       <svg className="w-4 h-4 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d={icon} /></svg>
@@ -305,14 +369,25 @@ function QuickAction({ icon, label, navId }: { icon: string; label: string; navI
   );
 }
 
+const colorClassMap: Record<string, string> = {
+  primary: "text-primary",
+  secondary: "text-secondary",
+  foreground: "text-foreground",
+  warning: "text-warning",
+  success: "text-success",
+  destructive: "text-destructive",
+  muted: "text-muted-foreground",
+};
+
 function MetricCard({ label, value, color, icon }: { label: string; value: number; color: string; icon: string }) {
+  const cls = colorClassMap[color] ?? "text-foreground";
   return (
     <div className="bg-card border rounded-md p-3 shadow-card">
       <div className="flex items-center gap-1.5 mb-1">
-        <svg className={`w-3.5 h-3.5 text-${color}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d={icon} /></svg>
+        <svg className={`w-3.5 h-3.5 ${cls}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d={icon} /></svg>
         <div className="text-[11px] text-muted-foreground">{label}</div>
       </div>
-      <div className={`text-metric text-${color}`}>{value}</div>
+      <div className={`text-metric ${cls}`}>{value}</div>
     </div>
   );
 }
@@ -322,17 +397,6 @@ function StatusCell({ label, value, color }: { label: string; value: number; col
     <div className="rounded-md bg-muted/50 p-2 text-center">
       <div className="text-[11px] text-muted-foreground">{label}</div>
       <div className={`text-[18px] font-semibold ${color ?? ""}`}>{value}</div>
-    </div>
-  );
-}
-
-function PlaceholderView({ title, desc }: { title: string; desc: string }) {
-  return (
-    <div className="flex-1 flex items-center justify-center">
-      <div className="text-center space-y-2">
-        <h2 className="text-h2">{title}</h2>
-        <p className="text-muted-foreground text-sm">{desc}</p>
-      </div>
     </div>
   );
 }

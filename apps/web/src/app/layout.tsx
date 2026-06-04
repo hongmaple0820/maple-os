@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { Providers } from "@/components/providers";
 
 export const metadata: Metadata = {
   title: "MapleOS - Agent 协作工作站操作系统",
@@ -14,7 +15,7 @@ export default function RootLayout({
   return (
     <html lang="zh-CN">
       <body className="min-h-screen bg-background font-sans antialiased">
-        {children}
+        <Providers>{children}</Providers>
       </body>
     </html>
   );

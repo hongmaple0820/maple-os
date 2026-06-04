@@ -1,9 +1,11 @@
 use maple_agent::registry::AgentRegistry;
 use maple_agent::session_store::SessionStore;
+use maple_collab::group_rules::GroupRulesEngine;
 use maple_collab::workspace::WorkspaceManager;
 use maple_engine::event_bus::EventBus;
 use maple_engine::executor::WorkflowExecutor;
 use maple_engine::skill_registry::SkillRegistry;
+use maple_engine::scheduler::Scheduler;
 use maple_engine::task_queue::TaskQueueService;
 use maple_gateway::auth::AuthService;
 use maple_gateway::mcp_host::McpHostManager;
@@ -86,6 +88,8 @@ pub struct AppState {
     pub evolver: Arc<Evolver>,
     pub prompt_version_mgr: Arc<PromptVersionManager>,
     pub task_queue: Arc<TaskQueueService>,
+    pub scheduler: Arc<Scheduler>,
+    pub group_rules: Arc<tokio::sync::RwLock<GroupRulesEngine>>,
     pub mcp_host: Arc<McpHostManager>,
     pub rate_limiter: RateLimiter,
     pub cache: crate::cache::AppCache,

@@ -1,0 +1,614 @@
+{
+  "common": {
+    "appName": "MapleOS",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "save": "Save",
+    "reset": "Reset",
+    "refresh": "Refresh",
+    "search": "Search",
+    "create": "Create",
+    "delete": "Delete",
+    "edit": "Edit",
+    "close": "Close",
+    "loading": "Loading...",
+    "noData": "No data",
+    "processing": "Processing...",
+    "saving": "Saving...",
+    "saved": "Saved",
+    "failed": "Failed",
+    "success": "Success",
+    "version": "Version",
+    "online": "Connected",
+    "offline": "Offline"
+  },
+  "nav": {
+    "dashboard": "Dashboard",
+    "chat": "Chat",
+    "workflows": "Workflows",
+    "agents": "Agents",
+    "knowledge": "Knowledge",
+    "collaboration": "Collaboration",
+    "scaleEngine": "SCALE Engine",
+    "plugins": "Plugins",
+    "settings": "Settings"
+  },
+  "auth": {
+    "login": "Login",
+    "register": "Register",
+    "username": "Username",
+    "password": "Password",
+    "email": "Email (Optional)",
+    "logout": "Logout",
+    "tagline": "Agent Operating System",
+    "noAccount": "Don't have an account?",
+    "hasAccount": "Already have an account?",
+    "minChars": "Min 6 characters",
+    "processing": "Processing...",
+    "error": {
+      "loginFailed": "Login failed, check username and password",
+      "registerFailed": "Registration failed"
+    }
+  },
+  "chat": {
+    "title": "Chat",
+    "send": "Send",
+    "sending": "Sending...",
+    "thinking": "Thinking...",
+    "newSession": "New Chat",
+    "emptyState": "Select an Agent to start collaborating with MapleOS",
+    "messageCount": "{{count}} messages",
+    "autoSelect": "Auto Select",
+    "placeholder": {
+      "default": "Type a message...",
+      "withAgent": "Chat with {{name}}..."
+    },
+    "role": {
+      "user": "You",
+      "assistant": "Assistant",
+      "system": "System",
+      "tool": "Tool"
+    },
+    "knowledgeRef": "Knowledge refs:",
+    "toolStatus": {
+      "pending": "Pending",
+      "running": "Running",
+      "completed": "Completed",
+      "failed": "Failed"
+    },
+    "error": {
+      "requestFailed": "Request failed: {{status}}",
+      "noResponse": "No response body",
+      "llmUnavailable": "LLM unavailable: {{error}}"
+    },
+    "quickPrompts": {
+      "rustAsync": "Write Rust async task processing code",
+      "analyzeTasks": "Analyze recent task execution",
+      "workflowDag": "Explain Workflow DAG scheduling",
+      "recommendModel": "Recommend a model for code generation"
+    }
+  },
+  "dashboard": {
+    "title": "Dashboard",
+    "systemNormal": "System Normal",
+    "serviceOffline": "Service Offline",
+    "uptime": "Uptime {{time}}",
+    "taskQueue": "Task Queue",
+    "quickActions": "Quick Actions",
+    "systemInfo": "System Info",
+    "metrics": {
+      "agents": "Agents",
+      "workflows": "Workflows",
+      "totalTasks": "Total Tasks",
+      "running": "Running"
+    },
+    "status": {
+      "pending": "Pending",
+      "running": "Running",
+      "completed": "Done",
+      "failed": "Failed",
+      "deadLetter": "Dead Letter",
+      "total": "Total"
+    },
+    "actions": {
+      "newWorkflow": "New Workflow",
+      "searchKnowledge": "Search Knowledge",
+      "registerAgent": "Register Agent",
+      "startChat": "Start Chat"
+    },
+    "info": {
+      "version": "Version",
+      "uptime": "Uptime",
+      "agentCount": "Agent Count",
+      "workflowCount": "Workflow Count"
+    },
+    "sidebar": {
+      "agents": "Agents",
+      "workflows": "Workflows",
+      "tasks": "Tasks"
+    }
+  },
+  "agent": {
+    "title": "Agent Center",
+    "refresh": "Refresh",
+    "register": "Register",
+    "dispatchTask": "Dispatch Task",
+    "confirmRegister": "Confirm",
+    "dispatch": "Dispatch",
+    "teamTitle": "Agent Team",
+    "emptyState": "No agents yet, click Register to add",
+    "selectAgent": "Select Agent",
+    "taskDescription": "Task description...",
+    "agentName": "Agent name...",
+    "model": "Model: {{model}}",
+    "llmModels": "LLM Models",
+    "skills": "Available Skills",
+    "memorySearch": "Memory Search",
+    "searchMemory": "Search memory or write a note...",
+    "memoryWrite": "Write",
+    "noMemory": "No memories",
+    "collabEmpty": "Select an Agent to start collaboration",
+    "status": {
+      "idle": "Idle",
+      "busy": "Busy",
+      "offline": "Offline"
+    },
+    "messages": {
+      "deregistered": "Agent \"{{id}}\" deregistered",
+      "registered": "Agent \"{{name}}\" registered",
+      "dispatched": "Task dispatched to {{agentId}}",
+      "memoryWritten": "Memory written: {{key}}",
+      "noResponse": "(No response)"
+    },
+    "errors": {
+      "deregisterFailed": "Deregister failed: {{error}}",
+      "registerFailed": "Register failed: {{error}}",
+      "dispatchFailed": "Dispatch failed: {{error}}",
+      "writeFailed": "Write failed: {{error}}",
+      "requestFailed": "Request failed: {{error}}"
+    }
+  },
+  "workflow": {
+    "title": "Workflow Editor",
+    "search": "Search...",
+    "create": "New",
+    "closeEdit": "Close Editor",
+    "createTitle": "Workflow name...",
+    "nodeLibrary": "Node Library — Click to add",
+    "savedWorkflows": "Saved Workflows",
+    "noWorkflows": "No workflows",
+    "runWorkflow": "Run Workflow",
+    "executing": "Running...",
+    "execHistory": "Execution History",
+    "connectMode": "Connect Mode — Click target node",
+    "nodeConfig": "Node Config",
+    "nodeName": "Node Name",
+    "modelRoute": "Model Route",
+    "skillId": "Skill ID",
+    "conditionExpr": "Condition Expression",
+    "dependsOn": "Dependencies",
+    "noDeps": "No dependencies",
+    "clickNodeConfig": "Click a node to view config",
+    "canvasHint": "Click nodes in the library to start building your workflow",
+    "controls": {
+      "altDrag": "Alt+Drag = Pan canvas",
+      "clickOutput": "Click node output = Connect mode"
+    },
+    "tabs": {
+      "console": "Console",
+      "history": "History",
+      "config": "Config",
+      "scheduler": "Scheduler"
+    },
+    "nodeTypes": {
+      "llm": "LLM Call",
+      "tool": "Tool Call",
+      "condition": "Condition",
+      "humanApproval": "Human Approval",
+      "trigger": "Trigger"
+    },
+    "status": {
+      "active": "Active",
+      "draft": "Draft",
+      "paused": "Paused",
+      "failed": "Failed",
+      "running": "Running",
+      "completed": "Completed",
+      "waiting": "Waiting"
+    },
+    "log": {
+      "addNode": "[Editor] Added node: {{label}} ({{id}})",
+      "removeNode": "[Editor] Removed node: {{id}}",
+      "connect": "[Connect] {{from}} → {{to}}",
+      "removeConnect": "[Connect] Removed connection",
+      "addConnect": "[Connect] Added connection",
+      "connectHint": "[Connect] Click target node to complete",
+      "selectWf": "[Nav] Selected workflow: {{name}}",
+      "execStart": "[Exec] Starting workflow {{id}}",
+      "execSubmit": "[Exec] Submitted! exec_id={{id}}, status={{status}}",
+      "execFailed": "[Exec] Failed: {{error}}",
+      "execError": "[Exec] Error: {{error}}",
+      "nodeStart": "[SSE] Node started: {{id}}",
+      "nodeComplete": "[SSE] Node completed: {{id}}",
+      "nodeFail": "[SSE] Node failed: {{id}} - {{error}}",
+      "wfComplete": "[SSE] Workflow completed: {{id}}",
+      "wfFail": "[SSE] Workflow failed: {{id}} - {{error}}"
+    },
+    "noLogs": "No logs",
+    "noExecHistory": "No execution history"
+  },
+  "knowledge": {
+    "title": "Knowledge Base",
+    "searchPlaceholder": "Search knowledge base...",
+    "upload": "Upload",
+    "searchResults": "Search Results",
+    "indexDocs": "Index Documents",
+    "recentIndex": "Recent Index",
+    "emptySearch": "Enter keywords to search the knowledge base",
+    "noResults": "No results found",
+    "uploadHint": "Click the Upload button above to add documents",
+    "supportedTypes": "Supported Document Types",
+    "indexFormat": "Index format: title + content + source_type, BM25 + Embedding hybrid search",
+    "noIndexRecords": "No index records",
+    "uploadForm": {
+      "title": "Document title...",
+      "content": "Enter text content to index...",
+      "submitIndex": "Submit Index",
+      "indexing": "Indexing...",
+      "uploadFile": "Upload File",
+      "uploading": "Uploading..."
+    },
+    "sourceTypes": {
+      "document": "Document",
+      "code": "Code",
+      "conversation": "Conversation",
+      "web": "Web",
+      "note": "Note"
+    },
+    "errors": {
+      "searchFailed": "Search failed: {{error}}",
+      "indexFailed": "Index failed: {{error}}",
+      "uploadFailed": "File upload failed: {{error}}"
+    }
+  },
+  "settings": {
+    "title": "Settings",
+    "saveConfig": "Save Config",
+    "saving": "Saving...",
+    "sections": {
+      "models": "Models",
+      "sync": "Sync",
+      "security": "Security",
+      "teams": "Teams"
+    },
+    "models": {
+      "llmTitle": "LLM Models",
+      "ollamaUrl": "Ollama URL",
+      "openaiKey": "OpenAI API Key",
+      "defaultModel": "Default Model Route",
+      "autoSelect": "auto (Auto Select)",
+      "registeredModels": "Registered Models:",
+      "noModels": "No models — check Ollama URL",
+      "vectorDb": "Vector Database",
+      "qdrantUrl": "Qdrant URL (Optional)",
+      "qdrantHint": "Leave empty to use in-memory vector search"
+    },
+    "sync": {
+      "title": "Sync Config",
+      "webdavUrl": "WebDAV URL",
+      "webdavUser": "WebDAV Username",
+      "webdavPass": "WebDAV Password",
+      "strategy": "Strategy: Local-first (CRDT + Automerge)",
+      "strategyDetail": "Data stored locally in SQLite first, WebDAV for cross-device sync"
+    },
+    "security": {
+      "title": "Security Config",
+      "gatewayMode": "SCALE Gateway Mode",
+      "strict": "strict (All tool calls require approval)",
+      "permissive": "permissive (Only sensitive ops require approval)",
+      "off": "off (No interception)",
+      "localOnly": "Data stored locally only (no cloud)",
+      "gatewayDesc": "SCALE Gateway: Tool call interception, sensitive op detection, brute force detection",
+      "localFirst": "Local-first: Data stored in local SQLite by default",
+      "vectorNote": "Vector DB: Qdrant optional, in-memory mode when empty"
+    },
+    "teams": {
+      "title": "Team Config",
+      "desc": "Multi-user collaboration (Phase 3 in development):",
+      "multiTenant": "- Multi-tenant isolation",
+      "rbac": "- Roles & permissions",
+      "shared": "- Shared workflows & knowledge",
+      "audit": "- Audit logs",
+      "enterprise": "Enterprise Feature — Phase 3"
+    },
+    "errors": {
+      "saveFailed": "Save failed: {{error}}"
+    },
+    "automation": {
+      "title": "Automation Rules",
+      "addRule": "Add Rule",
+      "editRule": "Edit Rule",
+      "ruleName": "Rule Name",
+      "ruleType": "Rule Type",
+      "enabled": "Enabled",
+      "disabled": "Disabled",
+      "types": {
+        "auto_assign": "Auto Assign",
+        "auto_approve": "Auto Approve",
+        "rate_limit": "Rate Limit",
+        "time_window": "Time Window"
+      },
+      "delete": "Delete",
+      "save": "Save",
+      "cancel": "Cancel"
+    },
+    "agents": {
+      "title": "Agent Management",
+      "register": "Register Agent",
+      "name": "Name",
+      "description": "Description",
+      "model": "Model",
+      "registerBtn": "Register",
+      "delete": "Delete",
+      "online": "Online",
+      "offline": "Offline"
+    }
+  },
+  "scale": {
+    "title": "SCALE Engine",
+    "bridgeOnline": "Bridge Online",
+    "bridgeOffline": "Bridge Offline",
+    "toolCount": "{{count}} tools",
+    "tabs": {
+      "tools": "Tools",
+      "call": "Tool Call",
+      "artifacts": "Artifacts"
+    },
+    "bridgeOfflineHint": "SCALE Engine bridge service is not running.",
+    "bridgeCommand": "node core/scale-engine/bridge-http.mjs",
+    "bridgePorts": "Bridge listens on port 7790, provides /health /tools /call /mcp",
+    "callTitle": "Call: {{name}}",
+    "paramsLabel": "Parameters (JSON)",
+    "paramsPlaceholder": "Enter JSON parameters...",
+    "execute": "Execute",
+    "executing": "Executing...",
+    "selectToolHint": "Select a tool from the list to call",
+    "createArtifact": "Create Artifact",
+    "titlePlaceholder": "Title...",
+    "fsmStates": "FSM State Flow",
+    "artifactTypes": "Artifact Types",
+    "callLog": "Call Log",
+    "toolCategories": "Tool Categories",
+    "bridgePort": "Bridge Port: 7790",
+    "backendPort": "Rust Backend Port: 7788",
+    "protocol": "Protocol: MCP JSON-RPC",
+    "noLogs": "No logs",
+    "fsmStateLabels": {
+      "draft": "Draft",
+      "reviewing": "Reviewing",
+      "approved": "Approved",
+      "inProgress": "In Progress",
+      "completed": "Completed",
+      "cancelled": "Cancelled"
+    },
+    "artifactTypeLabels": {
+      "spec": "Spec",
+      "plan": "Plan",
+      "task": "Task",
+      "defect": "Defect",
+      "testCase": "Test Case",
+      "knowledge": "Knowledge"
+    }
+  },
+  "plugin": {
+    "title": "Plugin Marketplace",
+    "installed": "Installed",
+    "registeredSkills": "Registered Skills",
+    "installing": "Installing...",
+    "notInstalled": "Not Installed",
+    "install": "Install",
+    "uninstall": "Uninstall",
+    "installLog": "Install Log",
+    "noLogs": "No logs",
+    "all": "All",
+    "log": {
+      "installStart": "[Install] Installing {{name}}...",
+      "installSuccess": "[Install] {{name}} installed",
+      "installFailed": "[Install] {{name}} install failed: {{error}}",
+      "uninstallStart": "[Uninstall] Uninstalling {{name}}...",
+      "uninstallSuccess": "[Uninstall] {{name}} uninstalled",
+      "uninstallFailed": "[Uninstall] {{name}} uninstall failed: {{error}}"
+    },
+    "categories": {
+      "scaleEngine": "SCALE Engine",
+      "builtinSkills": "Built-in Skills",
+      "pendingInstall": "Pending Install"
+    },
+    "items": {
+      "scaleCreate": { "name": "SCALE Create", "desc": "Create Spec/Plan/Task/Defect artifacts" },
+      "scaleTransition": { "name": "SCALE Transition", "desc": "Transition artifact state via FSM actions" },
+      "scaleList": { "name": "SCALE List", "desc": "List artifacts by type/state filter" },
+      "scaleShow": { "name": "SCALE Show", "desc": "View artifact details and FSM context" },
+      "scaleContext": { "name": "SCALE Context", "desc": "Build FSM + knowledge context for current session" },
+      "scaleStats": { "name": "SCALE Stats", "desc": "Get engine statistics" },
+      "scaleAvailableActions": { "name": "SCALE Actions", "desc": "Get available FSM actions for an artifact" },
+      "webSearch": { "name": "Web Search", "desc": "Search engine capability" },
+      "codeExecute": { "name": "Code Execute", "desc": "Execute code snippets in sandbox" },
+      "fileOps": { "name": "File Operations", "desc": "Read and write file system" },
+      "echo": { "name": "Echo Test", "desc": "Returns input test skill" },
+      "httpRequest": { "name": "HTTP Request", "desc": "Make HTTP requests" },
+      "playwright": { "name": "Playwright Browser", "desc": "Browser automation control" },
+      "pdf": { "name": "PDF Processing", "desc": "Read and parse PDF documents" },
+      "vercelDeploy": { "name": "Vercel Deploy", "desc": "One-click deploy to Vercel" }
+    }
+  },
+  "collab": {
+    "workspace": "Workspace",
+    "projectName": "MapleOS Dev",
+    "searchPlaceholder": "Search tasks, members, discussions...",
+    "tabs": {
+      "overview": "Overview",
+      "kanban": "Kanban",
+      "team": "Team",
+      "discussions": "Discussions",
+      "settings": "Settings"
+    },
+    "overview": {
+      "recentActivity": "Recent Activity",
+      "viewAll": "View All",
+      "projectOverview": "Project Overview",
+      "progress": "Progress",
+      "dueDate": "Due Date",
+      "daysLeft": "{{days}} days left",
+      "generateReport": "Generate Report"
+    },
+    "stats": {
+      "todo": "To Do",
+      "inProgress": "In Progress",
+      "done": "Done",
+      "review": "Review"
+    },
+    "kanban": {
+      "filter": "Filter",
+      "thisWeek": "This Week",
+      "newTask": "New Task",
+      "title": "Kanban Board",
+      "taskCount": "{{count}} tasks",
+      "addCard": "Add Card",
+      "columns": {
+        "todo": "To Do",
+        "inProgress": "In Progress",
+        "review": "Review",
+        "done": "Done"
+      }
+    },
+    "taskDetail": {
+      "noDescription": "No description",
+      "assignee": "Assignee:",
+      "unassigned": "Unassigned",
+      "dueDate": "Due Date:",
+      "notSet": "Not set",
+      "priority": "Priority:",
+      "taskDiscussion": "Task Discussion",
+      "addComment": "Add a comment...",
+      "title": "Title",
+      "description": "Description",
+      "status": "Status",
+      "assigneeName": "Assignee",
+      "tags": "Tags",
+      "dueDateField": "Due Date",
+      "deleteTask": "Delete Task",
+      "cancel": "Cancel",
+      "save": "Save",
+      "priorityLow": "Low",
+      "priorityMedium": "Medium",
+      "priorityHigh": "High",
+      "assigneePlaceholder": "Enter assignee name...",
+      "tagsPlaceholder": "Separate tags with commas...",
+      "titlePlaceholder": "Task title...",
+      "descPlaceholder": "Task description (optional)..."
+    },
+    "comments": {
+      "title": "Discussions",
+      "placeholder": "Share your thoughts...",
+      "count": "{{count}} discussions",
+      "attach": "Attach",
+      "mention": "Mention",
+      "tag": "Tag",
+      "reply": "Reply",
+      "justNow": "Just now",
+      "me": "Me"
+    },
+    "online": {
+      "title": "Team Members",
+      "count": "{{count}} online",
+      "lastActive": "Last active:",
+      "moreMembers": "{{count}} more members",
+      "invite": "Invite Members",
+      "videoCall": "Video Call",
+      "status": {
+        "online": "Online",
+        "away": "Away",
+        "busy": "Busy",
+        "offline": "Offline"
+      }
+    },
+    "settings": {
+      "title": "Workspace Settings",
+      "name": "Workspace Name",
+      "description": "Description",
+      "maxAgents": "Max Agents",
+      "autoApprove": "Auto Approve",
+      "kbEnabled": "Enable Knowledge Base",
+      "save": "Save Settings",
+      "dangerZone": "Danger Zone",
+      "deleteWorkspace": "Delete Workspace",
+      "deleteWarning": "This action cannot be undone. All data will be permanently deleted.",
+      "deleteConfirm": "Are you sure you want to delete this workspace? This cannot be undone."
+    },
+    "members": {
+      "title": "Workspace Members",
+      "count": "{{count}} members",
+      "addMember": "+ Add Member",
+      "memberName": "Member Name",
+      "human": "Human",
+      "agent": "Agent",
+      "add": "Add",
+      "remove": "Remove",
+      "empty": "No members"
+    },
+    "notifications": {
+      "title": "Notifications",
+      "markAllRead": "Mark all read",
+      "empty": "No notifications"
+    },
+    "chart": {
+      "taskDistribution": "Task Distribution",
+      "noData": "No data"
+    }
+  },
+  "command": {
+    "searchPlaceholder": "Type a command or search...",
+    "noResults": "No matching commands",
+    "openHint": "⌘K Open",
+    "closeHint": "ESC Close",
+    "executeHint": "Enter Execute",
+    "categories": {
+      "navigation": "Navigation",
+      "action": "Action"
+    },
+    "commands": {
+      "gotoDashboard": "Go to Dashboard",
+      "gotoWorkflow": "Go to Workflows",
+      "gotoAgent": "Go to Agent Center",
+      "gotoKnowledge": "Go to Knowledge Base",
+      "startChat": "Start Chat",
+      "createWorkflow": "New Workflow",
+      "runRecentWorkflow": "Run Recent Workflow",
+      "searchKnowledge": "Search Knowledge Base",
+      "uploadToKnowledge": "Upload to Knowledge Base",
+      "registerAgent": "Register New Agent",
+      "viewScaleStats": "View SCALE Stats"
+    }
+  },
+  "language": {
+    "zh": "中文",
+    "en": "English",
+    "switch": "Switch Language"
+  },
+  "mode": {
+    "selectTitle": "Select Run Mode",
+    "local": "Local Mode",
+    "localDesc": "No login required, start LAN server, device ID auto-creates temp account",
+    "cloud": "Cloud Mode",
+    "cloudDesc": "Login required, connect to cloud server (coming soon)",
+    "comingSoon": "Coming Soon",
+    "startLocal": "Start Local Mode",
+    "lanServer": "LAN Server",
+    "lanServerRunning": "LAN Server Running",
+    "lanServerStarting": "Starting LAN server...",
+    "deviceId": "Device ID",
+    "tempAccount": "Temp Account",
+    "connectedClients": "Connected Clients"
+  }
+}
