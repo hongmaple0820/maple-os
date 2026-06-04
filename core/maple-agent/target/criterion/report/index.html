@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <title>Index - Criterion.rs</title>
+    <style type="text/css">
+        body {
+            font: 14px Helvetica Neue;
+            text-rendering: optimizelegibility;
+        }
+
+        .body {
+            width: 960px;
+            margin: auto;
+        }
+
+        a:link {
+            color: #1F78B4;
+            text-decoration: none;
+        }
+
+        h2 {
+            font-size: 36px;
+            font-weight: 300;
+        }
+
+        h3 {
+            font-size: 24px;
+            font-weight: 300;
+        }
+
+        #footer {
+            height: 40px;
+            background: #888;
+            color: white;
+            font-size: larger;
+            font-weight: 300;
+        }
+
+        #footer a {
+            color: white;
+            text-decoration: underline;
+        }
+
+        #footer p {
+            text-align: center
+        }
+
+        table {
+            border-collapse: collapse;
+        }
+
+        table,
+        th,
+        td {
+            border: 1px solid #888;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="body">
+        <h2>Criterion.rs Benchmark Index</h2>
+        See individual benchmark pages below for more details.
+        <ul>
+            <li><a href="../credential_stripping\report/index.html">credential_stripping</a></li>
+            
+            <ul>
+                <li><a href="../credential_stripping\large_json\report/index.html">large_json</a></li>
+                <li><a href="../credential_stripping\small_json\report/index.html">small_json</a></li>
+            </ul>
+            <li>lane_manager</li>
+            
+            <ul>
+                <li><a href="../lane_manager\complete_lifecycle\report/index.html">complete_lifecycle</a></li>
+            </ul>
+            <li><a href="../parallel_tools\report/index.html">parallel_tools</a></li>
+            
+            <ul>
+                <li>
+                    <table>
+                        <tr>
+                            <th></th>
+                            <th><a href="../parallel_tools\execute\report/index.html">execute</a></th>
+                        </tr>
+                        <tr>
+                            <th>2</th>
+                            <td><a href="../parallel_tools/execute/2\report/index.html">parallel_tools/execute/2</a></td>
+                        </tr>
+                        <tr>
+                            <th>5</th>
+                            <td><a href="../parallel_tools/execute/5\report/index.html">parallel_tools/execute/5</a></td>
+                        </tr>
+                        <tr>
+                            <th>10</th>
+                            <td><a href="../parallel_tools/execute/10\report/index.html">parallel_tools/execute/10</a></td>
+                        </tr>
+                    </table>
+                </li>
+            </ul>
+            <li><a href="../platform_registry\report/index.html">platform_registry</a></li>
+            
+            <ul>
+                <li><a href="../platform_registry\route_message\report/index.html">route_message</a></li>
+                <li><a href="../platform_registry\with_capability\report/index.html">with_capability</a></li>
+            </ul>
+            <li><a href="../skill_discovery\report/index.html">skill_discovery</a></li>
+            
+            <ul>
+                <li>
+                    <table>
+                        <tr>
+                            <th></th>
+                            <th><a href="../skill_discovery\evaluate\report/index.html">evaluate</a></th>
+                        </tr>
+                        <tr>
+                            <th>10</th>
+                            <td><a href="../skill_discovery/evaluate/10\report/index.html">skill_discovery/evaluate/10</a></td>
+                        </tr>
+                        <tr>
+                            <th>50</th>
+                            <td><a href="../skill_discovery/evaluate/50\report/index.html">skill_discovery/evaluate/50</a></td>
+                        </tr>
+                        <tr>
+                            <th>100</th>
+                            <td><a href="../skill_discovery/evaluate/100\report/index.html">skill_discovery/evaluate/100</a></td>
+                        </tr>
+                    </table>
+                </li>
+            </ul>
+            <li><a href="../tool_sync\report/index.html">tool_sync</a></li>
+            
+            <ul>
+                <li><a href="../tool_sync\update_no_change\report/index.html">update_no_change</a></li>
+                <li><a href="../tool_sync\update_with_changes\report/index.html">update_with_changes</a></li>
+            </ul>
+            <li>trajectory</li>
+            
+            <ul>
+                <li><a href="../trajectory\score\report/index.html">score</a></li>
+            </ul>
+            <li><a href="../trident_compaction\report/index.html">trident_compaction</a></li>
+            
+            <ul>
+                <li>
+                    <table>
+                        <tr>
+                            <th></th>
+                            <th><a href="../trident_compaction\compact\report/index.html">compact</a></th>
+                        </tr>
+                        <tr>
+                            <th>20</th>
+                            <td><a href="../trident_compaction/compact/20\report/index.html">trident_compaction/compact/20</a></td>
+                        </tr>
+                        <tr>
+                            <th>50</th>
+                            <td><a href="../trident_compaction/compact/50\report/index.html">trident_compaction/compact/50</a></td>
+                        </tr>
+                        <tr>
+                            <th>100</th>
+                            <td><a href="../trident_compaction/compact/100\report/index.html">trident_compaction/compact/100</a></td>
+                        </tr>
+                    </table>
+                </li>
+            </ul>
+            <li><a href="../workflow_dag\report/index.html">workflow_dag</a></li>
+            
+            <ul>
+                <li><a href="../workflow_dag\ready_nodes\report/index.html">ready_nodes</a></li>
+                <li><a href="../workflow_dag\validate_medium\report/index.html">validate_medium</a></li>
+                <li><a href="../workflow_dag\validate_small\report/index.html">validate_small</a></li>
+            </ul>
+        </ul>
+    </div>
+    <div id="footer">
+        <p>This report was generated by
+            <a href="https://github.com/bheisler/criterion.rs">Criterion.rs</a>, a statistics-driven benchmarking
+            library in Rust.</p>
+    </div>
+</body>
+</html>

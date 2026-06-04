@@ -1,0 +1,3 @@
+[submodule "core/scale-engine"]
+	path = core/scale-engine
+	url = https://github.com/hongmaple0820/scale-engine.git

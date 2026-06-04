@@ -1,0 +1,25 @@
+services:
+  mapleos-server:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile
+    ports:
+      - "7788:7788"
+    volumes:
+      - mapleos-data:/data
+    environment:
+      - RUST_LOG=mapleos_server=debug,maple_engine=info
+      - DATABASE_URL=sqlite:/data/mapleos.db
+    depends_on:
+      - qdrant
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    volumes:
+      - qdrant-data:/qdrant/storage
+    ports:
+      - "6333:6333"
+
+volumes:
+  mapleos-data:
+  qdrant-data:

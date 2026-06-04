@@ -1,0 +1,656 @@
+openapi: 3.0.3
+info:
+  title: MapleOS API
+  description: AI Native 多 Agent 协作工作站操作系统 API
+  version: 0.1.0
+  contact:
+    name: MapleOS Team
+    url: https://github.com/hongmaple0820/maple-os
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:7788
+    description: 本地开发服务器
+  - url: https://api.mapleos.dev
+    description: 生产服务器
+
+tags:
+  - name: auth
+    description: 认证与授权
+  - name: chat
+    description: 对话与聊天
+  - name: workflow
+    description: 工作流管理
+  - name: agent
+    description: Agent 管理
+  - name: knowledge
+    description: 知识库管理
+  - name: task
+    description: 任务队列
+  - name: config
+    description: 系统配置
+  - name: sync
+    description: 同步引擎
+  - name: scale
+    description: SCALE 引擎
+
+paths:
+  /health:
+    get:
+      tags: [system]
+      summary: 健康检查
+      operationId: healthCheck
+      responses:
+        '200':
+          description: 系统正常
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  timestamp:
+                    type: integer
+                    format: int64
+
+  /api/auth/login:
+    post:
+      tags: [auth]
+      summary: 用户登录
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username:
+                  type: string
+                  example: admin
+                password:
+                  type: string
+                  example: mapleos
+      responses:
+        '200':
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '401':
+          description: 认证失败
+
+  /api/auth/register:
+    post:
+      tags: [auth]
+      summary: 用户注册
+      operationId: register
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username:
+                  type: string
+                  example: newuser
+                password:
+                  type: string
+                  example: password123
+                email:
+                  type: string
+                  format: email
+                  example: user@example.com
+      responses:
+        '200':
+          description: 注册成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          description: 请求参数错误
+
+  /api/auth/refresh:
+    post:
+      tags: [auth]
+      summary: 刷新令牌
+      operationId: refreshToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token:
+                  type: string
+      responses:
+        '200':
+          description: 刷新成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '401':
+          description: 无效的刷新令牌
+
+  /api/chat:
+    post:
+      tags: [chat]
+      summary: 发送聊天消息
+      operationId: chat
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message:
+                  type: string
+                  example: 你好，请帮我写一个Hello World程序
+                model:
+                  type: string
+                  default: auto
+                  example: auto
+                agent_id:
+                  type: string
+                  example: default
+                session_id:
+                  type: string
+      responses:
+        '200':
+          description: 聊天响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatResponse'
+        '401':
+          description: 未授权
+        '400':
+          description: 请求参数错误
+
+  /api/chat/stream:
+    post:
+      tags: [chat]
+      summary: 流式聊天
+      operationId: chatStream
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message:
+                  type: string
+                model:
+                  type: string
+                  default: auto
+                agent_id:
+                  type: string
+                session_id:
+                  type: string
+      responses:
+        '200':
+          description: 流式响应
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+  /api/models:
+    get:
+      tags: [chat]
+      summary: 获取可用模型列表
+      operationId: listModels
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: 模型列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  models:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ModelInfo'
+
+  /api/workflows:
+    get:
+      tags: [workflow]
+      summary: 获取工作流列表
+      operationId: listWorkflows
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: 工作流列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  workflows:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Workflow'
+
+  /api/workflows/{id}:
+    get:
+      tags: [workflow]
+      summary: 获取工作流详情
+      operationId: getWorkflow
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 工作流详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Workflow'
+        '404':
+          description: 工作流不存在
+
+    put:
+      tags: [workflow]
+      summary: 更新工作流
+      operationId: updateWorkflow
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                yaml_content:
+                  type: string
+                status:
+                  type: string
+                  enum: [draft, active, paused]
+      responses:
+        '200':
+          description: 更新成功
+        '404':
+          description: 工作流不存在
+
+    delete:
+      tags: [workflow]
+      summary: 删除工作流
+      operationId: deleteWorkflow
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 删除成功
+        '404':
+          description: 工作流不存在
+
+  /api/agents:
+    get:
+      tags: [agent]
+      summary: 获取Agent列表
+      operationId: listAgents
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Agent列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agents:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Agent'
+
+    post:
+      tags: [agent]
+      summary: 注册新Agent
+      operationId: registerAgent
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  example: my-agent
+                description:
+                  type: string
+                transport_type:
+                  type: string
+                  enum: [websocket, webhook, mcp, rest, sse]
+                  default: websocket
+                transport_config:
+                  type: object
+                capabilities:
+                  type: array
+                  items:
+                    type: string
+                max_concurrent_tasks:
+                  type: integer
+                  default: 3
+      responses:
+        '200':
+          description: 注册成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Agent'
+        '400':
+          description: 请求参数错误
+
+  /api/knowledge:
+    post:
+      tags: [knowledge]
+      summary: 上传知识库文档
+      operationId: uploadDocument
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: 上传成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  title:
+                    type: string
+                  chunks:
+                    type: integer
+
+  /api/knowledge/search:
+    post:
+      tags: [knowledge]
+      summary: 搜索知识库
+      operationId: searchKnowledge
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query:
+                  type: string
+                  example: 如何配置LLM
+                top_k:
+                  type: integer
+                  default: 5
+      responses:
+        '200':
+          description: 搜索结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/KnowledgeResult'
+
+  /api/tasks/stats:
+    get:
+      tags: [task]
+      summary: 获取任务统计
+      operationId: getTaskStats
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: 任务统计
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskStats'
+
+  /api/config:
+    get:
+      tags: [config]
+      summary: 获取系统配置
+      operationId: getConfig
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: 系统配置
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemConfig'
+
+    put:
+      tags: [config]
+      summary: 更新系统配置
+      operationId: updateConfig
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SystemConfig'
+      responses:
+        '200':
+          description: 更新成功
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    AuthResponse:
+      type: object
+      properties:
+        token:
+          type: string
+        refresh_token:
+          type: string
+        user_id:
+          type: string
+        username:
+          type: string
+        role:
+          type: string
+        expires_in:
+          type: integer
+
+    ChatResponse:
+      type: object
+      properties:
+        reply:
+          type: string
+        model:
+          type: string
+        tool_calls:
+          type: array
+          items:
+            type: object
+        session_id:
+          type: string
+        kb_sources:
+          type: array
+          items:
+            type: object
+
+    ModelInfo:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        provider:
+          type: string
+        context_length:
+          type: integer
+        pricing:
+          type: object
+          properties:
+            input:
+              type: number
+            output:
+              type: number
+
+    Workflow:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        version:
+          type: integer
+        status:
+          type: string
+          enum: [draft, active, paused, failed]
+        created_at:
+          type: integer
+          format: int64
+        updated_at:
+          type: integer
+          format: int64
+
+    Agent:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+          enum: [online, busy, offline]
+        transport_type:
+          type: string
+        capabilities:
+          type: object
+        last_heartbeat:
+          type: integer
+          format: int64
+        max_concurrent_tasks:
+          type: integer
+
+    KnowledgeResult:
+      type: object
+      properties:
+        id:
+          type: string
+        content:
+          type: string
+        score:
+          type: number
+        source:
+          type: string
+        source_type:
+          type: string
+
+    TaskStats:
+      type: object
+      properties:
+        total:
+          type: integer
+        pending:
+          type: integer
+        running:
+          type: integer
+        completed:
+          type: integer
+        failed:
+          type: integer
+        dead_letter:
+          type: integer
+
+    SystemConfig:
+      type: object
+      properties:
+        host:
+          type: string
+        port:
+          type: integer
+        database_url:
+          type: string
+        jwt_secret:
+          type: string
+        require_auth:
+          type: boolean
+        admin_username:
+          type: string
+        admin_password:
+          type: string
+        usage_limit_usd:
+          type: number
+        log_level:
+          type: string

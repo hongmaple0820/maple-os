@@ -1,0 +1,10 @@
+[default]
+model = "deepseek-v4-flash"
+enable_routing = false
+
+[openai]
+enabled = true
+api_key = "sk-salH42jScR4BTubO9XAU7DxpBYBfk9TD"
+base_url = "https://token.sensenova.cn"
+models = ["deepseek-v4-flash"]
+default_model = "deepseek-v4-flash"
