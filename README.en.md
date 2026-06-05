@@ -265,20 +265,41 @@ git push origin feat/your-feature
 | Channel | Address | Description |
 |---|---|---|
 | Website | [scale-os.hongmaple.top](https://scale-os.hongmaple.top/) | Product intro, online demo |
+| QQ Group | **628043364** | Developer community, tech discussion, bug reports |
 | WeChat Official Account | **mapleCx330** | Tech sharing, release announcements, community events |
 | WeChat ID | **mapleCx330** | Group entry — add as friend to join developer group |
+| Feishu Group | Scan to join | Enterprise collaboration, in-depth tech exchange |
 | Email | [2496155694@qq.com](mailto:2496155694@qq.com) | Bug reports, collaboration inquiries, security issues |
 | GitHub Issues | [maple-os/issues](https://github.com/hongmaple0820/maple-os/issues) | Bug reports, feature requests, technical discussions |
 | GitHub Discussions | [maple-os/discussions](https://github.com/hongmaple0820/maple-os/discussions) | Open discussions, Q&A, idea exchange |
 | SCALE Engine | [scale-engine](https://github.com/hongmaple0820/scale-engine) | AI Agent governance engine (core dependency) |
 
 > Follow the WeChat official account for latest release announcements and in-depth technical articles. Core authors provide real-time support in the developer group.
+
 <p align="center">
-  <img src="./docs/images/community-qr.png" alt="MapleOS Community WeChat Group" width="300">
+  <img src="./image/wechat-public.jpg" alt="WeChat Official Account" width="200">
   <br>
-  <strong>Scan to join "maple-os开源共建" WeChat Group</strong>
+  <strong>Follow WeChat Official Account</strong>
+</p>
+
+<p align="center">
+  <img src="./image/wechat-id-qr.webp" alt="WeChat Group" width="200">
+  <img src="./image/feishu-group-qr.webp" alt="Feishu Group" width="200">
   <br>
-  <sub>QR code valid until May 31</sub>
+  <strong>WeChat Group</strong> &nbsp;&nbsp;&nbsp; <strong>Feishu Group</strong>
+</p>
+
+---
+
+## Sponsor
+
+If MapleOS is helpful to you, feel free to buy the author a coffee ☕
+
+<p align="center">
+  <img src="./image/wxPay.jpg" alt="WeChat Pay" width="200">
+  <img src="./image/zfb.jpg" alt="Alipay" width="200">
+  <br>
+  <strong>WeChat Pay</strong> &nbsp;&nbsp;&nbsp; <strong>Alipay</strong>
 </p>
 
 ---

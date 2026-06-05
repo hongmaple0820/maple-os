@@ -358,20 +358,41 @@ git push origin feat/your-feature
 | 渠道 | 地址 | 说明 |
 |---|---|---|
 | 官网 | [scale-os.hongmaple.top](https://scale-os.hongmaple.top/) | 产品介绍、在线 Demo |
+| QQ 群 | **628043364** | 开发者交流群，技术讨论、问题反馈 |
 | 微信公众号 | **mapleCx330** | 技术分享、版本公告、社区活动 |
 | 微信号 | **mapleCx330** | 交流群入口，加好友拉入开发者群 |
+| 飞书群 | 扫码加入 | 企业协作、深度技术交流 |
 | 邮箱 | [2496155694@qq.com](mailto:2496155694@qq.com) | Bug 反馈、合作咨询、安全问题 |
 | GitHub Issues | [maple-os/issues](https://github.com/hongmaple0820/maple-os/issues) | Bug 报告、功能建议、技术讨论 |
 | GitHub Discussions | [maple-os/discussions](https://github.com/hongmaple0820/maple-os/discussions) | 开放讨论、问答、想法碰撞 |
 | SCALE Engine | [scale-engine](https://github.com/hongmaple0820/scale-engine) | AI Agent 治理引擎（核心依赖） |
 
 > 扫码关注微信公众号，获取最新版本公告和技术深度文章。开发者群内有核心作者实时答疑。
+
 <p align="center">
-  <img src="./docs/images/community-qr.png" alt="MapleOS Community WeChat Group" width="300">
+  <img src="./image/wechat-public.jpg" alt="微信公众号" width="200">
   <br>
-  <strong>Scan to join "maple-os开源共建" WeChat Group</strong>
+  <strong>关注微信公众号</strong>
+</p>
+
+<p align="center">
+  <img src="./image/wechat-id-qr.webp" alt="微信交流群" width="200">
+  <img src="./image/feishu-group-qr.webp" alt="飞书交流群" width="200">
   <br>
-  <sub>QR code valid until May 31</sub>
+  <strong>微信交流群</strong> &nbsp;&nbsp;&nbsp; <strong>飞书交流群</strong>
+</p>
+
+---
+
+## 赞赏支持
+
+如果 MapleOS 对你有帮助，欢迎请作者喝杯咖啡 ☕
+
+<p align="center">
+  <img src="./image/wxPay.jpg" alt="微信赞赏" width="200">
+  <img src="./image/zfb.jpg" alt="支付宝赞赏" width="200">
+  <br>
+  <strong>微信赞赏</strong> &nbsp;&nbsp;&nbsp; <strong>支付宝赞赏</strong>
 </p>
 
 ---
