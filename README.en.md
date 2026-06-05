@@ -266,7 +266,7 @@ git push origin feat/your-feature
 |---|---|---|
 | Website | [scale-os.hongmaple.top](https://scale-os.hongmaple.top/) | Product intro, online demo |
 | QQ Group | **628043364** | Developer community, tech discussion, bug reports |
-| WeChat Official Account | **mapleCx330** | Tech sharing, release announcements, community events |
+| WeChat Official Account | **鸿枫技术栈** | Tech sharing, release announcements, community events |
 | WeChat ID | **mapleCx330** | Group entry — add as friend to join developer group |
 | Feishu Group | Scan to join | Enterprise collaboration, in-depth tech exchange |
 | Email | [2496155694@qq.com](mailto:2496155694@qq.com) | Bug reports, collaboration inquiries, security issues |

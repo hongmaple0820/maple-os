@@ -359,7 +359,7 @@ git push origin feat/your-feature
 |---|---|---|
 | 官网 | [scale-os.hongmaple.top](https://scale-os.hongmaple.top/) | 产品介绍、在线 Demo |
 | QQ 群 | **628043364** | 开发者交流群，技术讨论、问题反馈 |
-| 微信公众号 | **mapleCx330** | 技术分享、版本公告、社区活动 |
+| 微信公众号 | **鸿枫技术栈** | 技术分享、版本公告、社区活动 |
 | 微信号 | **mapleCx330** | 交流群入口，加好友拉入开发者群 |
 | 飞书群 | 扫码加入 | 企业协作、深度技术交流 |
 | 邮箱 | [2496155694@qq.com](mailto:2496155694@qq.com) | Bug 反馈、合作咨询、安全问题 |
