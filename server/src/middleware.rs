@@ -120,6 +120,26 @@ pub async fn auth_middleware(
                 );
                 return Err(axum::http::StatusCode::FORBIDDEN);
             }
+
+            // Inject AuthenticatedUser into request extensions for v3 handlers
+            if path.starts_with("/api/v3/") || path.starts_with("/ws/") {
+                let (user_id, user_type) = if let Some(aid) = claims.agent_id.clone() {
+                    (aid, "agent".to_string())
+                } else if let Some(uid) = claims.user_id.clone() {
+                    (uid, "human".to_string())
+                } else {
+                    (claims.sub.clone(), "human".to_string())
+                };
+                let auth_user = crate::v3_auth::AuthenticatedUser {
+                    user_id,
+                    user_type,
+                    role: claims.role.clone(),
+                };
+                let mut req = req;
+                req.extensions_mut().insert(auth_user);
+                return Ok(next.run(req).await);
+            }
+
             Ok(next.run(req).await)
         }
         Err(_) => Err(axum::http::StatusCode::UNAUTHORIZED),

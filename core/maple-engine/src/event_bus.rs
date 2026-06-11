@@ -25,6 +25,15 @@ pub enum Event {
     TaskDeleted { task_id: String },
     CommentCreated { comment_id: String, task_id: String, author: String },
     ActivityLogged { actor: String, action: String, target: Option<String> },
+    // v3 group chat events
+    GroupMessageSent { group_id: String, message_id: String, sender_id: String, content: String },
+    GroupMessageEdited { group_id: String, message_id: String },
+    GroupMessageDeleted { group_id: String, message_id: String },
+    GroupMemberJoined { group_id: String, member_id: String },
+    GroupMemberLeft { group_id: String, member_id: String },
+    ApprovalVoteCast { approval_id: String, voter_id: String, decision: String },
+    ApprovalResolved { approval_id: String, approved: bool },
+    TaskTransitioned { task_id: String, old_status: String, new_status: String },
 }
 
 impl Event {
@@ -47,6 +56,14 @@ impl Event {
             Event::TaskDeleted { .. } => "task.deleted",
             Event::CommentCreated { .. } => "comment.created",
             Event::ActivityLogged { .. } => "activity.logged",
+            Event::GroupMessageSent { .. } => "group.message.sent",
+            Event::GroupMessageEdited { .. } => "group.message.edited",
+            Event::GroupMessageDeleted { .. } => "group.message.deleted",
+            Event::GroupMemberJoined { .. } => "group.member.joined",
+            Event::GroupMemberLeft { .. } => "group.member.left",
+            Event::ApprovalVoteCast { .. } => "approval.vote.cast",
+            Event::ApprovalResolved { .. } => "approval.resolved",
+            Event::TaskTransitioned { .. } => "task.transitioned",
         }.to_string()
     }
 }
@@ -106,6 +123,14 @@ impl EventBus {
             "task.deleted",
             "comment.created",
             "activity.logged",
+            "group.message.sent",
+            "group.message.edited",
+            "group.message.deleted",
+            "group.member.joined",
+            "group.member.left",
+            "approval.vote.cast",
+            "approval.resolved",
+            "task.transitioned",
         ] {
             self.subscribers
                 .entry(event_type.to_string())

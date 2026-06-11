@@ -1,0 +1,486 @@
+
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0D1117;--surf:#161B22;--surf2:#1C2128;--surf3:#252C36;
+  --bdr:#30363D;--bdr2:#484F58;
+  --tx:#E6EDF3;--muted:#8B949E;--hint:#6E7681;
+  --blue:#2F81F7;--green:#3FB950;--yellow:#D29922;--red:#F85149;--purple:#BC8CFF;--teal:#2DD4BF;
+  font-family:'Anthropic Sans',system-ui,sans-serif;font-size:13px;color:var(--tx);
+}
+.app{background:var(--bg);border-radius:14px;overflow:hidden;border:1px solid var(--bdr);display:flex;flex-direction:column}
+.topbar{height:44px;background:var(--surf);border-bottom:1px solid var(--bdr);display:flex;align-items:center;padding:0 14px;gap:10px;flex-shrink:0}
+.logo{display:flex;align-items:center;gap:6px;font-weight:500;font-size:13px}
+.logo-leaf{width:20px;height:20px;background:var(--blue);border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:10px;color:#fff}
+.body{display:flex;height:520px}
+.left{width:240px;background:var(--surf);border-right:1px solid var(--bdr);display:flex;flex-direction:column;flex-shrink:0}
+.left-search{padding:10px 10px 6px}
+.search-box{width:100%;background:var(--surf3);border:1px solid var(--bdr);border-radius:7px;padding:6px 10px;color:var(--tx);font-size:12px;outline:none;font-family:inherit}
+.search-box::placeholder{color:var(--hint)}
+.left-section{padding:8px 10px 4px}
+.sec-label{font-size:11px;font-weight:500;color:var(--hint);text-transform:uppercase;letter-spacing:.05em;padding:0 4px 4px}
+.dm-item{display:flex;align-items:center;gap:9px;padding:7px 8px;border-radius:7px;cursor:pointer;transition:background .12s}
+.dm-item:hover{background:var(--surf3)}
+.dm-item.active{background:var(--surf3)}
+.dm-avatar{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:500;flex-shrink:0;position:relative}
+.dm-status{position:absolute;bottom:-1px;right:-1px;width:9px;height:9px;border-radius:50%;border:1.5px solid var(--surf)}
+.dm-info{flex:1;min-width:0}
+.dm-name{font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dm-preview{font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:1px}
+.dm-meta{display:flex;flex-direction:column;align-items:flex-end;gap:3px;flex-shrink:0}
+.dm-time{font-size:11px;color:var(--hint)}
+.unread-badge{background:var(--blue);color:#fff;border-radius:10px;padding:1px 6px;font-size:10px;font-weight:600;min-width:18px;text-align:center}
+.dm-type-badge{font-size:10px;padding:1px 5px;border-radius:8px}
+.badge-agent{background:rgba(188,140,255,.15);color:var(--purple)}
+.badge-a2a{background:rgba(45,212,191,.15);color:var(--teal)}
+.badge-human{background:rgba(47,129,247,.12);color:var(--blue)}
+
+.right{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.dm-header{height:52px;background:var(--surf2);border-bottom:1px solid var(--bdr);display:flex;align-items:center;padding:0 14px;gap:10px;flex-shrink:0}
+.dm-header-avatar{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:500;flex-shrink:0;position:relative}
+.dm-header-info{flex:1}
+.dm-header-name{font-size:14px;font-weight:500}
+.dm-header-sub{font-size:11px;color:var(--muted);margin-top:1px}
+.hdr-action{padding:4px 11px;border-radius:6px;border:1px solid var(--bdr);color:var(--muted);cursor:pointer;font-size:12px;background:transparent;transition:all .15s;font-family:inherit}
+.hdr-action:hover{border-color:var(--bdr2);color:var(--tx)}
+.hdr-action.primary{border-color:var(--blue);color:var(--blue)}
+.hdr-action.primary:hover{background:rgba(47,129,247,.1)}
+.hdr-icon{width:30px;height:30px;border-radius:6px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--muted);transition:all .12s;background:transparent;border:none}
+.hdr-icon:hover{background:var(--surf3);color:var(--tx)}
+
+.messages{flex:1;overflow-y:auto;padding:14px 16px;display:flex;flex-direction:column;gap:3px}
+.bubble-row{display:flex;gap:8px;max-width:100%;align-items:flex-end}
+.bubble-row.mine{flex-direction:row-reverse}
+.bubble-avatar{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:500;flex-shrink:0}
+.bubble{padding:8px 12px;border-radius:14px;max-width:72%;font-size:13px;line-height:1.5;word-break:break-word}
+.bubble.other{background:var(--surf3);border-bottom-left-radius:4px;color:var(--tx)}
+.bubble.mine{background:var(--blue);border-bottom-right-radius:4px;color:#fff}
+.bubble.agent{background:var(--surf2);border:1px solid var(--bdr);border-bottom-left-radius:4px;color:var(--tx)}
+.bubble.a2a{background:var(--surf2);border:1px solid rgba(45,212,191,.25);border-bottom-left-radius:4px;color:var(--tx)}
+.bubble.system{background:transparent;border:1px solid var(--bdr);color:var(--muted);font-size:12px;text-align:center;border-radius:10px;padding:5px 12px;max-width:80%;margin:4px auto}
+.bubble-meta{font-size:10px;margin-top:3px;padding:0 2px}
+.meta-mine{color:rgba(255,255,255,.55);text-align:right}
+.meta-other{color:var(--hint)}
+
+.tool-inline{background:var(--surf);border:1px solid var(--bdr);border-radius:8px;padding:7px 10px;margin-top:5px;cursor:pointer}
+.tool-inline-hdr{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:500}
+.tool-inline-hdr .ico{color:var(--purple)}
+.tool-stat{margin-left:auto;font-size:11px;padding:2px 7px;border-radius:10px}
+.stat-ok{background:rgba(63,185,80,.15);color:var(--green)}
+.stat-run{background:rgba(47,129,247,.15);color:var(--blue)}
+.tool-args{font-size:11px;color:var(--muted);margin-top:3px;font-family:monospace}
+
+.grant-card{background:var(--surf);border:1px solid rgba(47,129,247,.3);border-radius:10px;padding:10px 12px;margin-top:5px}
+.grant-title{font-size:12px;font-weight:500;color:var(--blue);margin-bottom:6px;display:flex;align-items:center;gap:6px}
+.grant-list{display:flex;flex-wrap:wrap;gap:5px}
+.grant-tag{font-size:11px;padding:2px 8px;border-radius:6px;border:1px solid var(--bdr);color:var(--muted);display:flex;align-items:center;gap:4px;cursor:pointer;transition:all .12s}
+.grant-tag:hover{border-color:var(--bdr2);color:var(--tx)}
+.grant-tag.active{border-color:var(--blue);color:var(--blue);background:rgba(47,129,247,.08)}
+.grant-tag .chk{font-size:11px}
+
+.a2a-notice{background:rgba(45,212,191,.07);border:1px solid rgba(45,212,191,.2);border-radius:8px;padding:6px 10px;font-size:12px;color:var(--teal);display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-shrink:0;margin:0 16px 8px}
+
+.input-area{border-top:1px solid var(--bdr);padding:10px 14px;background:var(--surf);flex-shrink:0}
+.input-row{display:flex;gap:8px;align-items:flex-end}
+.textarea{flex:1;background:var(--surf3);border:1px solid var(--bdr);border-radius:8px;padding:8px 12px;color:var(--tx);font-size:13px;font-family:inherit;resize:none;outline:none;line-height:1.45;min-height:36px;transition:border-color .15s}
+.textarea:focus{border-color:var(--blue)}
+.send{padding:7px 16px;border-radius:7px;background:var(--blue);color:#fff;border:none;font-size:13px;font-weight:500;cursor:pointer;font-family:inherit;transition:opacity .15s}
+.send:hover{opacity:.88}
+.send:disabled{opacity:.4;cursor:default}
+.input-hint{font-size:11px;color:var(--hint);margin-bottom:5px;display:flex;align-items:center;gap:8px}
+
+@keyframes blink{0%,80%,100%{opacity:.2}40%{opacity:1}}
+.dots span{display:inline-block;width:4px;height:4px;border-radius:50%;background:var(--muted);animation:blink 1.2s infinite;margin-right:3px}
+.dots span:nth-child(2){animation-delay:.2s}
+.dots span:nth-child(3){animation-delay:.4s}
+
+.readonly-bar{background:rgba(45,212,191,.07);border-bottom:1px solid rgba(45,212,191,.2);padding:6px 14px;font-size:12px;color:var(--teal);display:flex;align-items:center;gap:8px;flex-shrink:0}
+::-webkit-scrollbar{width:4px}
+::-webkit-scrollbar-thumb{background:var(--bdr);border-radius:2px}
+
+.persona-bar{background:rgba(188,140,255,.07);border-bottom:1px solid rgba(188,140,255,.2);padding:5px 14px;font-size:11px;color:var(--purple);display:flex;align-items:center;gap:8px;flex-shrink:0}
+.persona-select{background:var(--surf3);border:1px solid rgba(188,140,255,.3);border-radius:5px;color:var(--purple);font-size:11px;padding:2px 6px;font-family:inherit;cursor:pointer;outline:none}
+</style>
+
+<h2 class="sr-only">MapleOS v3 私聊设计预览，包含人与人、人与 Agent、Agent 与 Agent 三种模式的交互界面</h2>
+
+<div class="app">
+  <div class="topbar">
+    <div class="logo"><div class="logo-leaf">🍁</div>MapleOS — 私聊</div>
+    <div style="flex:1"></div>
+    <button onclick="sendPrompt('私聊的数据模型如何设计？DM pair key 怎么实现幂等？')" style="padding:4px 12px;border-radius:6px;border:1px solid var(--bdr);color:var(--muted);background:transparent;font-size:12px;cursor:pointer;font-family:inherit">深入数据模型 ↗</button>
+  </div>
+  <div class="body">
+    <div class="left">
+      <div class="left-search">
+        <input class="search-box" placeholder="搜索对话或用户..." />
+      </div>
+      <div class="left-section">
+        <div class="sec-label">私聊</div>
+
+        <div class="dm-item active" onclick="switchDm('human-agent',this)">
+          <div class="dm-avatar" style="background:linear-gradient(135deg,#7C3AED,#A855F7)">
+            <i class="ti ti-robot" aria-hidden="true" style="font-size:13px;color:#fff"></i>
+            <span class="dm-status" style="background:var(--green)"></span>
+          </div>
+          <div class="dm-info">
+            <div class="dm-name">coder <span class="dm-type-badge badge-agent">Agent</span></div>
+            <div class="dm-preview">修复完成，请查看 diff...</div>
+          </div>
+          <div class="dm-meta">
+            <span class="dm-time">09:24</span>
+            <span class="unread-badge">2</span>
+          </div>
+        </div>
+
+        <div class="dm-item" onclick="switchDm('human-human',this)">
+          <div class="dm-avatar" style="background:linear-gradient(135deg,#0969DA,#2563EB)">
+            LS
+            <span class="dm-status" style="background:var(--green)"></span>
+          </div>
+          <div class="dm-info">
+            <div class="dm-name">李四 <span class="dm-type-badge badge-human">人</span></div>
+            <div class="dm-preview">你好，关于审批的问题...</div>
+          </div>
+          <div class="dm-meta">
+            <span class="dm-time">09:10</span>
+          </div>
+        </div>
+
+        <div class="dm-item" onclick="switchDm('a2a',this)">
+          <div class="dm-avatar" style="background:linear-gradient(135deg,#0F766E,#2DD4BF)">
+            <i class="ti ti-robot" aria-hidden="true" style="font-size:12px;color:#fff"></i>
+            <span class="dm-status" style="background:var(--blue)"></span>
+          </div>
+          <div class="dm-info">
+            <div class="dm-name">security-bot → coder <span class="dm-type-badge badge-a2a">A2A</span></div>
+            <div class="dm-preview">正在传递漏洞修复上下文...</div>
+          </div>
+          <div class="dm-meta">
+            <span class="dm-time">09:16</span>
+            <span style="font-size:10px;color:var(--teal)">监听中</span>
+          </div>
+        </div>
+
+        <div class="dm-item" onclick="switchDm('human-agent2',this)">
+          <div class="dm-avatar" style="background:linear-gradient(135deg,#D05538,#F87060)">
+            <i class="ti ti-robot" aria-hidden="true" style="font-size:13px;color:#fff"></i>
+            <span class="dm-status" style="background:var(--hint)"></span>
+          </div>
+          <div class="dm-info">
+            <div class="dm-name">security-bot <span class="dm-type-badge badge-agent">Agent</span></div>
+            <div class="dm-preview">已完成今日安全扫描</div>
+          </div>
+          <div class="dm-meta">
+            <span class="dm-time">昨天</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="left-section" style="margin-top:4px">
+        <div class="sec-label">已归档</div>
+        <div class="dm-item" style="opacity:.5">
+          <div class="dm-avatar" style="background:var(--surf3);color:var(--muted)">WW</div>
+          <div class="dm-info">
+            <div class="dm-name" style="color:var(--muted)">王五</div>
+            <div class="dm-preview">已归档</div>
+          </div>
+          <div class="dm-meta"><span class="dm-time">3天前</span></div>
+        </div>
+      </div>
+
+      <div style="margin-top:auto;padding:10px;border-top:1px solid var(--bdr)">
+        <div onclick="sendPrompt('如何发起一个新的私聊？支持哪些入口？')" class="dm-item" style="color:var(--blue)">
+          <i class="ti ti-plus" aria-hidden="true" style="font-size:16px"></i>
+          <span style="font-size:13px">新建私聊</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="right" id="right-panel">
+    </div>
+  </div>
+</div>
+
+<script>
+var currentDm = 'human-agent';
+var grantState = {bash:false, file_edit:true, web_search:true, think:true};
+var personaState = 'default';
+var msgInputs = {};
+
+function now(){
+  var d=new Date();
+  return d.getHours().toString().padStart(2,'0')+':'+d.getMinutes().toString().padStart(2,'0');
+}
+
+function bubble(content,type,time,extra){
+  var extraHtml=extra||'';
+  return '<div class="bubble-row'+(type==='mine'?' mine':'')+'">'+
+    (type!=='mine'?'<div class="bubble-avatar" style="'+avatarStyle(type)+'">'+avatarContent(type)+'</div>':'')+
+    '<div><div class="bubble '+type+'">'+content+extraHtml+'</div>'+
+    '<div class="bubble-meta '+(type==='mine'?'meta-mine':'meta-other')+'">'+time+'</div></div>'+
+    (type==='mine'?'<div class="bubble-avatar" style="background:linear-gradient(135deg,#0969DA,#2563EB);width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:500;color:#fff">ZH</div>':'')+
+  '</div>';
+}
+
+function avatarStyle(type){
+  if(type==='agent'||type==='a2a') return 'background:linear-gradient(135deg,#7C3AED,#A855F7);width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center';
+  if(type==='other') return 'background:linear-gradient(135deg,#0969DA,#2563EB);width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:500;color:#fff';
+  return '';
+}
+function avatarContent(type){
+  if(type==='agent') return '<i class="ti ti-robot" style="font-size:12px;color:#fff"></i>';
+  if(type==='a2a') return '<i class="ti ti-robot" style="font-size:12px;color:#fff"></i>';
+  if(type==='other') return 'LS';
+  return '';
+}
+
+function toolCard(name,args,status){
+  var stClass=status==='ok'?'stat-ok':'stat-run';
+  var stTxt=status==='ok'?'✓ 完成':'▶ 运行中';
+  return '<div class="tool-inline"><div class="tool-inline-hdr"><i class="ti ti-terminal ico" aria-hidden="true"></i>'+name+'<span class="tool-stat '+stClass+'">'+stTxt+'</span></div><div class="tool-args">'+args+'</div></div>';
+}
+
+function grantCardHtml(){
+  var tags=Object.keys(grantState).map(function(k){
+    return '<div class="grant-tag'+(grantState[k]?' active':'')+'" onclick="toggleGrant(\''+k+'\')"><span class="chk">'+(grantState[k]?'✓':'○')+'</span>'+k+'</div>';
+  }).join('');
+  return '<div class="grant-card"><div class="grant-title"><i class="ti ti-key" aria-hidden="true"></i>已授权工具</div><div class="grant-list">'+tags+'</div></div>';
+}
+
+function toggleGrant(tool){
+  grantState[tool]=!grantState[tool];
+  document.querySelectorAll('.grant-card').forEach(function(el){el.outerHTML=grantCardHtml();});
+}
+
+var dmConfigs = {
+  'human-agent': {
+    headerAvatar: '<div style="background:linear-gradient(135deg,#7C3AED,#A855F7);width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center"><i class="ti ti-robot" style="font-size:15px;color:#fff"></i></div>',
+    headerName: 'coder',
+    headerSub: 'Agent · gpt-4o · 在线 · 活跃任务 2',
+    headerStatus: '<span style="width:8px;height:8px;border-radius:50%;background:var(--green);display:inline-block;margin-right:4px"></span>',
+    extraActions: '<button class="hdr-action primary" onclick="togglePersona()"><i class="ti ti-user" aria-hidden="true" style="font-size:12px"></i> Persona</button><button class="hdr-action" onclick="toggleGrants()"><i class="ti ti-key" aria-hidden="true" style="font-size:12px"></i> 工具授权</button>',
+    readonly: false,
+    showPersona: true,
+    showA2A: false,
+    placeholder: '和 coder 说话，直接发消息即可...',
+    msgs: [
+      {type:'system', text:'你已开始与 <strong>coder</strong> 的私聊 · 2026年6月5日'},
+      {type:'mine', text:'帮我看看 auth/jwt.rs，有几处 unwrap() 我觉得不安全', time:'09:18'},
+      {type:'agent', text:'好的，读取文件中...', time:'09:18', tool:{name:'file_read',args:'{"path":"auth/jwt.rs"}',status:'ok'}},
+      {type:'agent', text:'读完了。L23 和 L47 的 <code style="background:var(--surf3);padding:1px 4px;border-radius:4px;font-size:11px">unwrap()</code> 确实有问题——如果 JWT 格式不合法会直接 panic。建议改成用 <code style="background:var(--surf3);padding:1px 4px;border-radius:4px;font-size:11px">?</code> 传播错误或显式 match。\n\n要我直接修复吗？', time:'09:19'},
+      {type:'mine', text:'可以，去修吧，file_edit 我已经给你授权了', time:'09:20'},
+      {type:'agent', text:'好，修复两处 unwrap()...', time:'09:20', tool:{name:'file_edit',args:'{"path":"auth/jwt.rs","lines":[23,47],"action":"replace_unwrap"}',status:'ok'}},
+      {type:'agent', text:'修复完成 ✓\n\nL23: <code style="background:var(--surf3);padding:1px 4px;border-radius:4px;font-size:11px">jwt.parse().unwrap()</code> → <code style="background:var(--surf3);padding:1px 4px;border-radius:4px;font-size:11px">jwt.parse()?</code>\nL47: <code style="background:var(--surf3);padding:1px 4px;border-radius:4px;font-size:11px">claims.unwrap()</code> → <code style="background:var(--surf3);padding:1px 4px;border-radius:4px;font-size:11px">claims.ok_or(JwtError::InvalidClaims)?</code>\n\n要跑一下测试吗？', time:'09:24'},
+    ]
+  },
+  'human-human': {
+    headerAvatar: '<div style="background:linear-gradient(135deg,#0969DA,#2563EB);width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:500;color:#fff">LS</div>',
+    headerName: '李四',
+    headerSub: '工程师 · 在线',
+    headerStatus: '<span style="width:8px;height:8px;border-radius:50%;background:var(--green);display:inline-block;margin-right:4px"></span>',
+    extraActions: '<button class="hdr-action" onclick="sendPrompt(\'MapleOS 私聊中如何拉 Agent 临时协助？\')"><i class="ti ti-robot" aria-hidden="true" style="font-size:12px"></i> 拉 Agent 协助 ↗</button>',
+    readonly: false,
+    showPersona: false,
+    showA2A: false,
+    placeholder: '发消息给李四...',
+    msgs: [
+      {type:'system', text:'你和 <strong>李四</strong> 的私聊 · 2026年6月5日'},
+      {type:'other', text:'你好，那个审批流的超时策略，auto_approve 和 escalate 有什么区别，什么情况用哪个？', time:'09:08'},
+      {type:'mine', text:'auto_approve 是超时后直接放行，适合低风险操作（比如只读查询）；escalate 是通知更高权限的人来审，适合高风险操作（部署、删除数据）。', time:'09:09'},
+      {type:'mine', text:'默认应该用 auto_reject，让操作失败而不是静默通过，更安全。', time:'09:09'},
+      {type:'other', text:'明白了，那 quorum 用 majority 会不会在人少的群里出问题？比如只有 2 个 admin，一人批了一人没看，就永远通过不了', time:'09:10'},
+      {type:'mine', text:'对，这是个边界 case。我们处理方式是：quorum=majority 时，如果 eligible_count 是偶数，要求 eligible_count/2 + 1 票，2 人群就变成 2 票全过。建议小群换用 quorum=any，一人批就够。', time:'09:10'},
+      {type:'other', text:'好的，我去更新文档。顺便问一下，私聊里的审批是不是也只要消息接收方一个人批就行？', time:'09:11'},
+    ]
+  },
+  'a2a': {
+    headerAvatar: '<div style="background:linear-gradient(135deg,#0F766E,#2DD4BF);width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center"><i class="ti ti-git-fork" style="font-size:14px;color:#fff"></i></div>',
+    headerName: 'security-bot → coder',
+    headerSub: 'A2A 委托 · 任务 T-007 · 监听中',
+    headerStatus: '<span style="width:8px;height:8px;border-radius:50%;background:var(--blue);display:inline-block;margin-right:4px"></span>',
+    extraActions: '<button class="hdr-action" style="border-color:var(--yellow);color:var(--yellow)" onclick="handleIntervene()"><i class="ti ti-hand-stop" aria-hidden="true" style="font-size:12px"></i> 介入</button><button class="hdr-action">委托详情</button>',
+    readonly: true,
+    showPersona: false,
+    showA2A: true,
+    placeholder: '只读视图 · 点击"介入"可暂停 A2A 对话',
+    msgs: [
+      {type:'system', text:'A2A 委托对话 · T-007 修复权限验证缺失 · 2026年6月5日 09:16'},
+      {type:'a2a-left', name:'security-bot', avatar:'<div style="background:linear-gradient(135deg,#D05538,#F87060);width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center"><i class="ti ti-robot" style="font-size:12px;color:#fff"></i></div>', text:'coder，我完成了 api/users.rs 的 SQL 注入修复，但 L89 还有权限验证缺失问题，我的专长是安全扫描，具体修复需要你来做。\n\n上下文：该接口允许任意已登录用户查询其他用户的详细信息，需要加 role_required!(Admin) 守卫。', time:'09:16'},
+      {type:'a2a-right', name:'coder', avatar:'<div style="background:linear-gradient(135deg,#7C3AED,#A855F7);width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center"><i class="ti ti-robot" style="font-size:12px;color:#fff"></i></div>', text:'收到，读取相关文件中...', time:'09:17', tool:{name:'file_read',args:'{"path":"api/users.rs","lines":"80-100"}',status:'ok'}},
+      {type:'a2a-right', name:'coder', avatar:'<div style="background:linear-gradient(135deg,#7C3AED,#A855F7);width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center"><i class="ti ti-robot" style="font-size:12px;color:#fff"></i></div>', text:'确认，L89 的 get_user_detail 缺少权限守卫。修复方案：在函数签名前加 #[role_required(Admin, Manager)]，同时对 self_query（查询自己）豁免该限制。\n\n这个修改需要人类审批吗？还是直接执行？', time:'09:18'},
+      {type:'a2a-left', name:'security-bot', avatar:'<div style="background:linear-gradient(135deg,#D05538,#F87060);width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center"><i class="ti ti-robot" style="font-size:12px;color:#fff"></i></div>', text:'权限修改属于高风险操作，我建议走审批流。我来发起审批请求，你先准备好 patch 内容。', time:'09:18'},
+    ]
+  },
+  'human-agent2': {
+    headerAvatar: '<div style="background:linear-gradient(135deg,#D05538,#F87060);width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center"><i class="ti ti-robot" style="font-size:15px;color:#fff"></i></div>',
+    headerName: 'security-bot',
+    headerSub: 'Agent · gpt-4o · 空闲',
+    headerStatus: '<span style="width:8px;height:8px;border-radius:50%;background:var(--hint);display:inline-block;margin-right:4px"></span>',
+    extraActions: '<button class="hdr-action primary"><i class="ti ti-key" aria-hidden="true" style="font-size:12px"></i> 工具授权</button>',
+    readonly: false,
+    showPersona: false,
+    showA2A: false,
+    placeholder: '和 security-bot 说话...',
+    msgs: [
+      {type:'system', text:'你和 <strong>security-bot</strong> 的私聊 · 2026年6月4日'},
+      {type:'mine', text:'昨天的安全扫描报告发一下', time:'14:30'},
+      {type:'agent', text:'生成报告中...', time:'14:30', tool:{name:'report_generate',args:'{"date":"2026-06-04","type":"security_summary"}',status:'ok'}},
+      {type:'agent', text:'昨日扫描汇总：\n• 扫描文件 247 个\n• 高危: 0 个  中危: 2 个  低危: 7 个\n• 中危已生成任务 T-006、T-007，低危已记录\n\n本周累计修复高危 3 个，合规率 98.7%。', time:'14:31'},
+      {type:'system', text:'2026年6月5日'},
+      {type:'agent', text:'今日安全扫描已完成，无新增高危。T-007 权限验证问题正在处理中（A2A 委托给 coder）。', time:'09:00'},
+    ]
+  }
+};
+
+var personaOpen = false;
+var grantsOpen = false;
+
+function togglePersona(){
+  personaOpen=!personaOpen;
+  renderDm(currentDm);
+}
+function toggleGrants(){
+  grantsOpen=!grantsOpen;
+  renderDm(currentDm);
+}
+
+function switchDm(id,el){
+  currentDm=id;
+  personaOpen=false;
+  grantsOpen=false;
+  document.querySelectorAll('.dm-item').forEach(function(i){i.classList.remove('active')});
+  el.classList.add('active');
+  renderDm(id);
+}
+
+function handleIntervene(){
+  var msgs=document.getElementById('dm-messages');
+  if(!msgs)return;
+  var div=document.createElement('div');
+  div.innerHTML='<div class="bubble-row"><div class="bubble system">🛑 你介入了此 A2A 对话 · A2A 对话已暂停，等待你的指令</div></div>';
+  msgs.appendChild(div.firstElementChild);
+  msgs.scrollTop=msgs.scrollHeight;
+  document.getElementById('dm-input').disabled=false;
+  document.getElementById('dm-send').disabled=false;
+  document.getElementById('dm-placeholder').textContent='输入你的指令，Agent 将等待你的决定...';
+}
+
+function renderDm(id){
+  var cfg=dmConfigs[id];
+  if(!cfg)return;
+  var panel=document.getElementById('right-panel');
+
+  var personaBar='';
+  if(cfg.showPersona&&personaOpen){
+    personaBar='<div class="persona-bar"><i class="ti ti-user" aria-hidden="true"></i> 当前 Persona: <select class="persona-select" onchange="personaState=this.value"><option value="default">默认 (coder.soul)</option><option value="mentor">导师模式 (mentor.soul)</option><option value="minimal">极简模式</option></select><span style="margin-left:auto;cursor:pointer;font-size:11px;opacity:.7" onclick="personaOpen=false;renderDm(currentDm)">✕</span></div>';
+  }
+
+  var a2aNotice='';
+  if(cfg.showA2A){
+    a2aNotice='<div class="readonly-bar"><i class="ti ti-eye" aria-hidden="true"></i>你正在监听 Agent 间的委托对话 · 只读视图 · 点击"介入"可暂停并介入</div>';
+  }
+
+  var grantSection='';
+  if(id==='human-agent'&&grantsOpen){
+    grantSection='<div style="padding:0 14px 8px">'+grantCardHtml()+'</div>';
+  }
+
+  var msgsHtml=cfg.msgs.map(function(m){
+    if(m.type==='system') return '<div style="text-align:center;margin:6px 0"><span style="font-size:11px;color:var(--hint);background:var(--surf2);padding:3px 10px;border-radius:8px">'+m.text+'</span></div>';
+    var toolHtml=m.tool?toolCard(m.tool.name,m.tool.args,m.tool.status):'';
+    var txt=m.text.replace(/\n/g,'<br>');
+    if(m.type==='a2a-left'||m.type==='a2a-right'){
+      var isRight=m.type==='a2a-right';
+      return '<div class="bubble-row'+(isRight?' mine':'')+'" style="gap:8px">'+
+        (!isRight?m.avatar:'')+
+        '<div><div style="font-size:10px;color:var(--hint);margin-bottom:2px;'+(isRight?'text-align:right':'')+'">'+(isRight?'':m.name+' · ')+m.time+(isRight?' · '+m.name:'')+'</div>'+
+        '<div class="bubble a2a">'+txt+(toolHtml?'<div style="margin-top:5px">'+toolHtml+'</div>':'')+'</div></div>'+
+        (isRight?m.avatar:'')+
+      '</div>';
+    }
+    return bubble(txt+toolHtml,m.type,m.time);
+  }).join('');
+
+  var inputDisabled=cfg.readonly?'disabled':'';
+  var sendDisabled=cfg.readonly?'disabled':'';
+
+  panel.innerHTML=
+    '<div class="dm-header">'+
+      cfg.headerAvatar+
+      '<div class="dm-header-info">'+
+        '<div class="dm-header-name">'+cfg.headerStatus+cfg.headerName+'</div>'+
+        '<div class="dm-header-sub">'+cfg.headerSub+'</div>'+
+      '</div>'+
+      cfg.extraActions+
+      '<button class="hdr-icon" aria-label="搜索"><i class="ti ti-search" aria-hidden="true" style="font-size:15px"></i></button>'+
+      '<button class="hdr-icon" aria-label="更多"><i class="ti ti-dots" aria-hidden="true" style="font-size:15px"></i></button>'+
+    '</div>'+
+    personaBar+
+    a2aNotice+
+    grantSection+
+    '<div class="messages" id="dm-messages">'+msgsHtml+'</div>'+
+    '<div class="input-area">'+
+      (cfg.readonly?'<div class="input-hint"><i class="ti ti-eye" aria-hidden="true"></i> 只读模式 · 点击右上角"介入"按钮参与对话</div>':'')+
+      '<div class="input-row">'+
+        '<textarea class="textarea" id="dm-input" '+(cfg.readonly?'disabled':'')+' placeholder="'+cfg.placeholder+'" id2="dm-placeholder" rows="1" onkeydown="handleKey(event,\''+id+'\')"></textarea>'+
+        '<button class="send" id="dm-send" '+(cfg.readonly?'disabled':'')+' onclick="sendDmMsg(\''+id+'\')">发送</button>'+
+      '</div>'+
+    '</div>';
+
+  var msgs=document.getElementById('dm-messages');
+  if(msgs)msgs.scrollTop=msgs.scrollHeight;
+}
+
+function handleKey(e,id){
+  if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendDmMsg(id);}
+}
+
+var replyCounters={};
+var agentRepliesMap={
+  'human-agent':['好的，继续看...','这个问题我来分析一下。','已完成，请查看结果。','没问题，我来处理。'],
+  'human-agent2':['明白，已记录。','扫描完成，无异常。','报告已更新。'],
+  'human-human':['好的，明白了。','我去确认一下。','这个逻辑没问题。'],
+};
+
+function sendDmMsg(id){
+  var inp=document.getElementById('dm-input');
+  if(!inp||inp.disabled)return;
+  var txt=inp.value.trim();
+  if(!txt)return;
+  inp.value='';
+  var msgs=document.getElementById('dm-messages');
+  if(!msgs)return;
+  var div=document.createElement('div');
+  div.innerHTML=bubble(txt,'mine',now());
+  msgs.appendChild(div.firstElementChild);
+  msgs.scrollTop=msgs.scrollHeight;
+
+  var cfg=dmConfigs[id];
+  if(id==='human-human')return;
+
+  setTimeout(function(){
+    var typingDiv=document.createElement('div');
+    var agName=id==='human-agent'?'coder':'security-bot';
+    var agColor=id==='human-agent'?'background:linear-gradient(135deg,#7C3AED,#A855F7)':'background:linear-gradient(135deg,#D05538,#F87060)';
+    typingDiv.setAttribute('id','typing-indicator');
+    typingDiv.innerHTML='<div class="bubble-row" style="gap:8px"><div style="'+agColor+';width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center"><i class="ti ti-robot" style="font-size:12px;color:#fff"></i></div><div><div class="bubble agent" style="padding:10px 14px"><div class="dots"><span></span><span></span><span></span></div></div></div></div>';
+    msgs.appendChild(typingDiv);
+    msgs.scrollTop=msgs.scrollHeight;
+
+    setTimeout(function(){
+      var t=document.getElementById('typing-indicator');
+      if(t)t.remove();
+      var replies=agentRepliesMap[id]||['好的。'];
+      var r=replies[(replyCounters[id]||0)%replies.length];
+      replyCounters[id]=(replyCounters[id]||0)+1;
+      var d2=document.createElement('div');
+      d2.innerHTML=bubble(r,'agent',now());
+      msgs.appendChild(d2.firstElementChild);
+      msgs.scrollTop=msgs.scrollHeight;
+    },1000+Math.random()*600);
+  },400+Math.random()*300);
+}
+
+renderDm('human-agent');
+</script>

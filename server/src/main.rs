@@ -6,6 +6,7 @@ mod middleware;
 mod sandbox;
 mod skills;
 mod state;
+mod v3_auth;
 
 use axum::Json;
 use axum::Router;
@@ -22,15 +23,21 @@ use maple_agent::registry::AgentRegistry;
 use maple_agent::security::SecurityManager;
 use maple_agent::session_store::SessionStore;
 use maple_agent::tool_use_context::ToolUseContext;
+use maple_collab::group::GroupManager;
+use maple_collab::group_message::GroupMessageManager;
 use maple_collab::group_rules::{GroupRulesEngine, RuleContext};
 use maple_collab::workspace::WorkspaceManager;
+use maple_engine::approval::ApprovalService;
 use maple_engine::checkpoint::CheckpointManager;
+use maple_engine::memory_service::MemoryService;
+use maple_engine::task_service::TaskService;
 use maple_engine::event_bus::EventBus;
 use maple_engine::executor::{NodeExecutor, WorkflowExecutor};
 use maple_engine::hooks::HookRunner;
 use maple_engine::scheduler::{ScheduledJob, Scheduler};
 use maple_engine::skill_registry::SkillRegistry;
 use maple_engine::task_queue::TaskQueueService;
+use maple_engine::agent_hooks::CreateHookRequest;
 use maple_engine::workflow::Workflow;
 use maple_gateway::auth::AuthService;
 use maple_gateway::mcp_host::McpHostManager;
@@ -413,6 +420,34 @@ async fn ws_agent_handler(
             state.event_bus.clone(),
             agent_id,
         )
+    })
+}
+
+async fn ws_group_handler(
+    ws: WebSocketUpgrade,
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let token = headers
+        .get("Authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .or_else(|| params.get("token").map(|s| s.as_str()))
+        .unwrap_or("");
+
+    let user_id = match state.auth_service.verify_agent_token(token).await {
+        Ok(id) => id,
+        Err(_) => {
+            if state.config.read().await.require_auth {
+                return ws.on_upgrade(move |_socket| async move {});
+            }
+            "anonymous".to_string()
+        }
+    };
+
+    ws.on_upgrade(move |socket| {
+        ws_gateway::handle_group_ws(socket, state.event_bus.clone(), user_id)
     })
 }
 
@@ -1352,6 +1387,17 @@ async fn sse_events_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> impl IntoResponse {
     sse_gateway::handle_user_sse(state.event_bus.clone()).await
+}
+
+async fn sse_group_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let group_ids: Vec<String> = params
+        .get("group_id")
+        .map(|s| s.split(',').map(|g| g.trim().to_string()).filter(|g| !g.is_empty()).collect())
+        .unwrap_or_default();
+    sse_gateway::handle_group_sse(state.event_bus.clone(), group_ids).await
 }
 
 async fn get_workflow_handler(
@@ -2580,6 +2626,306 @@ async fn delete_attachment_handler(
     }
 }
 
+// ── Message Attachments ─────────────────────────────────────────
+
+async fn v3_upload_message_attachment_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    auth_user: Option<axum::extract::Extension<v3_auth::AuthenticatedUser>>,
+    axum::extract::Path(group_id): axum::extract::Path<String>,
+    multipart: axum::extract::Multipart,
+) -> axum::Json<serde_json::Value> {
+    let now = chrono::Utc::now().timestamp();
+    let mut uploaded = Vec::new();
+    let mut mp = multipart;
+    let uploader_id = auth_user
+        .as_ref()
+        .map(|u| u.user_id.clone())
+        .unwrap_or_else(|| "anonymous".to_string());
+
+    while let Some(mut field) = mp.next_field().await.unwrap_or(None) {
+        let filename = field.file_name().unwrap_or("unknown").to_string();
+        let content_type = field.content_type().unwrap_or("application/octet-stream").to_string();
+        let mut data = Vec::new();
+        while let Some(chunk) = field.chunk().await.unwrap_or(None) {
+            data.extend_from_slice(&chunk);
+        }
+        let size = data.len() as i64;
+        let id = format!("msgatt-{}", uuid::Uuid::new_v4());
+        let _ = sqlx::query(
+            "INSERT INTO message_attachments (id, group_id, message_id, uploader_id, filename, content_type, size, data, created_at) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?)"
+        ).bind(&id).bind(&group_id).bind(&uploader_id).bind(&filename).bind(&content_type).bind(size).bind(&data).bind(now)
+        .execute(&state.db).await;
+        uploaded.push(serde_json::json!({ "id": id, "filename": filename, "size": size, "content_type": content_type }));
+    }
+
+    axum::Json(serde_json::json!({ "attachments": uploaded }))
+}
+
+async fn v3_list_message_attachments_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(group_id): axum::extract::Path<String>,
+) -> axum::Json<serde_json::Value> {
+    let rows: Vec<(String, String, String, Option<String>, String, i64, i64)> = sqlx::query_as(
+        "SELECT id, filename, content_type, message_id, uploader_id, size, created_at FROM message_attachments WHERE group_id = ? ORDER BY created_at DESC LIMIT 50"
+    ).bind(&group_id).fetch_all(&state.db).await.unwrap_or_default();
+
+    let attachments: Vec<serde_json::Value> = rows.into_iter()
+        .map(|(id, filename, ct, msg_id, uploader, size, created)| serde_json::json!({
+            "id": id, "filename": filename, "content_type": ct,
+            "message_id": msg_id, "uploader_id": uploader, "size": size, "created_at": created
+        })).collect();
+
+    axum::Json(serde_json::json!({ "attachments": attachments }))
+}
+
+async fn v3_download_message_attachment_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(att_id): axum::extract::Path<String>,
+) -> Result<(axum::http::HeaderMap, Vec<u8>), axum::http::StatusCode> {
+    let row: Option<(String, String, Vec<u8>)> = sqlx::query_as(
+        "SELECT filename, content_type, data FROM message_attachments WHERE id = ?"
+    ).bind(&att_id).fetch_optional(&state.db).await.map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    match row {
+        Some((filename, ct, data)) => {
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert("content-type", ct.parse().unwrap_or_else(|_| "application/octet-stream".parse().unwrap()));
+            headers.insert("content-disposition", format!("attachment; filename=\"{}\"", filename).parse().unwrap());
+            Ok((headers, data))
+        }
+        None => Err(axum::http::StatusCode::NOT_FOUND),
+    }
+}
+
+async fn v3_delete_message_attachment_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(att_id): axum::extract::Path<String>,
+) -> axum::Json<serde_json::Value> {
+    let result = sqlx::query("DELETE FROM message_attachments WHERE id = ?")
+        .bind(&att_id).execute(&state.db).await;
+    let deleted = result.map(|r| r.rows_affected() > 0).unwrap_or(false);
+    axum::Json(serde_json::json!({ "deleted": deleted }))
+}
+
+#[derive(serde::Deserialize)]
+struct LinkAttachmentRequest {
+    message_id: String,
+}
+
+async fn v3_link_attachment_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(att_id): axum::extract::Path<String>,
+    Json(req): Json<LinkAttachmentRequest>,
+) -> axum::Json<serde_json::Value> {
+    let result = sqlx::query("UPDATE message_attachments SET message_id = ? WHERE id = ?")
+        .bind(&req.message_id).bind(&att_id).execute(&state.db).await;
+    let updated = result.map(|r| r.rows_affected() > 0).unwrap_or(false);
+    axum::Json(serde_json::json!({ "linked": updated }))
+}
+
+// ── Agent Hooks Handlers ─────────────────────────────────
+
+async fn v3_list_hooks_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(group_id): axum::extract::Path<String>,
+) -> axum::Json<serde_json::Value> {
+    match state.hook_service.list_hooks(&group_id).await {
+        Ok(hooks) => axum::Json(serde_json::json!({ "hooks": hooks })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn v3_create_hook_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(group_id): axum::extract::Path<String>,
+    axum::Json(req): axum::Json<CreateHookRequest>,
+) -> impl axum::response::IntoResponse {
+    match state.hook_service.create_hook(&group_id, &req).await {
+        Ok(hook) => (axum::http::StatusCode::CREATED, axum::Json(serde_json::json!({ "hook": hook }))),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({ "error": e.to_string() }))),
+    }
+}
+
+async fn v3_get_hook_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path((_group_id, hook_id)): axum::extract::Path<(String, String)>,
+) -> impl axum::response::IntoResponse {
+    match state.hook_service.get_hook(&hook_id).await {
+        Ok(Some(hook)) => axum::Json(serde_json::json!({ "hook": hook })).into_response(),
+        Ok(None) => (axum::http::StatusCode::NOT_FOUND, axum::Json(serde_json::json!({ "error": "not found" }))).into_response(),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+async fn v3_update_hook_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path((_group_id, hook_id)): axum::extract::Path<(String, String)>,
+    axum::Json(body): axum::Json<serde_json::Value>,
+) -> axum::Json<serde_json::Value> {
+    match state.hook_service.update_hook(&hook_id, &body).await {
+        Ok(updated) => axum::Json(serde_json::json!({ "updated": updated })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn v3_delete_hook_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path((_group_id, hook_id)): axum::extract::Path<(String, String)>,
+) -> axum::Json<serde_json::Value> {
+    match state.hook_service.delete_hook(&hook_id).await {
+        Ok(deleted) => axum::Json(serde_json::json!({ "deleted": deleted })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn v3_list_hook_logs_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path((_group_id, hook_id)): axum::extract::Path<(String, String)>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> axum::Json<serde_json::Value> {
+    let limit = params.get("limit").and_then(|v| v.parse::<i64>().ok()).unwrap_or(50);
+    match state.hook_service.list_logs(&hook_id, limit).await {
+        Ok(logs) => axum::Json(serde_json::json!({ "logs": logs })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+// ── Workflow Definition Handlers ──
+
+#[derive(Deserialize)]
+struct V3CreateWorkflowRequest { id: String, name: String, yaml_content: String }
+#[derive(Deserialize)]
+struct V3UpdateWorkflowRequest { name: Option<String>, yaml_content: Option<String>, status: Option<String> }
+
+async fn v3_list_workflows_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::Json<serde_json::Value> {
+    match state.workflow_service.list_definitions().await {
+        Ok(defs) => axum::Json(serde_json::json!({ "workflows": defs })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn v3_create_workflow_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::Json(req): axum::Json<V3CreateWorkflowRequest>,
+) -> impl axum::response::IntoResponse {
+    match state.workflow_service.create_definition(&req.id, &req.name, &req.yaml_content).await {
+        Ok(def) => (axum::http::StatusCode::CREATED, axum::Json(serde_json::json!({ "workflow": def }))),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({ "error": e.to_string() }))),
+    }
+}
+
+async fn v3_get_workflow_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(wid): axum::extract::Path<String>,
+) -> impl axum::response::IntoResponse {
+    match state.workflow_service.get_definition(&wid).await {
+        Ok(Some(def)) => (axum::http::StatusCode::OK, axum::Json(serde_json::json!({ "workflow": def }))),
+        Ok(None) => (axum::http::StatusCode::NOT_FOUND, axum::Json(serde_json::json!({ "error": "not found" }))),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({ "error": e.to_string() }))),
+    }
+}
+
+async fn v3_update_workflow_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(wid): axum::extract::Path<String>,
+    axum::Json(req): axum::Json<V3UpdateWorkflowRequest>,
+) -> axum::Json<serde_json::Value> {
+    match state.workflow_service.update_definition(&wid, req.name.as_deref(), req.yaml_content.as_deref(), req.status.as_deref()).await {
+        Ok(updated) => axum::Json(serde_json::json!({ "updated": updated })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn v3_delete_workflow_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(wid): axum::extract::Path<String>,
+) -> axum::Json<serde_json::Value> {
+    match state.workflow_service.delete_definition(&wid).await {
+        Ok(deleted) => axum::Json(serde_json::json!({ "deleted": deleted })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+// ── Workflow Run Handlers ──
+
+#[derive(Deserialize)]
+struct CreateRunRequest { workflow_id: String, workflow_version: i64, input: String, group_id: Option<String>, agent_id: Option<String> }
+#[derive(Deserialize)]
+struct UpdateRunStatusRequest { status: String, output: Option<String>, error: Option<String> }
+#[derive(Deserialize)]
+struct RecordCheckpointRequest { node_id: String, output: String, context_snapshot: String }
+
+async fn v3_list_workflow_runs_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> axum::Json<serde_json::Value> {
+    let limit = params.get("limit").and_then(|v| v.parse::<i64>().ok());
+    match state.workflow_service.list_runs(
+        params.get("workflow_id").map(|s| s.as_str()),
+        params.get("group_id").map(|s| s.as_str()),
+        params.get("status").map(|s| s.as_str()),
+        limit,
+    ).await {
+        Ok(runs) => axum::Json(serde_json::json!({ "runs": runs })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn v3_create_workflow_run_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::Json(req): axum::Json<CreateRunRequest>,
+) -> impl axum::response::IntoResponse {
+    match state.workflow_service.create_run(&req.workflow_id, req.workflow_version, &req.input, req.group_id.as_deref(), req.agent_id.as_deref()).await {
+        Ok(run) => (axum::http::StatusCode::CREATED, axum::Json(serde_json::json!({ "run": run }))),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({ "error": e.to_string() }))),
+    }
+}
+
+async fn v3_get_workflow_run_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(rid): axum::extract::Path<String>,
+) -> impl axum::response::IntoResponse {
+    match state.workflow_service.get_run(&rid).await {
+        Ok(Some(run)) => (axum::http::StatusCode::OK, axum::Json(serde_json::json!({ "run": run }))),
+        Ok(None) => (axum::http::StatusCode::NOT_FOUND, axum::Json(serde_json::json!({ "error": "not found" }))),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({ "error": e.to_string() }))),
+    }
+}
+
+async fn v3_update_workflow_run_status_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(rid): axum::extract::Path<String>,
+    axum::Json(req): axum::Json<UpdateRunStatusRequest>,
+) -> axum::Json<serde_json::Value> {
+    match state.workflow_service.update_run_status(&rid, &req.status, req.output.as_deref(), req.error.as_deref()).await {
+        Ok(updated) => axum::Json(serde_json::json!({ "updated": updated })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn v3_list_checkpoints_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(rid): axum::extract::Path<String>,
+) -> axum::Json<serde_json::Value> {
+    match state.workflow_service.list_checkpoints(&rid).await {
+        Ok(cps) => axum::Json(serde_json::json!({ "checkpoints": cps })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn v3_record_checkpoint_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(rid): axum::extract::Path<String>,
+    axum::Json(req): axum::Json<RecordCheckpointRequest>,
+) -> impl axum::response::IntoResponse {
+    match state.workflow_service.record_checkpoint(&rid, &req.node_id, &req.output, &req.context_snapshot).await {
+        Ok(id) => (axum::http::StatusCode::CREATED, axum::Json(serde_json::json!({ "id": id }))),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({ "error": e.to_string() }))),
+    }
+}
+
 async fn deep_health_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> axum::Json<serde_json::Value> {
@@ -3146,6 +3492,872 @@ async fn delete_agent_handler(
     }
 }
 
+// ============================================================
+// v3 Group Handlers
+// ============================================================
+
+#[derive(Debug, Deserialize)]
+struct CreateGroupRequest {
+    name: String,
+    description: Option<String>,
+    group_type: Option<String>,
+}
+
+async fn v3_create_group_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    Json(req): Json<CreateGroupRequest>,
+) -> impl IntoResponse {
+    let group_type = match req.group_type.as_deref() {
+        Some("project") => maple_collab::group::GroupType::Project,
+        Some("channel") => maple_collab::group::GroupType::Channel,
+        Some("dm") => maple_collab::group::GroupType::Dm,
+        _ => maple_collab::group::GroupType::Collaboration,
+    };
+    let settings = maple_collab::group::GroupSettings::default();
+    match state.group_manager.create_group(&req.name, req.description.as_deref(), group_type, "system", &settings).await {
+        Ok(group) => axum::Json(serde_json::json!({ "group": group })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn v3_list_groups_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> impl IntoResponse {
+    match state.group_manager.list_groups("system").await {
+        Ok(groups) => axum::Json(serde_json::json!({ "groups": groups })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn v3_get_group_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(group_id): axum::extract::Path<String>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    match state.group_manager.get_group(&group_id).await {
+        Ok(Some(group)) => Ok(axum::Json(serde_json::json!({ "group": group }))),
+        Ok(None) => Err(axum::http::StatusCode::NOT_FOUND),
+        Err(_) => Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+async fn v3_list_members_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(group_id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    match state.group_manager.list_members(&group_id).await {
+        Ok(members) => axum::Json(serde_json::json!({ "members": members })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct AddMemberRequest {
+    member_id: String,
+    member_type: Option<String>,
+    role: Option<String>,
+}
+
+async fn v3_add_member_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(group_id): axum::extract::Path<String>,
+    Json(req): Json<AddMemberRequest>,
+) -> impl IntoResponse {
+    let member_type = req.member_type.as_deref().unwrap_or("human");
+    let role = req.role.as_deref().unwrap_or("member");
+    match state.group_manager.add_member(&group_id, &req.member_id, member_type, role).await {
+        Ok(true) => {
+            state.event_bus.publish(maple_engine::event_bus::Event::GroupMemberJoined {
+                group_id,
+                member_id: req.member_id,
+            }).await;
+            axum::Json(serde_json::json!({ "status": "added" }))
+        }
+        Ok(false) => axum::Json(serde_json::json!({ "status": "already_member" })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+// ============================================================
+// v3 Message Handlers
+// ============================================================
+
+#[derive(Debug, Deserialize)]
+struct SendMessageRequest {
+    sender_id: String,
+    sender_type: Option<String>,
+    message_type: Option<String>,
+    content: String,
+    reply_to_id: Option<String>,
+    thread_root_id: Option<String>,
+    source_channel: Option<String>,
+}
+
+async fn v3_send_message_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    auth_user: Option<axum::extract::Extension<v3_auth::AuthenticatedUser>>,
+    axum::extract::Path(group_id): axum::extract::Path<String>,
+    Json(req): Json<SendMessageRequest>,
+) -> impl IntoResponse {
+    // Prefer authenticated user identity over request body
+    let sender_id = auth_user
+        .as_ref()
+        .map(|u| u.user_id.clone())
+        .unwrap_or_else(|| req.sender_id.clone());
+    let sender_type = auth_user
+        .as_ref()
+        .map(|u| u.user_type.clone())
+        .or(req.sender_type.clone())
+        .unwrap_or_else(|| "human".to_string());
+
+    let msg_type = match req.message_type.as_deref() {
+        Some("markdown") => maple_collab::group_message::MessageType::Markdown,
+        Some("tool_call") => maple_collab::group_message::MessageType::ToolCall,
+        Some("tool_result") => maple_collab::group_message::MessageType::ToolResult,
+        Some("system") => maple_collab::group_message::MessageType::System,
+        _ => maple_collab::group_message::MessageType::Text,
+    };
+    let source_channel = req.source_channel.as_deref().unwrap_or("api");
+    match state.group_message_manager.send_message(
+        &group_id, &sender_id, &sender_type, msg_type, &req.content,
+        req.reply_to_id.as_deref(), req.thread_root_id.as_deref(), source_channel,
+    ).await {
+        Ok(msg) => {
+            state.event_bus.publish(maple_engine::event_bus::Event::GroupMessageSent {
+                group_id: group_id.clone(),
+                message_id: msg.id.clone(),
+                sender_id: sender_id,
+                content: req.content,
+            }).await;
+            axum::Json(serde_json::json!({ "message": msg }))
+        }
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ListMessagesQuery {
+    limit: Option<i64>,
+    before: Option<i64>,
+}
+
+async fn v3_list_messages_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(group_id): axum::extract::Path<String>,
+    axum::extract::Query(query): axum::extract::Query<ListMessagesQuery>,
+) -> impl IntoResponse {
+    let limit = query.limit.unwrap_or(50).min(200);
+    match state.group_message_manager.get_messages(&group_id, limit, query.before).await {
+        Ok(page) => axum::Json(serde_json::json!({ "messages": page.messages, "has_more": page.has_more, "next_cursor": page.next_cursor })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct EditMessageRequest {
+    editor_id: String,
+    content: String,
+}
+
+async fn v3_edit_message_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path((group_id, message_id)): axum::extract::Path<(String, String)>,
+    Json(req): Json<EditMessageRequest>,
+) -> impl IntoResponse {
+    match state.group_message_manager.edit_message(&message_id, &req.editor_id, &req.content).await {
+        Ok(true) => {
+            state.event_bus.publish(maple_engine::event_bus::Event::GroupMessageEdited {
+                group_id,
+                message_id,
+            }).await;
+            axum::Json(serde_json::json!({ "status": "edited" }))
+        }
+        Ok(false) => axum::Json(serde_json::json!({ "error": "message not found" })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn v3_delete_message_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path((group_id, message_id)): axum::extract::Path<(String, String)>,
+) -> impl IntoResponse {
+    match state.group_message_manager.delete_message(&message_id).await {
+        Ok(true) => {
+            state.event_bus.publish(maple_engine::event_bus::Event::GroupMessageDeleted {
+                group_id,
+                message_id,
+            }).await;
+            axum::Json(serde_json::json!({ "status": "deleted" }))
+        }
+        Ok(false) => axum::Json(serde_json::json!({ "error": "message not found" })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ReactionRequest {
+    user_id: String,
+    emoji: String,
+}
+
+async fn v3_add_reaction_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path((_group_id, message_id)): axum::extract::Path<(String, String)>,
+    Json(req): Json<ReactionRequest>,
+) -> impl IntoResponse {
+    match state.group_message_manager.add_reaction(&message_id, &req.user_id, &req.emoji).await {
+        Ok(true) => axum::Json(serde_json::json!({ "status": "added" })),
+        Ok(false) => axum::Json(serde_json::json!({ "status": "already_exists" })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn v3_remove_reaction_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path((_group_id, message_id, emoji)): axum::extract::Path<(String, String, String)>,
+    axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let user_id = query.get("user_id").cloned().unwrap_or_default();
+    match state.group_message_manager.remove_reaction(&message_id, &user_id, &emoji).await {
+        Ok(true) => axum::Json(serde_json::json!({ "status": "removed" })),
+        Ok(false) => axum::Json(serde_json::json!({ "error": "reaction not found" })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct PinRequest {
+    pinned_by: String,
+}
+
+async fn v3_pin_message_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path((group_id, message_id)): axum::extract::Path<(String, String)>,
+    Json(req): Json<PinRequest>,
+) -> impl IntoResponse {
+    match state.group_message_manager.pin_message(&message_id, &group_id, &req.pinned_by).await {
+        Ok(true) => axum::Json(serde_json::json!({ "status": "pinned" })),
+        Ok(false) => axum::Json(serde_json::json!({ "status": "already_pinned" })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn v3_unpin_message_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path((_group_id, message_id)): axum::extract::Path<(String, String)>,
+) -> impl IntoResponse {
+    match state.group_message_manager.unpin_message(&message_id).await {
+        Ok(true) => axum::Json(serde_json::json!({ "status": "unpinned" })),
+        Ok(false) => axum::Json(serde_json::json!({ "error": "not pinned" })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct SearchMessagesQuery {
+    q: String,
+    limit: Option<i64>,
+}
+
+async fn v3_search_messages_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(group_id): axum::extract::Path<String>,
+    axum::extract::Query(query): axum::extract::Query<SearchMessagesQuery>,
+) -> impl IntoResponse {
+    let limit = query.limit.unwrap_or(20).min(100);
+    match state.group_message_manager.search_messages(&group_id, &query.q, limit).await {
+        Ok(messages) => axum::Json(serde_json::json!({ "messages": messages })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn v3_get_thread_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path((_group_id, message_id)): axum::extract::Path<(String, String)>,
+) -> impl IntoResponse {
+    match state.group_message_manager.get_thread(&message_id, 100).await {
+        Ok(messages) => axum::Json(serde_json::json!({ "messages": messages })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct MarkReadRequest {
+    user_id: String,
+}
+
+async fn v3_mark_read_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path((group_id, message_id)): axum::extract::Path<(String, String)>,
+    Json(req): Json<MarkReadRequest>,
+) -> impl IntoResponse {
+    match state.group_message_manager.mark_as_read(&group_id, &req.user_id, &message_id).await {
+        Ok(_) => axum::Json(serde_json::json!({ "status": "read" })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+// ============================================================
+// v3 Task Handlers
+// ============================================================
+
+#[derive(Debug, Deserialize)]
+struct CreateTaskV3Request {
+    title: String,
+    description: Option<String>,
+    creator_id: String,
+    project_id: Option<String>,
+    group_id: Option<String>,
+    priority: Option<String>,
+    assignee_id: Option<String>,
+    source_message_id: Option<String>,
+}
+
+async fn v3_create_task_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    Json(req): Json<CreateTaskV3Request>,
+) -> impl IntoResponse {
+    let priority = match req.priority.as_deref() {
+        Some("critical") => maple_engine::task_service::TaskPriority::Critical,
+        Some("urgent") => maple_engine::task_service::TaskPriority::Urgent,
+        Some("high") => maple_engine::task_service::TaskPriority::High,
+        Some("low") => maple_engine::task_service::TaskPriority::Low,
+        _ => maple_engine::task_service::TaskPriority::Medium,
+    };
+    match state.task_service.create_task(
+        &req.title, req.description.as_deref(), &req.creator_id,
+        req.project_id.as_deref(), req.group_id.as_deref(), priority,
+        req.assignee_id.as_deref(), req.source_message_id.as_deref(), None,
+    ).await {
+        Ok(task) => axum::Json(serde_json::json!({ "task": task })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ListTasksV3Query {
+    group_id: Option<String>,
+    status: Option<String>,
+    limit: Option<i64>,
+}
+
+async fn v3_list_tasks_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Query(query): axum::extract::Query<ListTasksV3Query>,
+) -> impl IntoResponse {
+    let limit = query.limit.unwrap_or(50).min(200);
+    match state.task_service.list_tasks(query.group_id.as_deref(), query.status.as_deref(), limit).await {
+        Ok(tasks) => axum::Json(serde_json::json!({ "tasks": tasks })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn v3_get_task_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(task_id): axum::extract::Path<String>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    match state.task_service.get_task(&task_id).await {
+        Ok(Some(task)) => Ok(axum::Json(serde_json::json!({ "task": task }))),
+        Ok(None) => Err(axum::http::StatusCode::NOT_FOUND),
+        Err(_) => Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct TransitionTaskRequest {
+    status: String,
+    changed_by: String,
+    reason: Option<String>,
+}
+
+async fn v3_transition_task_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(task_id): axum::extract::Path<String>,
+    Json(req): Json<TransitionTaskRequest>,
+) -> impl IntoResponse {
+    let new_status = maple_engine::task_service::TaskV3Status::from_str(&req.status);
+    match state.task_service.transition_task(&task_id, new_status, &req.changed_by, req.reason.as_deref()).await {
+        Ok(task) => {
+            state.event_bus.publish(maple_engine::event_bus::Event::TaskTransitioned {
+                task_id: task_id.clone(),
+                old_status: "unknown".to_string(),
+                new_status: task.status.as_str().to_string(),
+            }).await;
+            axum::Json(serde_json::json!({ "task": task }))
+        }
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct AddCommentRequest {
+    user_id: String,
+    content: String,
+    source_message_id: Option<String>,
+}
+
+async fn v3_add_comment_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(task_id): axum::extract::Path<String>,
+    Json(req): Json<AddCommentRequest>,
+) -> impl IntoResponse {
+    match state.task_service.add_comment(&task_id, &req.user_id, &req.content, req.source_message_id.as_deref()).await {
+        Ok(id) => axum::Json(serde_json::json!({ "id": id, "status": "created" })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn v3_task_history_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(task_id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    match state.task_service.get_status_history(&task_id).await {
+        Ok(history) => axum::Json(serde_json::json!({ "history": history })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+// ============================================================
+// v3 Approval Handlers
+// ============================================================
+
+#[derive(Debug, Deserialize)]
+struct CreateApprovalRequest {
+    group_id: String,
+    title: String,
+    description: Option<String>,
+    request_type: Option<String>,
+    requester_id: String,
+    urgency: Option<String>,
+    quorum_type: Option<String>,
+    approver_spec: String,
+    context: Option<String>,
+}
+
+async fn v3_create_approval_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    Json(req): Json<CreateApprovalRequest>,
+) -> impl IntoResponse {
+    let urgency = match req.urgency.as_deref() {
+        Some("critical") => maple_engine::approval::ApprovalUrgency::Critical,
+        Some("high") => maple_engine::approval::ApprovalUrgency::High,
+        Some("low") => maple_engine::approval::ApprovalUrgency::Low,
+        _ => maple_engine::approval::ApprovalUrgency::Normal,
+    };
+    let quorum = maple_engine::approval::QuorumType::from_str(&req.quorum_type.unwrap_or_else(|| "any".to_string()));
+    let request_type = req.request_type.as_deref().unwrap_or("general");
+    match state.approval_service.create_request(
+        &req.group_id, &req.title, req.description.as_deref(), request_type,
+        &req.requester_id, urgency, quorum, &req.approver_spec, req.context.as_deref(),
+    ).await {
+        Ok(approval) => axum::Json(serde_json::json!({ "approval": approval })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn v3_get_approval_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(approval_id): axum::extract::Path<String>,
+) -> Result<axum::Json<serde_json::Value>, axum::http::StatusCode> {
+    match state.approval_service.get_request(&approval_id).await {
+        Ok(Some(approval)) => Ok(axum::Json(serde_json::json!({ "approval": approval }))),
+        Ok(None) => Err(axum::http::StatusCode::NOT_FOUND),
+        Err(_) => Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct VoteRequest {
+    voter_id: String,
+    decision: String,
+    comment: Option<String>,
+}
+
+async fn v3_vote_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(approval_id): axum::extract::Path<String>,
+    Json(req): Json<VoteRequest>,
+) -> impl IntoResponse {
+    let decision = match req.decision.as_str() {
+        "reject" => maple_engine::approval::VoteDecision::Reject,
+        "abstain" => maple_engine::approval::VoteDecision::Abstain,
+        _ => maple_engine::approval::VoteDecision::Approve,
+    };
+    match state.approval_service.vote(&approval_id, &req.voter_id, decision, req.comment.as_deref()).await {
+        Ok(outcome) => {
+            state.event_bus.publish(maple_engine::event_bus::Event::ApprovalVoteCast {
+                approval_id: approval_id.clone(),
+                voter_id: req.voter_id,
+                decision: req.decision,
+            }).await;
+            if outcome.quorum_met {
+                state.event_bus.publish(maple_engine::event_bus::Event::ApprovalResolved {
+                    approval_id: approval_id.clone(),
+                    approved: outcome.approved,
+                }).await;
+                // Resume any workflow waiting on this approval
+                state.workflow_executor.resolve_approval(&approval_id, outcome.approved).await;
+            }
+            axum::Json(serde_json::json!({ "outcome": outcome }))
+        }
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn v3_list_votes_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(approval_id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    match state.approval_service.list_votes(&approval_id).await {
+        Ok(votes) => axum::Json(serde_json::json!({ "votes": votes })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ListPendingApprovalsQuery {
+    user_id: String,
+    group_id: Option<String>,
+}
+
+async fn v3_list_pending_approvals_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Query(query): axum::extract::Query<ListPendingApprovalsQuery>,
+) -> impl IntoResponse {
+    match state.approval_service.list_pending_for_user(&query.user_id, query.group_id.as_deref()).await {
+        Ok(approvals) => axum::Json(serde_json::json!({ "approvals": approvals })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+// ============================================================
+// v3 Memory Handlers
+// ============================================================
+
+#[derive(Debug, Deserialize)]
+struct V3MemoryStoreRequest {
+    agent_id: String,
+    memory_type: Option<String>,
+    content: String,
+    summary: Option<String>,
+    source_type: Option<String>,
+    source_id: Option<String>,
+    group_id: Option<String>,
+    ttl_hours: Option<i64>,
+}
+
+async fn v3_memory_store_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    Json(req): Json<V3MemoryStoreRequest>,
+) -> impl IntoResponse {
+    let layer = match req.memory_type.as_deref() {
+        Some("episodic") => maple_engine::memory_service::MemoryLayer::Episodic,
+        Some("semantic") => maple_engine::memory_service::MemoryLayer::Semantic,
+        _ => maple_engine::memory_service::MemoryLayer::Working,
+    };
+    match state.memory_service.store(
+        &req.agent_id, layer, &req.content, req.summary.as_deref(),
+        req.source_type.as_deref(), req.source_id.as_deref(), req.group_id.as_deref(), req.ttl_hours,
+    ).await {
+        Ok(memory) => axum::Json(serde_json::json!({ "memory": memory })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct V3MemorySearchRequest {
+    agent_id: String,
+    query_text: Option<String>,
+    memory_type: Option<String>,
+    group_id: Option<String>,
+    limit: Option<i64>,
+}
+
+async fn v3_memory_search_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    Json(req): Json<V3MemorySearchRequest>,
+) -> impl IntoResponse {
+    let layer = req.memory_type.as_deref().map(|t| match t {
+        "episodic" => maple_engine::memory_service::MemoryLayer::Episodic,
+        "semantic" => maple_engine::memory_service::MemoryLayer::Semantic,
+        _ => maple_engine::memory_service::MemoryLayer::Working,
+    });
+    let query = maple_engine::memory_service::MemoryQuery {
+        agent_id: req.agent_id,
+        query_text: req.query_text,
+        memory_type: layer,
+        group_id: req.group_id,
+        limit: req.limit.unwrap_or(10).min(100),
+    };
+    match state.memory_service.search(&query).await {
+        Ok(results) => axum::Json(serde_json::json!({ "results": results })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn v3_memory_stats_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let agent_id = query.get("agent_id").cloned().unwrap_or_default();
+    match state.memory_service.stats(&agent_id).await {
+        Ok(stats) => axum::Json(serde_json::json!({ "stats": stats })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+// ============================================================
+// v3 DM Handlers
+// ============================================================
+
+#[derive(Debug, Deserialize)]
+struct CreateDmRequest {
+    other_user_id: String,
+}
+
+async fn v3_create_dm_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    v3_auth::AuthenticatedUser { user_id, .. }: v3_auth::AuthenticatedUser,
+    Json(req): Json<CreateDmRequest>,
+) -> impl IntoResponse {
+    match state.dm_service.find_or_create(&user_id, &req.other_user_id).await {
+        Ok(group_id) => axum::Json(serde_json::json!({ "group_id": group_id })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn v3_list_dms_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    v3_auth::AuthenticatedUser { user_id, .. }: v3_auth::AuthenticatedUser,
+) -> impl IntoResponse {
+    match state.dm_service.list_user_dms(&user_id).await {
+        Ok(dms) => axum::Json(serde_json::json!({ "dms": dms })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct GrantToolRequest {
+    tool_name: String,
+    expires_at: Option<i64>,
+    scope: Option<String>,
+}
+
+async fn v3_grant_tool_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(group_id): axum::extract::Path<String>,
+    v3_auth::AuthenticatedUser { user_id, .. }: v3_auth::AuthenticatedUser,
+    Json(req): Json<GrantToolRequest>,
+) -> impl IntoResponse {
+    match state.dm_service.grant_tool(&group_id, &req.tool_name, &user_id, req.expires_at, req.scope.as_deref()).await {
+        Ok(grant) => axum::Json(serde_json::json!({ "grant": grant })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn v3_revoke_tool_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path((group_id, tool_name)): axum::extract::Path<(String, String)>,
+    v3_auth::AuthenticatedUser { user_id, .. }: v3_auth::AuthenticatedUser,
+) -> impl IntoResponse {
+    match state.dm_service.revoke_tool(&group_id, &tool_name, &user_id).await {
+        Ok(true) => axum::Json(serde_json::json!({ "status": "revoked" })),
+        Ok(false) => axum::Json(serde_json::json!({ "status": "not_found" })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn v3_list_grants_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(group_id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    match state.dm_service.list_grants(&group_id).await {
+        Ok(grants) => axum::Json(serde_json::json!({ "grants": grants })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateDelegationRequest {
+    executor_id: String,
+    prompt: String,
+    task_id: Option<String>,
+    visible_to: Option<Vec<String>>,
+}
+
+async fn v3_create_delegation_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(group_id): axum::extract::Path<String>,
+    v3_auth::AuthenticatedUser { user_id, .. }: v3_auth::AuthenticatedUser,
+    Json(req): Json<CreateDelegationRequest>,
+) -> impl IntoResponse {
+    let visible = req.visible_to.unwrap_or_default();
+    match state.dm_service.create_delegation(&group_id, &user_id, &req.executor_id, &req.prompt, req.task_id.as_deref(), &visible).await {
+        Ok(delegation) => axum::Json(serde_json::json!({ "delegation": delegation })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn v3_list_delegations_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    v3_auth::AuthenticatedUser { user_id, .. }: v3_auth::AuthenticatedUser,
+) -> impl IntoResponse {
+    match state.dm_service.list_visible_delegations(&user_id).await {
+        Ok(delegations) => axum::Json(serde_json::json!({ "delegations": delegations })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct InterveneRequest {
+    status: Option<String>,
+    result: Option<String>,
+}
+
+async fn v3_intervene_delegation_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(delegation_id): axum::extract::Path<String>,
+    Json(req): Json<InterveneRequest>,
+) -> impl IntoResponse {
+    let status = maple_collab::dm_service::DelegationStatus::from_str(
+        req.status.as_deref().unwrap_or("failed")
+    );
+    match state.dm_service.update_delegation_status(&delegation_id, status, req.result.as_deref()).await {
+        Ok(true) => axum::Json(serde_json::json!({ "status": "updated" })),
+        Ok(false) => axum::Json(serde_json::json!({ "error": "delegation not found" })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+// ============================================================
+// v3 Rules Handlers
+// ============================================================
+
+#[derive(Debug, Deserialize)]
+struct CreateRuleRequest {
+    name: String,
+    rule_type: serde_json::Value,
+    enabled: Option<bool>,
+}
+
+async fn v3_list_rules_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(_group_id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    let rules_engine = state.group_rules.read().await;
+    let rules = rules_engine.list_rules();
+    axum::Json(serde_json::json!({ "rules": rules }))
+}
+
+async fn v3_create_rule_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(_group_id): axum::extract::Path<String>,
+    Json(req): Json<CreateRuleRequest>,
+) -> impl IntoResponse {
+    let rule_type: maple_collab::group_rules::GroupRuleType = match serde_json::from_value(req.rule_type) {
+        Ok(rt) => rt,
+        Err(e) => return axum::Json(serde_json::json!({ "error": format!("invalid rule_type: {}", e) })),
+    };
+    let rule = maple_collab::group_rules::GroupRule {
+        id: uuid::Uuid::new_v4().to_string(),
+        name: req.name,
+        rule_type,
+        enabled: req.enabled.unwrap_or(true),
+    };
+    let mut rules_engine = state.group_rules.write().await;
+    rules_engine.add_rule(rule.clone());
+    axum::Json(serde_json::json!({ "rule": rule }))
+}
+
+async fn v3_update_rule_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path((_group_id, rule_id)): axum::extract::Path<(String, String)>,
+    Json(req): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let mut rules_engine = state.group_rules.write().await;
+    if let Some(mut rule) = rules_engine.get_rule(&rule_id) {
+        if let Some(enabled) = req.get("enabled").and_then(|v| v.as_bool()) {
+            rule.enabled = enabled;
+        }
+        if let Some(name) = req.get("name").and_then(|v| v.as_str()) {
+            rule.name = name.to_string();
+        }
+        if let Some(rt) = req.get("rule_type") {
+            if let Ok(parsed) = serde_json::from_value::<maple_collab::group_rules::GroupRuleType>(rt.clone()) {
+                rule.rule_type = parsed;
+            }
+        }
+        rules_engine.update_rule(&rule_id, rule);
+        axum::Json(serde_json::json!({ "status": "updated" }))
+    } else {
+        axum::Json(serde_json::json!({ "error": "rule not found" }))
+    }
+}
+
+async fn v3_delete_rule_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path((_group_id, rule_id)): axum::extract::Path<(String, String)>,
+) -> impl IntoResponse {
+    let mut rules_engine = state.group_rules.write().await;
+    if rules_engine.remove_rule(&rule_id) {
+        axum::Json(serde_json::json!({ "status": "deleted" }))
+    } else {
+        axum::Json(serde_json::json!({ "error": "rule not found" }))
+    }
+}
+
+// ============================================================
+// v3 Cron Handlers
+// ============================================================
+
+async fn v3_list_cron_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(group_id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    match state.group_cron_service.list_jobs(&group_id).await {
+        Ok(jobs) => axum::Json(serde_json::json!({ "jobs": jobs })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn v3_create_cron_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(group_id): axum::extract::Path<String>,
+    Json(req): Json<maple_collab::group_cron::CreateCronJobRequest>,
+) -> impl IntoResponse {
+    match state.group_cron_service.create_job(&group_id, "system", req).await {
+        Ok(job) => axum::Json(serde_json::json!({ "job": job })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn v3_update_cron_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path((_group_id, cron_id)): axum::extract::Path<(String, String)>,
+    Json(req): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let name = req.get("name").and_then(|v| v.as_str());
+    let cron_expr = req.get("cron_expr").and_then(|v| v.as_str());
+    let message_template = req.get("message_template").and_then(|v| v.as_str());
+    let enabled = req.get("enabled").and_then(|v| v.as_bool());
+
+    match state.group_cron_service.update_job(&cron_id, name, cron_expr, message_template, enabled).await {
+        Ok(true) => axum::Json(serde_json::json!({ "status": "updated" })),
+        Ok(false) => axum::Json(serde_json::json!({ "error": "job not found" })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn v3_delete_cron_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path((_group_id, cron_id)): axum::extract::Path<(String, String)>,
+) -> impl IntoResponse {
+    match state.group_cron_service.delete_job(&cron_id).await {
+        Ok(true) => axum::Json(serde_json::json!({ "status": "deleted" })),
+        Ok(false) => axum::Json(serde_json::json!({ "error": "job not found" })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config = ServerConfig::from_env();
@@ -3474,28 +4686,62 @@ async fn main() -> anyhow::Result<()> {
                 }
                 tracing::info!(count = eng.list_rules().len(), "Loaded group rules from DB");
             }
-            gr
+            gr.clone()
         },
+        group_rules_service: Arc::new(maple_collab::group_rules::GroupRulesService::new(pool.clone(), {
+            let engine = GroupRulesEngine::new();
+            Arc::new(tokio::sync::RwLock::new(engine))
+        })),
+        group_manager: Arc::new(GroupManager::new(pool.clone())),
+        group_message_manager: Arc::new(GroupMessageManager::new(pool.clone())),
+        task_service: Arc::new(TaskService::new(pool.clone())),
+        approval_service: Arc::new(ApprovalService::new(pool.clone())),
+        memory_service: Arc::new(MemoryService::new(pool.clone())),
+        dm_service: Arc::new(maple_collab::dm_service::DmService::new(pool.clone(), GroupManager::new(pool.clone()))),
+        group_cron_service: Arc::new(maple_collab::group_cron::GroupCronService::new(
+            pool.clone(), scheduler.clone(), event_bus.clone(),
+        )),
+        hook_service: Arc::new(maple_engine::agent_hooks::AgentHookService::new(pool.clone())),
+        workflow_service: Arc::new(maple_engine::WorkflowService::new(pool.clone())),
         mcp_host: Arc::new(McpHostManager::new()),
         rate_limiter,
         cache: cache::AppCache::new(),
         metrics: metrics::AppMetrics::new(),
     });
 
+    // Initialize group cron service
+    if let Err(e) = state.group_cron_service.init().await {
+        tracing::warn!("Failed to init group cron service: {}", e);
+    }
+
     let scheduler_wf = workflow_executor.clone();
     let scheduler_db = pool.clone();
+    let scheduler_cron = state.group_cron_service.clone();
     scheduler.start_loop(60, move |job: ScheduledJob| {
         let wf = scheduler_wf.clone();
         let db = scheduler_db.clone();
+        let cron_svc = scheduler_cron.clone();
         async move {
             tracing::info!(job_id = %job.id, workflow_id = %job.workflow_id, "Scheduled job triggered");
-            let yaml_str: Option<String> = sqlx::query_scalar(
-                "SELECT yaml_content FROM workflows WHERE id = ?"
-            ).bind(&job.workflow_id).fetch_optional(&db).await.ok().flatten();
-            if let Some(yaml) = yaml_str
-                && let Ok(parsed) = Workflow::parse_definition(&yaml)
-            {
-                let _ = wf.execute(&parsed.nodes, &job.workflow_id, parsed.version, serde_json::Value::Null).await;
+            // Check if this is a group cron job
+            let is_cron_job: bool = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM group_cron_jobs WHERE id = ?"
+            ).bind(&job.id).fetch_one(&db).await.unwrap_or(0) > 0;
+
+            if is_cron_job {
+                if let Err(e) = cron_svc.execute_job(&job).await {
+                    tracing::error!(job_id = %job.id, error = %e, "Group cron job execution failed");
+                }
+            } else {
+                // Original workflow scheduler
+                let yaml_str: Option<String> = sqlx::query_scalar(
+                    "SELECT yaml_content FROM workflows WHERE id = ?"
+                ).bind(&job.workflow_id).fetch_optional(&db).await.ok().flatten();
+                if let Some(yaml) = yaml_str
+                    && let Ok(parsed) = Workflow::parse_definition(&yaml)
+                {
+                    let _ = wf.execute(&parsed.nodes, &job.workflow_id, parsed.version, serde_json::Value::Null).await;
+                }
             }
             Ok(())
         }
@@ -3513,6 +4759,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/metrics", get(system_metrics_handler))
         .route("/prometheus", get(metrics::metrics_handler))
         .route("/ws/agents", get(ws_agent_handler))
+        .route("/ws/groups", get(ws_group_handler))
+        .route("/api/v3/events", get(sse_group_handler))
         .route("/api/chat", post(chat_handler))
         .route("/api/chat/stream", post(chat_stream_handler))
         .route("/api/models", get(models_handler))
@@ -3624,6 +4872,64 @@ async fn main() -> anyhow::Result<()> {
         // Bot webhook endpoints
         .route("/webhook/feishu", post(feishu_webhook_handler))
         .route("/api/auth/refresh", post(refresh_handler))
+        // v3 Group APIs
+        .route("/api/v3/groups", get(v3_list_groups_handler).post(v3_create_group_handler))
+        .route("/api/v3/groups/:id", get(v3_get_group_handler))
+        .route("/api/v3/groups/:id/members", get(v3_list_members_handler).post(v3_add_member_handler))
+        // v3 Message APIs
+        .route("/api/v3/groups/:id/messages", get(v3_list_messages_handler).post(v3_send_message_handler))
+        .route("/api/v3/groups/:id/messages/search", get(v3_search_messages_handler))
+        .route("/api/v3/groups/:id/messages/:mid", put(v3_edit_message_handler).delete(v3_delete_message_handler))
+        .route("/api/v3/groups/:id/messages/:mid/reactions", post(v3_add_reaction_handler))
+        .route("/api/v3/groups/:id/messages/:mid/reactions/:emoji", delete(v3_remove_reaction_handler))
+        .route("/api/v3/groups/:id/messages/:mid/pin", post(v3_pin_message_handler).delete(v3_unpin_message_handler))
+        .route("/api/v3/groups/:id/messages/:mid/thread", get(v3_get_thread_handler))
+        .route("/api/v3/groups/:id/messages/:mid/read", post(v3_mark_read_handler))
+        // v3 Task APIs
+        .route("/api/v3/tasks", get(v3_list_tasks_handler).post(v3_create_task_handler))
+        .route("/api/v3/tasks/:id", get(v3_get_task_handler))
+        .route("/api/v3/tasks/:id/transition", post(v3_transition_task_handler))
+        .route("/api/v3/tasks/:id/comments", post(v3_add_comment_handler))
+        .route("/api/v3/tasks/:id/history", get(v3_task_history_handler))
+        // v3 Approval APIs
+        .route("/api/v3/approvals", post(v3_create_approval_handler))
+        .route("/api/v3/approvals/pending", get(v3_list_pending_approvals_handler))
+        .route("/api/v3/approvals/:id", get(v3_get_approval_handler))
+        .route("/api/v3/approvals/:id/vote", post(v3_vote_handler))
+        .route("/api/v3/approvals/:id/votes", get(v3_list_votes_handler))
+        // v3 Memory APIs
+        .route("/api/v3/memories", post(v3_memory_store_handler))
+        .route("/api/v3/memories/search", post(v3_memory_search_handler))
+        .route("/api/v3/memories/stats", get(v3_memory_stats_handler))
+        // v3 DM APIs
+        .route("/api/v3/dms", post(v3_create_dm_handler).get(v3_list_dms_handler))
+        .route("/api/v3/dms/:id/grants", post(v3_grant_tool_handler).get(v3_list_grants_handler))
+        .route("/api/v3/dms/:id/grants/:tool", delete(v3_revoke_tool_handler))
+        // v3 A2A Delegation APIs
+        .route("/api/v3/dms/:id/delegations", post(v3_create_delegation_handler))
+        .route("/api/v3/a2a/delegations", get(v3_list_delegations_handler))
+        .route("/api/v3/a2a/:id/intervene", post(v3_intervene_delegation_handler))
+        // v3 Rules APIs
+        .route("/api/v3/groups/:id/rules", get(v3_list_rules_handler).post(v3_create_rule_handler))
+        .route("/api/v3/groups/:id/rules/:rid", put(v3_update_rule_handler).delete(v3_delete_rule_handler))
+        // v3 Cron APIs
+        .route("/api/v3/groups/:id/cron", get(v3_list_cron_handler).post(v3_create_cron_handler))
+        .route("/api/v3/groups/:id/cron/:cid", put(v3_update_cron_handler).delete(v3_delete_cron_handler))
+        // v3 Message Attachment APIs
+        .route("/api/v3/groups/:id/attachments", get(v3_list_message_attachments_handler).post(v3_upload_message_attachment_handler))
+        .route("/api/v3/attachments/:aid", get(v3_download_message_attachment_handler).delete(v3_delete_message_attachment_handler).put(v3_link_attachment_handler))
+        // Agent Hooks
+        .route("/api/v3/groups/:id/hooks", get(v3_list_hooks_handler).post(v3_create_hook_handler))
+        .route("/api/v3/groups/:id/hooks/:hid", get(v3_get_hook_handler).put(v3_update_hook_handler).delete(v3_delete_hook_handler))
+        .route("/api/v3/groups/:id/hooks/:hid/logs", get(v3_list_hook_logs_handler))
+        // Workflow definitions
+        .route("/api/v3/workflows", get(v3_list_workflows_handler).post(v3_create_workflow_handler))
+        .route("/api/v3/workflows/:wid", get(v3_get_workflow_handler).put(v3_update_workflow_handler).delete(v3_delete_workflow_handler))
+        // Workflow runs
+        .route("/api/v3/workflow-runs", get(v3_list_workflow_runs_handler).post(v3_create_workflow_run_handler))
+        .route("/api/v3/workflow-runs/:rid", get(v3_get_workflow_run_handler))
+        .route("/api/v3/workflow-runs/:rid/status", put(v3_update_workflow_run_status_handler))
+        .route("/api/v3/workflow-runs/:rid/checkpoints", get(v3_list_checkpoints_handler).post(v3_record_checkpoint_handler))
         .with_state(state.clone());
 
     let cors = if config.require_auth {

@@ -14,3 +14,4 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 sqlx = { workspace = true }
+maple-engine = { path = "../maple-engine" }

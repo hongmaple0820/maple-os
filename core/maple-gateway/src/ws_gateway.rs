@@ -146,3 +146,95 @@ pub async fn handle_agent_ws(
     registry.remove_task_channel(&agent_id).await;
     tracing::info!(agent_id = %agent_id, "Agent disconnected");
 }
+
+/// Handle a WebSocket connection for v3 group chat real-time updates.
+/// Clients send `{ "type": "subscribe", "group_id": "..." }` to join a group channel,
+/// and receive forwarded events (messages, approvals, tasks, members).
+pub async fn handle_group_ws(
+    socket: WebSocket,
+    event_bus: Arc<EventBus>,
+    user_id: String,
+) {
+    let (mut sink, mut stream) = socket.split();
+    let mut event_rx = event_bus.subscribe_all().await;
+
+    tracing::info!(user_id = %user_id, "Group chat WebSocket connected");
+
+    let mut subscribed_groups: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    loop {
+        tokio::select! {
+            msg = stream.next() => {
+                match msg {
+                    Some(Ok(Message::Text(text))) => {
+                        match serde_json::from_str::<serde_json::Value>(&text) {
+                            Ok(json) => {
+                                let msg_type = json["type"].as_str().unwrap_or("unknown");
+                                match msg_type {
+                                    "subscribe" => {
+                                        if let Some(group_id) = json["group_id"].as_str() {
+                                            subscribed_groups.insert(group_id.to_string());
+                                            let ack = serde_json::json!({
+                                                "type": "subscribed",
+                                                "group_id": group_id,
+                                            });
+                                            let _ = sink.send(Message::Text(ack.to_string())).await;
+                                        }
+                                    }
+                                    "unsubscribe" => {
+                                        if let Some(group_id) = json["group_id"].as_str() {
+                                            subscribed_groups.remove(group_id);
+                                        }
+                                    }
+                                    "ping" => {
+                                        let _ = sink.send(Message::Text("pong".to_string())).await;
+                                    }
+                                    _ => {
+                                        tracing::warn!(user_id = %user_id, msg_type = msg_type, "Unknown group WS message type");
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(user_id = %user_id, error = %e, "Invalid JSON from group WS client");
+                            }
+                        }
+                    }
+                    Some(Ok(Message::Ping(data))) => {
+                        let _ = sink.send(Message::Pong(data)).await;
+                    }
+                    _ => break,
+                }
+            }
+            event = event_rx.recv() => {
+                match event {
+                    Some(event) => {
+                        let event_group_id = match &event {
+                            maple_engine::event_bus::Event::GroupMessageSent { group_id, .. }
+                            | maple_engine::event_bus::Event::GroupMessageEdited { group_id, .. }
+                            | maple_engine::event_bus::Event::GroupMessageDeleted { group_id, .. }
+                            | maple_engine::event_bus::Event::GroupMemberJoined { group_id, .. }
+                            | maple_engine::event_bus::Event::GroupMemberLeft { group_id, .. } => Some(group_id.as_str()),
+                            _ => None,
+                        };
+
+                        let should_forward = if let Some(gid) = event_group_id {
+                            subscribed_groups.contains(gid)
+                        } else {
+                            true
+                        };
+
+                        if should_forward {
+                            let payload = serde_json::to_string(&event).unwrap_or_default();
+                            if sink.send(Message::Text(payload)).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    None => break,
+                }
+            }
+        }
+    }
+
+    tracing::info!(user_id = %user_id, "Group chat WebSocket disconnected");
+}

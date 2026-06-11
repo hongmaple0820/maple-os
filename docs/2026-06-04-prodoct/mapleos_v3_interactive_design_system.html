@@ -1,0 +1,961 @@
+
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --maple-bg:#0D1117;--maple-surface:#161B22;--maple-surface2:#1C2128;--maple-surface3:#252C36;
+    --maple-border:#30363D;--maple-border2:#484F58;
+    --maple-text:#E6EDF3;--maple-muted:#8B949E;--maple-hint:#6E7681;
+    --maple-primary:#2F81F7;--maple-primary-hover:#388BFD;
+    --maple-green:#3FB950;--maple-yellow:#D29922;--maple-red:#F85149;--maple-orange:#DB6D28;
+    --maple-purple:#BC8CFF;--maple-teal:#39D353;
+    --maple-agent-online:#3FB950;--maple-agent-degraded:#D29922;--maple-agent-offline:#F85149;
+    --r:8px;--r2:12px;--r3:16px;
+    font-family:'Anthropic Sans',system-ui,sans-serif;
+    font-size:13px;color:var(--maple-text);
+  }
+  .app{display:flex;flex-direction:column;background:var(--maple-bg);min-height:560px;border-radius:var(--r3);overflow:hidden;border:1px solid var(--maple-border)}
+  /* Top Nav */
+  .topnav{height:48px;background:var(--maple-surface);border-bottom:1px solid var(--maple-border);display:flex;align-items:center;padding:0 16px;gap:12px;flex-shrink:0}
+  .logo{display:flex;align-items:center;gap:6px;font-weight:500;font-size:14px}
+  .logo-icon{width:22px;height:22px;background:linear-gradient(135deg,#2F81F7,#BC8CFF);border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff}
+  .nav-spacer{flex:1}
+  .nav-btn{width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--maple-muted);transition:all .15s}
+  .nav-btn:hover{background:var(--maple-surface3);color:var(--maple-text)}
+  .avatar{width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,#2F81F7,#7C3AED);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:500;color:#fff;cursor:pointer}
+  /* Main layout */
+  .main{display:flex;flex:1;overflow:hidden;height:512px}
+  /* Sidebar */
+  .sidebar{width:220px;background:var(--maple-surface);border-right:1px solid var(--maple-border);display:flex;flex-direction:column;flex-shrink:0;overflow-y:auto}
+  .sidebar-section{padding:8px 8px 4px}
+  .sidebar-label{font-size:11px;font-weight:500;color:var(--maple-hint);text-transform:uppercase;letter-spacing:.05em;padding:0 8px 4px}
+  .sidebar-item{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;cursor:pointer;color:var(--maple-muted);transition:all .15s;font-size:13px}
+  .sidebar-item:hover{background:var(--maple-surface3);color:var(--maple-text)}
+  .sidebar-item.active{background:var(--maple-surface3);color:var(--maple-text)}
+  .sidebar-item .badge{margin-left:auto;background:var(--maple-primary);color:#fff;border-radius:10px;padding:1px 6px;font-size:11px;font-weight:500}
+  .sidebar-item .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+  .dot-green{background:var(--maple-green)}
+  .dot-yellow{background:var(--maple-yellow)}
+  .dot-red{background:var(--maple-red)}
+  .dot-gray{background:var(--maple-hint)}
+  /* Content area */
+  .content{flex:1;display:flex;flex-direction:column;overflow:hidden}
+  /* Tab bar */
+  .tabbar{display:flex;background:var(--maple-surface);border-bottom:1px solid var(--maple-border);padding:0 16px;gap:4px;flex-shrink:0}
+  .tab{padding:10px 14px;font-size:13px;cursor:pointer;border-bottom:2px solid transparent;color:var(--maple-muted);transition:all .15s;white-space:nowrap}
+  .tab:hover{color:var(--maple-text)}
+  .tab.active{color:var(--maple-primary);border-bottom-color:var(--maple-primary)}
+  /* Views */
+  .view{display:none;flex:1;flex-direction:column;overflow:hidden}
+  .view.active{display:flex}
+  /* Chat view */
+  .chat-header{height:44px;display:flex;align-items:center;padding:0 16px;gap:10px;border-bottom:1px solid var(--maple-border);flex-shrink:0;background:var(--maple-surface2)}
+  .chat-header-title{font-weight:500;font-size:14px}
+  .chat-header-meta{font-size:12px;color:var(--maple-muted);display:flex;align-items:center;gap:8px}
+  .hdr-btn{padding:3px 10px;border-radius:5px;border:1px solid var(--maple-border);color:var(--maple-muted);cursor:pointer;font-size:12px;background:transparent;transition:all .15s}
+  .hdr-btn:hover{border-color:var(--maple-border2);color:var(--maple-text)}
+  .messages{flex:1;overflow-y:auto;padding:12px 16px;display:flex;flex-direction:column;gap:2px}
+  .date-divider{text-align:center;font-size:11px;color:var(--maple-hint);margin:8px 0;position:relative}
+  .date-divider::before,.date-divider::after{content:'';position:absolute;top:50%;width:calc(50% - 60px);height:1px;background:var(--maple-border)}
+  .date-divider::before{left:0}.date-divider::after{right:0}
+  .msg{display:flex;gap:8px;padding:3px 0;border-radius:6px;transition:background .1s}
+  .msg:hover{background:var(--maple-surface2)}
+  .msg-avatar{width:32px;height:32px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:500;margin-top:2px}
+  .msg-body{flex:1;min-width:0}
+  .msg-header{display:flex;align-items:baseline;gap:8px;margin-bottom:2px}
+  .msg-name{font-weight:500;font-size:13px}
+  .msg-name.agent{color:var(--maple-purple)}
+  .msg-name.system{color:var(--maple-muted)}
+  .msg-time{font-size:11px;color:var(--maple-hint)}
+  .msg-text{font-size:13px;line-height:1.55;color:var(--maple-text)}
+  .msg-text.muted{color:var(--maple-muted)}
+  /* Tool call card */
+  .tool-card{background:var(--maple-surface3);border:1px solid var(--maple-border);border-radius:var(--r);padding:8px 12px;margin-top:4px;cursor:pointer;transition:border-color .15s}
+  .tool-card:hover{border-color:var(--maple-border2)}
+  .tool-card-header{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:500}
+  .tool-card-header .tool-icon{color:var(--maple-purple)}
+  .tool-card-status{margin-left:auto;font-size:11px;padding:2px 7px;border-radius:10px}
+  .status-success{background:rgba(63,185,80,.15);color:var(--maple-green)}
+  .status-running{background:rgba(47,129,247,.15);color:var(--maple-primary)}
+  .status-pending{background:rgba(210,153,34,.15);color:var(--maple-yellow)}
+  .tool-card-args{font-size:11px;color:var(--maple-muted);margin-top:4px;font-family:monospace}
+  .tool-card-expand{display:none;margin-top:6px;border-top:1px solid var(--maple-border);padding-top:6px}
+  .tool-card.expanded .tool-card-expand{display:block}
+  /* Approval card */
+  .approval-card{background:var(--maple-surface2);border:1px solid var(--maple-border);border-left:3px solid var(--maple-yellow);border-radius:var(--r);padding:10px 12px;margin-top:4px}
+  .approval-header{display:flex;align-items:center;gap:6px;margin-bottom:6px}
+  .approval-title{font-weight:500;font-size:13px}
+  .approval-urgency{font-size:11px;padding:2px 7px;border-radius:10px;background:rgba(210,153,34,.2);color:var(--maple-yellow);margin-left:auto}
+  .approval-urgency.high{background:rgba(248,81,73,.15);color:var(--maple-red)}
+  .approval-action{font-size:12px;color:var(--maple-muted);margin-bottom:8px}
+  .approval-progress{margin-bottom:8px}
+  .progress-bar{height:4px;background:var(--maple-surface3);border-radius:2px;overflow:hidden;margin-bottom:4px}
+  .progress-fill{height:100%;border-radius:2px;background:var(--maple-primary);transition:width .3s}
+  .progress-meta{display:flex;justify-content:space-between;font-size:11px;color:var(--maple-muted)}
+  .approval-voters{display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+  .voter{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--maple-muted)}
+  .voter-vote{font-size:12px}
+  .approval-actions{display:flex;gap:6px;flex-wrap:wrap}
+  .appr-btn{padding:4px 12px;border-radius:5px;border:1px solid var(--maple-border);font-size:12px;cursor:pointer;transition:all .15s;background:transparent;color:var(--maple-text)}
+  .appr-btn:hover{border-color:var(--maple-border2)}
+  .appr-btn.approve{border-color:var(--maple-green);color:var(--maple-green)}
+  .appr-btn.approve:hover{background:rgba(63,185,80,.1)}
+  .appr-btn.reject{border-color:var(--maple-red);color:var(--maple-red)}
+  .appr-btn.reject:hover{background:rgba(248,81,73,.1)}
+  /* Workflow card */
+  .wf-card{background:var(--maple-surface2);border:1px solid var(--maple-border);border-radius:var(--r);padding:10px 12px;margin-top:4px}
+  .wf-header{display:flex;align-items:center;gap:6px;margin-bottom:8px}
+  .wf-title{font-weight:500;font-size:13px;flex:1}
+  .wf-progress-label{font-size:11px;color:var(--maple-muted)}
+  .wf-steps{display:flex;flex-direction:column;gap:4px}
+  .wf-step{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--maple-muted)}
+  .wf-step.done{color:var(--maple-green)}
+  .wf-step.running{color:var(--maple-primary)}
+  .wf-step .step-icon{width:14px;text-align:center;font-size:12px}
+  /* Input area */
+  .input-area{border-top:1px solid var(--maple-border);padding:10px 16px;background:var(--maple-surface);flex-shrink:0}
+  .input-row{display:flex;align-items:flex-end;gap:8px}
+  .input-box{flex:1;background:var(--maple-surface3);border:1px solid var(--maple-border);border-radius:var(--r);padding:8px 12px;color:var(--maple-text);font-size:13px;font-family:inherit;resize:none;outline:none;line-height:1.4;min-height:36px;transition:border-color .15s}
+  .input-box:focus{border-color:var(--maple-primary)}
+  .input-actions{display:flex;gap:4px;align-items:center}
+  .input-btn{width:28px;height:28px;border-radius:5px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--maple-muted);transition:all .15s;background:transparent;border:none}
+  .input-btn:hover{background:var(--maple-surface3);color:var(--maple-text)}
+  .send-btn{padding:6px 14px;border-radius:6px;background:var(--maple-primary);color:#fff;border:none;font-size:13px;font-weight:500;cursor:pointer;transition:background .15s}
+  .send-btn:hover{background:var(--maple-primary-hover)}
+  /* Member panel */
+  .member-panel{width:200px;background:var(--maple-surface);border-left:1px solid var(--maple-border);flex-shrink:0;overflow-y:auto;display:none}
+  .member-panel.visible{display:block}
+  .member-section{padding:10px 12px 4px}
+  .member-section-label{font-size:11px;font-weight:500;color:var(--maple-hint);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
+  .member-item{display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12px;color:var(--maple-muted)}
+  .member-avatar{width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:500;flex-shrink:0;position:relative}
+  .member-status-dot{position:absolute;bottom:-1px;right:-1px;width:8px;height:8px;border-radius:50%;border:1.5px solid var(--maple-surface)}
+  /* Tasks view */
+  .kanban{display:flex;gap:12px;padding:16px;overflow-x:auto;flex:1}
+  .kanban-col{width:200px;flex-shrink:0}
+  .kanban-col-header{font-size:12px;font-weight:500;color:var(--maple-muted);margin-bottom:8px;display:flex;align-items:center;gap:6px}
+  .kanban-col-count{background:var(--maple-surface3);color:var(--maple-hint);border-radius:10px;padding:1px 7px;font-size:11px}
+  .kanban-cards{display:flex;flex-direction:column;gap:8px}
+  .task-card{background:var(--maple-surface);border:1px solid var(--maple-border);border-radius:var(--r);padding:10px;cursor:pointer;transition:border-color .15s}
+  .task-card:hover{border-color:var(--maple-border2)}
+  .task-title{font-size:13px;font-weight:500;margin-bottom:6px;line-height:1.35}
+  .task-meta{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+  .task-badge{padding:2px 7px;border-radius:10px;font-size:11px;font-weight:500}
+  .priority-critical{background:rgba(248,81,73,.15);color:var(--maple-red)}
+  .priority-high{background:rgba(210,153,34,.15);color:var(--maple-yellow)}
+  .priority-medium{background:rgba(47,129,247,.15);color:var(--maple-primary)}
+  .priority-low{background:rgba(139,148,158,.15);color:var(--maple-muted)}
+  .task-assignee{font-size:11px;color:var(--maple-muted);margin-left:auto;display:flex;align-items:center;gap:4px}
+  .task-due{font-size:11px;color:var(--maple-hint)}
+  /* Agents view */
+  .agents-view{padding:16px;overflow-y:auto}
+  .agents-summary{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px}
+  .summary-card{background:var(--maple-surface);border:1px solid var(--maple-border);border-radius:var(--r);padding:12px}
+  .summary-num{font-size:22px;font-weight:500;margin-bottom:2px}
+  .summary-label{font-size:11px;color:var(--maple-muted)}
+  .agents-table{background:var(--maple-surface);border:1px solid var(--maple-border);border-radius:var(--r);overflow:hidden}
+  .table-header{display:grid;grid-template-columns:1.8fr 80px 100px 90px 60px 80px;gap:12px;padding:8px 12px;font-size:11px;font-weight:500;color:var(--maple-hint);border-bottom:1px solid var(--maple-border);text-transform:uppercase;letter-spacing:.04em}
+  .agent-row{display:grid;grid-template-columns:1.8fr 80px 100px 90px 60px 80px;gap:12px;padding:10px 12px;border-bottom:1px solid var(--maple-border);align-items:center;transition:background .15s;cursor:pointer}
+  .agent-row:last-child{border-bottom:none}
+  .agent-row:hover{background:var(--maple-surface2)}
+  .agent-name{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:500}
+  .agent-icon{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;flex-shrink:0}
+  .status-pill{display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:3px 8px;border-radius:10px}
+  .status-healthy{background:rgba(63,185,80,.12);color:var(--maple-green)}
+  .status-degraded{background:rgba(210,153,34,.12);color:var(--maple-yellow)}
+  .status-offline{background:rgba(248,81,73,.12);color:var(--maple-red)}
+  .status-dot2{width:6px;height:6px;border-radius:50%}
+  .agent-row-actions{display:flex;gap:4px}
+  .agent-action-btn{padding:3px 8px;border-radius:5px;border:1px solid var(--maple-border);font-size:11px;cursor:pointer;background:transparent;color:var(--maple-muted);transition:all .15s}
+  .agent-action-btn:hover{border-color:var(--maple-border2);color:var(--maple-text)}
+  .agent-detail{grid-column:1/-1;font-size:11px;color:var(--maple-yellow);padding:4px 0 0 36px;display:none}
+  .agent-row.degraded .agent-detail{display:block}
+  /* Workflow view */
+  .wf-view{padding:16px;overflow-y:auto}
+  .wf-list{display:flex;flex-direction:column;gap:10px}
+  .wf-list-item{background:var(--maple-surface);border:1px solid var(--maple-border);border-radius:var(--r2);padding:12px 16px;cursor:pointer;transition:border-color .15s}
+  .wf-list-item:hover{border-color:var(--maple-border2)}
+  .wf-list-header{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+  .wf-list-name{font-size:14px;font-weight:500;flex:1}
+  .wf-list-status{font-size:11px;padding:3px 8px;border-radius:10px}
+  .wf-running{background:rgba(47,129,247,.12);color:var(--maple-primary)}
+  .wf-success{background:rgba(63,185,80,.12);color:var(--maple-green)}
+  .wf-failed{background:rgba(248,81,73,.12);color:var(--maple-red)}
+  .wf-list-meta{font-size:12px;color:var(--maple-muted);display:flex;gap:12px}
+  .wf-steps-mini{display:flex;gap:4px;margin-top:8px;align-items:center}
+  .wf-step-dot{width:20px;height:4px;border-radius:2px}
+  .wf-step-dot.done{background:var(--maple-green)}
+  .wf-step-dot.running{background:var(--maple-primary)}
+  .wf-step-dot.pending{background:var(--maple-border2)}
+  .wf-step-dot.failed{background:var(--maple-red)}
+  /* Scrollbar */
+  ::-webkit-scrollbar{width:5px;height:5px}
+  ::-webkit-scrollbar-track{background:transparent}
+  ::-webkit-scrollbar-thumb{background:var(--maple-border);border-radius:3px}
+  /* Typing indicator */
+  @keyframes blink{0%,80%,100%{opacity:.2}40%{opacity:1}}
+  .typing-dots span{display:inline-block;width:4px;height:4px;border-radius:50%;background:var(--maple-muted);animation:blink 1.2s infinite;margin-right:3px}
+  .typing-dots span:nth-child(2){animation-delay:.2s}
+  .typing-dots span:nth-child(3){animation-delay:.4s}
+  /* Notification badge */
+  .notif-badge{width:16px;height:16px;background:var(--maple-red);border-radius:50%;font-size:10px;font-weight:600;color:#fff;display:flex;align-items:center;justify-content:center}
+</style>
+
+<h2 class="sr-only">MapleOS v3 — Interactive product design preview showing the group chat, task board, agent monitoring, and workflow views</h2>
+
+<div class="app">
+  <!-- Top Nav -->
+  <div class="topnav">
+    <div class="logo">
+      <div class="logo-icon">🍁</div>
+      MapleOS
+    </div>
+    <div class="nav-spacer"></div>
+    <div class="nav-btn" title="Search"><i class="ti ti-search" aria-hidden="true"></i></div>
+    <div class="nav-btn" title="Notifications" style="position:relative">
+      <i class="ti ti-bell" aria-hidden="true"></i>
+      <span style="position:absolute;top:4px;right:4px;width:7px;height:7px;background:var(--maple-red);border-radius:50%;border:1.5px solid var(--maple-bg)"></span>
+    </div>
+    <div class="avatar">ZH</div>
+  </div>
+
+  <div class="main">
+    <!-- Sidebar -->
+    <div class="sidebar">
+      <div class="sidebar-section">
+        <div class="sidebar-label">群聊</div>
+        <div class="sidebar-item active" onclick="switchView('chat');setActiveGroup(this)">
+          <span class="dot dot-green"></span>
+          <span style="flex:1">开发协作群</span>
+          <span class="badge">3</span>
+        </div>
+        <div class="sidebar-item" onclick="switchView('chat');setActiveGroup(this)">
+          <span class="dot dot-green"></span>
+          <span style="flex:1">代码审查群</span>
+        </div>
+        <div class="sidebar-item" onclick="switchView('chat');setActiveGroup(this)">
+          <span class="dot dot-yellow"></span>
+          <span style="flex:1">运维监控群</span>
+          <span class="badge">1</span>
+        </div>
+        <div class="sidebar-item" onclick="switchView('chat');setActiveGroup(this)">
+          <span class="dot dot-gray"></span>
+          <span style="flex:1">测试自动化群</span>
+        </div>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-label">工作区</div>
+        <div class="sidebar-item" onclick="switchView('tasks')">
+          <i class="ti ti-checkbox" aria-hidden="true" style="font-size:15px"></i>
+          <span>任务中心</span>
+          <span class="badge" style="background:var(--maple-yellow)">5</span>
+        </div>
+        <div class="sidebar-item" onclick="switchView('workflows')">
+          <i class="ti ti-git-branch" aria-hidden="true" style="font-size:15px"></i>
+          <span>工作流</span>
+        </div>
+        <div class="sidebar-item" onclick="switchView('agents')">
+          <i class="ti ti-robot" aria-hidden="true" style="font-size:15px"></i>
+          <span>Agent 管理</span>
+          <span class="notif-badge">1</span>
+        </div>
+        <div class="sidebar-item">
+          <i class="ti ti-database" aria-hidden="true" style="font-size:15px"></i>
+          <span>知识库</span>
+        </div>
+        <div class="sidebar-item">
+          <i class="ti ti-puzzle" aria-hidden="true" style="font-size:15px"></i>
+          <span>Skills</span>
+        </div>
+      </div>
+      <div class="sidebar-section" style="margin-top:auto;padding-bottom:8px">
+        <div class="sidebar-item">
+          <i class="ti ti-settings" aria-hidden="true" style="font-size:15px"></i>
+          <span>设置</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Content -->
+    <div class="content">
+      <!-- Tab bar -->
+      <div class="tabbar" id="tabbar">
+        <div class="tab active" onclick="switchTab('chat',this)">群聊</div>
+        <div class="tab" onclick="switchTab('tasks',this)">任务</div>
+        <div class="tab" onclick="switchTab('workflows',this)">工作流</div>
+        <div class="tab" onclick="switchTab('agents',this)">Agents</div>
+      </div>
+
+      <!-- CHAT VIEW -->
+      <div class="view active" id="view-chat">
+        <div class="chat-header">
+          <div>
+            <div class="chat-header-title">开发协作群</div>
+          </div>
+          <div class="chat-header-meta">
+            <i class="ti ti-users" aria-hidden="true" style="font-size:14px"></i> 5 成员
+          </div>
+          <div style="flex:1"></div>
+          <button class="hdr-btn" onclick="toggleMembers()">成员</button>
+          <button class="hdr-btn">规则</button>
+          <button class="hdr-btn"><i class="ti ti-search" aria-hidden="true" style="font-size:13px"></i></button>
+        </div>
+
+        <div style="display:flex;flex:1;overflow:hidden">
+          <div class="messages" id="messages">
+            <div class="date-divider">2026年6月5日</div>
+
+            <!-- Human message -->
+            <div class="msg">
+              <div class="msg-avatar" style="background:linear-gradient(135deg,#0969DA,#1F6FEB)">ZH</div>
+              <div class="msg-body">
+                <div class="msg-header">
+                  <span class="msg-name">张鸿枫</span>
+                  <span class="msg-time">09:14</span>
+                </div>
+                <div class="msg-text">请对 <code style="background:var(--maple-surface3);padding:1px 5px;border-radius:4px;font-size:12px">api/users.rs</code> 做一次完整的安全审查，重点检查 SQL 注入和权限验证问题。</div>
+              </div>
+            </div>
+
+            <!-- Agent response with tool call -->
+            <div class="msg">
+              <div class="msg-avatar" style="background:linear-gradient(135deg,#7C3AED,#A855F7)">
+                <i class="ti ti-robot" aria-hidden="true" style="font-size:13px;color:#fff"></i>
+              </div>
+              <div class="msg-body">
+                <div class="msg-header">
+                  <span class="msg-name agent">security-bot</span>
+                  <span style="font-size:10px;background:rgba(188,140,255,.15);color:var(--maple-purple);padding:1px 6px;border-radius:8px">Agent</span>
+                  <span class="msg-time">09:14</span>
+                </div>
+                <div class="msg-text muted" style="margin-bottom:4px">正在对目标文件执行安全扫描...</div>
+                <div class="tool-card" onclick="this.classList.toggle('expanded')">
+                  <div class="tool-card-header">
+                    <i class="ti ti-terminal tool-icon" aria-hidden="true"></i>
+                    <span>security_scan</span>
+                    <span class="tool-card-status status-success">✓ 完成 · 2.3s</span>
+                  </div>
+                  <div class="tool-card-args">{"target": "api/users.rs", "checks": ["sql_injection","auth","xss"]}</div>
+                  <div class="tool-card-expand">
+                    <div style="font-size:12px;color:var(--maple-red);margin-bottom:4px">发现 2 个高危漏洞：</div>
+                    <div style="font-size:12px;color:var(--maple-muted);line-height:1.6">
+                      [HIGH] L47: SQL 注入 — 未参数化的用户 ID 查询<br>
+                      [MED] L89: 权限检查缺失 — 未验证调用者角色
+                    </div>
+                  </div>
+                </div>
+                <div class="msg-text" style="margin-top:6px">安全扫描完成。发现 <span style="color:var(--maple-red);font-weight:500">2 个高危漏洞</span> 需要立即修复：<br><span style="color:var(--maple-muted);font-size:12px">点击上方卡片展开详情。是否授权我修复第一个 SQL 注入问题？</span></div>
+              </div>
+            </div>
+
+            <!-- Approval request -->
+            <div class="msg">
+              <div class="msg-avatar" style="background:linear-gradient(135deg,#7C3AED,#A855F7)">
+                <i class="ti ti-robot" aria-hidden="true" style="font-size:13px;color:#fff"></i>
+              </div>
+              <div class="msg-body">
+                <div class="msg-header">
+                  <span class="msg-name agent">security-bot</span>
+                  <span class="msg-time">09:15</span>
+                </div>
+                <div class="approval-card">
+                  <div class="approval-header">
+                    <i class="ti ti-shield-check" aria-hidden="true" style="color:var(--maple-yellow)"></i>
+                    <span class="approval-title">审批请求</span>
+                    <span class="approval-urgency high">紧急</span>
+                  </div>
+                  <div class="approval-action">修复 api/users.rs L47 SQL 注入漏洞 — 将原始字符串拼接改为参数化查询</div>
+                  <div class="approval-progress">
+                    <div class="progress-bar"><div class="progress-fill" style="width:50%"></div></div>
+                    <div class="progress-meta">
+                      <span>1 / 2 已批准</span>
+                      <span id="countdown">超时: 23:44:58</span>
+                    </div>
+                  </div>
+                  <div class="approval-voters">
+                    <span class="voter"><span class="voter-vote">✅</span> 张鸿枫</span>
+                    <span class="voter"><span class="voter-vote" style="color:var(--maple-hint)">⏳</span> 李四</span>
+                  </div>
+                  <div class="approval-actions">
+                    <button class="appr-btn approve" onclick="handleApprove(this)">✅ 批准</button>
+                    <button class="appr-btn reject" onclick="handleReject(this)">❌ 拒绝</button>
+                    <button class="appr-btn" onclick="handleModify(this)">✏️ 修改后批准</button>
+                    <button class="appr-btn" onclick="handleDetails()">📋 查看差异</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Workflow step -->
+            <div class="msg">
+              <div class="msg-avatar" style="background:var(--maple-surface3);border:1px solid var(--maple-border)">
+                <i class="ti ti-git-branch" aria-hidden="true" style="font-size:13px;color:var(--maple-primary)"></i>
+              </div>
+              <div class="msg-body">
+                <div class="msg-header">
+                  <span class="msg-name" style="color:var(--maple-primary)">工作流引擎</span>
+                  <span class="msg-time">09:16</span>
+                </div>
+                <div class="wf-card">
+                  <div class="wf-header">
+                    <span class="wf-title">代码审查工作流</span>
+                    <span class="wf-progress-label">3 / 5 步骤</span>
+                  </div>
+                  <div class="progress-bar" style="margin-bottom:8px"><div class="progress-fill" style="width:60%;background:var(--maple-primary)"></div></div>
+                  <div class="wf-steps">
+                    <div class="wf-step done"><span class="step-icon">✓</span> fetch_pr <span style="margin-left:auto;color:var(--maple-hint)">2.1s</span></div>
+                    <div class="wf-step done"><span class="step-icon">✓</span> analyze_code <span style="margin-left:auto;color:var(--maple-hint)">15.3s</span></div>
+                    <div class="wf-step running"><span class="step-icon" style="color:var(--maple-primary)">▶</span> check_security <span style="margin-left:auto"><span class="typing-dots"><span></span><span></span><span></span></span></span></div>
+                    <div class="wf-step"><span class="step-icon" style="color:var(--maple-hint)">○</span> <span style="color:var(--maple-hint)">merge_reports</span></div>
+                    <div class="wf-step"><span class="step-icon" style="color:var(--maple-hint)">○</span> <span style="color:var(--maple-hint)">notify</span></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Typing indicator -->
+            <div class="msg" id="typing-msg" style="display:none">
+              <div class="msg-avatar" style="background:linear-gradient(135deg,#7C3AED,#A855F7)">
+                <i class="ti ti-robot" aria-hidden="true" style="font-size:13px;color:#fff"></i>
+              </div>
+              <div class="msg-body">
+                <div class="msg-header">
+                  <span class="msg-name agent">security-bot</span>
+                  <span class="msg-time" id="typing-time"></span>
+                </div>
+                <div style="display:flex;align-items:center;gap:6px;color:var(--maple-muted);font-size:12px">
+                  <span class="typing-dots"><span></span><span></span><span></span></span>
+                  <span id="typing-status">正在思考...</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Member panel -->
+          <div class="member-panel" id="member-panel">
+            <div class="member-section">
+              <div class="member-section-label">Agents (3)</div>
+              <div class="member-item">
+                <div class="member-avatar" style="background:linear-gradient(135deg,#7C3AED,#A855F7)">
+                  <i class="ti ti-robot" aria-hidden="true" style="font-size:10px;color:#fff"></i>
+                  <span class="member-status-dot" style="background:var(--maple-agent-online)"></span>
+                </div>
+                <div>
+                  <div style="font-size:12px;font-weight:500;color:var(--maple-text)">security-bot</div>
+                  <div style="font-size:11px;color:var(--maple-muted)">gpt-4o</div>
+                </div>
+              </div>
+              <div class="member-item">
+                <div class="member-avatar" style="background:linear-gradient(135deg,#0969DA,#2563EB)">
+                  <i class="ti ti-robot" aria-hidden="true" style="font-size:10px;color:#fff"></i>
+                  <span class="member-status-dot" style="background:var(--maple-agent-online)"></span>
+                </div>
+                <div>
+                  <div style="font-size:12px;font-weight:500;color:var(--maple-text)">coder</div>
+                  <div style="font-size:11px;color:var(--maple-muted)">claude-3.5</div>
+                </div>
+              </div>
+              <div class="member-item">
+                <div class="member-avatar" style="background:linear-gradient(135deg,#BC8CFF,#9061F9)">
+                  <i class="ti ti-robot" aria-hidden="true" style="font-size:10px;color:#fff"></i>
+                  <span class="member-status-dot" style="background:var(--maple-agent-degraded)"></span>
+                </div>
+                <div>
+                  <div style="font-size:12px;font-weight:500;color:var(--maple-text)">reviewer</div>
+                  <div style="font-size:11px;color:var(--maple-yellow)">降级</div>
+                </div>
+              </div>
+            </div>
+            <div class="member-section">
+              <div class="member-section-label">成员 (2)</div>
+              <div class="member-item">
+                <div class="member-avatar" style="background:linear-gradient(135deg,#0969DA,#1F6FEB)">
+                  ZH
+                  <span class="member-status-dot" style="background:var(--maple-agent-online)"></span>
+                </div>
+                <div>
+                  <div style="font-size:12px;font-weight:500;color:var(--maple-text)">张鸿枫</div>
+                  <div style="font-size:11px;color:var(--maple-muted)">owner</div>
+                </div>
+              </div>
+              <div class="member-item">
+                <div class="member-avatar" style="background:#2D333B;color:var(--maple-muted)">
+                  LS
+                  <span class="member-status-dot" style="background:var(--maple-hint)"></span>
+                </div>
+                <div>
+                  <div style="font-size:12px;font-weight:500;color:var(--maple-muted)">李四</div>
+                  <div style="font-size:11px;color:var(--maple-hint)">离线</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Input -->
+        <div class="input-area">
+          <div class="input-row">
+            <div style="display:flex;gap:4px;align-items:center;margin-bottom:4px">
+              <button class="input-btn" title="提及"><i class="ti ti-at" aria-hidden="true"></i></button>
+              <button class="input-btn" title="附件"><i class="ti ti-paperclip" aria-hidden="true"></i></button>
+              <button class="input-btn" title="工具"><i class="ti ti-tool" aria-hidden="true"></i></button>
+            </div>
+          </div>
+          <div class="input-row">
+            <textarea class="input-box" id="msg-input" placeholder="发送消息，@ 提及 Agent..." rows="1" onkeydown="handleInput(event)"></textarea>
+            <button class="send-btn" onclick="sendMessage()">发送</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- TASKS VIEW -->
+      <div class="view" id="view-tasks">
+        <div style="padding:12px 16px;border-bottom:1px solid var(--maple-border);display:flex;align-items:center;gap:8px;background:var(--maple-surface2)">
+          <span style="font-weight:500">任务看板</span>
+          <div style="flex:1"></div>
+          <button class="hdr-btn">+ 创建任务</button>
+          <button class="hdr-btn">🤖 Agent 提取</button>
+        </div>
+        <div class="kanban">
+          <div class="kanban-col">
+            <div class="kanban-col-header">Backlog <span class="kanban-col-count">2</span></div>
+            <div class="kanban-cards">
+              <div class="task-card">
+                <div class="task-title">实现 JWT 刷新令牌轮换机制</div>
+                <div class="task-meta">
+                  <span class="task-badge priority-medium">中</span>
+                  <span class="task-due">未定义</span>
+                  <span class="task-assignee"><i class="ti ti-robot" aria-hidden="true" style="font-size:11px"></i> coder</span>
+                </div>
+              </div>
+              <div class="task-card">
+                <div class="task-title">添加 Rate Limiting 中间件</div>
+                <div class="task-meta">
+                  <span class="task-badge priority-low">低</span>
+                  <span class="task-assignee">未分配</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="kanban-col">
+            <div class="kanban-col-header">待处理 <span class="kanban-col-count">3</span></div>
+            <div class="kanban-cards">
+              <div class="task-card" style="border-color:var(--maple-red)">
+                <div class="task-title">修复 SQL 注入漏洞 (api/users.rs L47)</div>
+                <div class="task-meta">
+                  <span class="task-badge priority-critical">紧急</span>
+                  <span class="task-due">今天</span>
+                  <span class="task-assignee"><i class="ti ti-robot" aria-hidden="true" style="font-size:11px"></i> security-bot</span>
+                </div>
+              </div>
+              <div class="task-card">
+                <div class="task-title">补全权限验证层测试覆盖</div>
+                <div class="task-meta">
+                  <span class="task-badge priority-high">高</span>
+                  <span class="task-due">6月7日</span>
+                  <span class="task-assignee"><i class="ti ti-robot" aria-hidden="true" style="font-size:11px"></i> coder</span>
+                </div>
+              </div>
+              <div class="task-card">
+                <div class="task-title">更新 API 文档 (OpenAPI 3.1)</div>
+                <div class="task-meta">
+                  <span class="task-badge priority-medium">中</span>
+                  <span class="task-assignee">ZH</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="kanban-col">
+            <div class="kanban-col-header">进行中 <span class="kanban-col-count">2</span></div>
+            <div class="kanban-cards">
+              <div class="task-card">
+                <div class="task-title">代码审查工作流执行</div>
+                <div class="task-meta">
+                  <span class="task-badge priority-high">高</span>
+                  <span style="font-size:11px;color:var(--maple-primary)">▶ 运行中</span>
+                  <span class="task-assignee"><i class="ti ti-git-branch" aria-hidden="true" style="font-size:11px"></i> 工作流</span>
+                </div>
+              </div>
+              <div class="task-card">
+                <div class="task-title">性能基准测试 (消息吞吐)</div>
+                <div class="task-meta">
+                  <span class="task-badge priority-medium">中</span>
+                  <span class="task-assignee">ZH</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="kanban-col">
+            <div class="kanban-col-header">审查中 <span class="kanban-col-count">1</span></div>
+            <div class="kanban-cards">
+              <div class="task-card">
+                <div class="task-title">Agent 注册表心跳修复 PR</div>
+                <div class="task-meta">
+                  <span class="task-badge priority-high">高</span>
+                  <span class="task-assignee"><i class="ti ti-user" aria-hidden="true" style="font-size:11px"></i> ZH</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="kanban-col">
+            <div class="kanban-col-header">完成 <span class="kanban-col-count">8</span></div>
+            <div class="kanban-cards">
+              <div class="task-card" style="opacity:.6">
+                <div class="task-title" style="text-decoration:line-through;color:var(--maple-muted)">实现消息游标分页</div>
+                <div class="task-meta">
+                  <span class="task-badge" style="background:rgba(63,185,80,.15);color:var(--maple-green)">完成</span>
+                  <span class="task-due">昨天</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- AGENTS VIEW -->
+      <div class="view" id="view-agents">
+        <div class="agents-view">
+          <div class="agents-summary">
+            <div class="summary-card">
+              <div class="summary-num">5</div>
+              <div class="summary-label">总 Agent 数</div>
+            </div>
+            <div class="summary-card">
+              <div class="summary-num" style="color:var(--maple-green)">3</div>
+              <div class="summary-label">🟢 健康</div>
+            </div>
+            <div class="summary-card">
+              <div class="summary-num" style="color:var(--maple-yellow)">1</div>
+              <div class="summary-label">🟡 降级</div>
+            </div>
+            <div class="summary-card">
+              <div class="summary-num" style="color:var(--maple-red)">1</div>
+              <div class="summary-label">🔴 离线</div>
+            </div>
+          </div>
+          <div style="font-size:12px;color:var(--maple-muted);margin-bottom:8px;display:flex;gap:12px">
+            <span>消息处理: <span style="color:var(--maple-text)">1,234/小时</span></span>
+            <span>平均响应: <span style="color:var(--maple-text)">1.8s</span></span>
+            <span>成功率: <span style="color:var(--maple-green)">97.3%</span></span>
+          </div>
+          <div class="agents-table">
+            <div class="table-header">
+              <span>Agent</span>
+              <span>状态</span>
+              <span>最后心跳</span>
+              <span>模型</span>
+              <span>任务</span>
+              <span>操作</span>
+            </div>
+            <div class="agent-row">
+              <div class="agent-name">
+                <div class="agent-icon" style="background:linear-gradient(135deg,#7C3AED,#A855F7)">
+                  <i class="ti ti-robot" aria-hidden="true" style="font-size:12px;color:#fff"></i>
+                </div>
+                security-bot
+              </div>
+              <span class="status-pill status-healthy"><span class="status-dot2" style="background:var(--maple-green)"></span>健康</span>
+              <span style="color:var(--maple-muted)">2s ago</span>
+              <span style="color:var(--maple-muted)">gpt-4o</span>
+              <span style="font-weight:500">2</span>
+              <div class="agent-row-actions">
+                <button class="agent-action-btn">💬</button>
+                <button class="agent-action-btn"><i class="ti ti-settings" aria-hidden="true" style="font-size:11px"></i></button>
+              </div>
+            </div>
+            <div class="agent-row">
+              <div class="agent-name">
+                <div class="agent-icon" style="background:linear-gradient(135deg,#0969DA,#2563EB)">
+                  <i class="ti ti-robot" aria-hidden="true" style="font-size:12px;color:#fff"></i>
+                </div>
+                coder
+              </div>
+              <span class="status-pill status-healthy"><span class="status-dot2" style="background:var(--maple-green)"></span>健康</span>
+              <span style="color:var(--maple-muted)">5s ago</span>
+              <span style="color:var(--maple-muted)">claude-3.5</span>
+              <span style="font-weight:500">1</span>
+              <div class="agent-row-actions">
+                <button class="agent-action-btn">💬</button>
+                <button class="agent-action-btn"><i class="ti ti-settings" aria-hidden="true" style="font-size:11px"></i></button>
+              </div>
+            </div>
+            <div class="agent-row degraded" style="background:rgba(210,153,34,.04)">
+              <div class="agent-name">
+                <div class="agent-icon" style="background:linear-gradient(135deg,#BC8CFF,#9061F9)">
+                  <i class="ti ti-robot" aria-hidden="true" style="font-size:12px;color:#fff"></i>
+                </div>
+                reviewer
+              </div>
+              <span class="status-pill status-degraded"><span class="status-dot2" style="background:var(--maple-yellow)"></span>降级</span>
+              <span style="color:var(--maple-yellow)">52s ago</span>
+              <span style="color:var(--maple-muted)">gpt-4o</span>
+              <span style="font-weight:500">0</span>
+              <div class="agent-row-actions">
+                <button class="agent-action-btn">💬</button>
+                <button class="agent-action-btn"><i class="ti ti-settings" aria-hidden="true" style="font-size:11px"></i></button>
+              </div>
+              <div class="agent-detail">⚠ 最后错误: Connection timeout — LLM provider 响应超时，建议检查 API Key 配额</div>
+            </div>
+            <div class="agent-row">
+              <div class="agent-name">
+                <div class="agent-icon" style="background:linear-gradient(135deg,#0D9488,#14B8A6)">
+                  <i class="ti ti-robot" aria-hidden="true" style="font-size:12px;color:#fff"></i>
+                </div>
+                assistant
+              </div>
+              <span class="status-pill status-healthy"><span class="status-dot2" style="background:var(--maple-green)"></span>健康</span>
+              <span style="color:var(--maple-muted)">3s ago</span>
+              <span style="color:var(--maple-muted)">gpt-3.5</span>
+              <span style="font-weight:500">3</span>
+              <div class="agent-row-actions">
+                <button class="agent-action-btn">💬</button>
+                <button class="agent-action-btn"><i class="ti ti-settings" aria-hidden="true" style="font-size:11px"></i></button>
+              </div>
+            </div>
+            <div class="agent-row">
+              <div class="agent-name">
+                <div class="agent-icon" style="background:var(--maple-surface3);border:1px solid var(--maple-border)">
+                  <i class="ti ti-robot" aria-hidden="true" style="font-size:12px;color:var(--maple-muted)"></i>
+                </div>
+                <span style="color:var(--maple-muted)">monitor</span>
+              </div>
+              <span class="status-pill status-offline"><span class="status-dot2" style="background:var(--maple-red)"></span>离线</span>
+              <span style="color:var(--maple-red)">5m ago</span>
+              <span style="color:var(--maple-muted)">llama-3</span>
+              <span style="color:var(--maple-hint)">0</span>
+              <div class="agent-row-actions">
+                <button class="agent-action-btn" style="color:var(--maple-primary);border-color:var(--maple-primary)"><i class="ti ti-refresh" aria-hidden="true" style="font-size:11px"></i> 重连</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- WORKFLOWS VIEW -->
+      <div class="view" id="view-workflows">
+        <div style="padding:12px 16px;border-bottom:1px solid var(--maple-border);display:flex;align-items:center;gap:8px;background:var(--maple-surface2)">
+          <span style="font-weight:500">工作流</span>
+          <div style="flex:1"></div>
+          <button class="hdr-btn">+ 创建工作流</button>
+          <button class="hdr-btn">📄 从 YAML 导入</button>
+        </div>
+        <div class="wf-view">
+          <div class="wf-list">
+            <div class="wf-list-item" style="border-color:var(--maple-primary)">
+              <div class="wf-list-header">
+                <i class="ti ti-git-branch" aria-hidden="true" style="font-size:16px;color:var(--maple-primary)"></i>
+                <span class="wf-list-name">代码审查工作流</span>
+                <span class="wf-list-status wf-running">▶ 运行中</span>
+              </div>
+              <div class="wf-list-meta">
+                <span>触发: 手动</span>
+                <span>开始: 09:16</span>
+                <span>步骤: 3/5</span>
+              </div>
+              <div class="wf-steps-mini">
+                <div class="wf-step-dot done"></div>
+                <div class="wf-step-dot done"></div>
+                <div class="wf-step-dot running"></div>
+                <div class="wf-step-dot pending"></div>
+                <div class="wf-step-dot pending"></div>
+                <span style="font-size:11px;color:var(--maple-muted);margin-left:6px">60% 完成</span>
+              </div>
+            </div>
+            <div class="wf-list-item">
+              <div class="wf-list-header">
+                <i class="ti ti-shield" aria-hidden="true" style="font-size:16px;color:var(--maple-muted)"></i>
+                <span class="wf-list-name">安全扫描 + 自动修复</span>
+                <span class="wf-list-status wf-success">✓ 完成</span>
+              </div>
+              <div class="wf-list-meta">
+                <span>触发: webhook</span>
+                <span>完成: 昨天 14:32</span>
+                <span>耗时: 2m 18s</span>
+              </div>
+              <div class="wf-steps-mini">
+                <div class="wf-step-dot done"></div>
+                <div class="wf-step-dot done"></div>
+                <div class="wf-step-dot done"></div>
+                <div class="wf-step-dot done"></div>
+              </div>
+            </div>
+            <div class="wf-list-item">
+              <div class="wf-list-header">
+                <i class="ti ti-clock" aria-hidden="true" style="font-size:16px;color:var(--maple-muted)"></i>
+                <span class="wf-list-name">每日代码质量报告 (Cron)</span>
+                <span class="wf-list-status" style="background:rgba(139,148,158,.12);color:var(--maple-muted)">等待调度</span>
+              </div>
+              <div class="wf-list-meta">
+                <span>调度: 0 9 * * 1-5</span>
+                <span>下次: 明天 09:00</span>
+                <span>上次: 成功</span>
+              </div>
+              <div class="wf-steps-mini">
+                <div class="wf-step-dot pending"></div>
+                <div class="wf-step-dot pending"></div>
+                <div class="wf-step-dot pending"></div>
+              </div>
+            </div>
+            <div class="wf-list-item">
+              <div class="wf-list-header">
+                <i class="ti ti-alert-triangle" aria-hidden="true" style="font-size:16px;color:var(--maple-red)"></i>
+                <span class="wf-list-name">依赖漏洞扫描</span>
+                <span class="wf-list-status wf-failed">✕ 失败</span>
+              </div>
+              <div class="wf-list-meta">
+                <span>触发: cron</span>
+                <span>失败: 今天 03:00</span>
+                <span style="color:var(--maple-red)">步骤 2 超时</span>
+              </div>
+              <div class="wf-steps-mini">
+                <div class="wf-step-dot done"></div>
+                <div class="wf-step-dot failed"></div>
+                <div class="wf-step-dot pending"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+var membersVisible = false;
+var countdownSec = 85498;
+
+function switchView(v){
+  document.querySelectorAll('.view').forEach(el=>el.classList.remove('active'));
+  document.getElementById('view-'+v).classList.add('active');
+  document.querySelectorAll('.tab').forEach((t,i)=>{
+    var map=['chat','tasks','workflows','agents'];
+    t.classList.toggle('active', map[i]===v);
+  });
+}
+
+function switchTab(v,el){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  el.classList.add('active');
+  document.querySelectorAll('.view').forEach(e=>e.classList.remove('active'));
+  document.getElementById('view-'+v).classList.add('active');
+}
+
+function setActiveGroup(el){
+  document.querySelectorAll('.sidebar-item').forEach(i=>i.classList.remove('active'));
+  el.classList.add('active');
+}
+
+function toggleMembers(){
+  membersVisible=!membersVisible;
+  document.getElementById('member-panel').classList.toggle('visible',membersVisible);
+}
+
+function scrollBottom(){
+  var m=document.getElementById('messages');
+  m.scrollTop=m.scrollHeight;
+}
+
+function now(){
+  var d=new Date();
+  return d.getHours().toString().padStart(2,'0')+':'+d.getMinutes().toString().padStart(2,'0');
+}
+
+function addMsg(html){
+  var m=document.getElementById('messages');
+  var div=document.createElement('div');
+  div.innerHTML=html;
+  m.appendChild(div.firstElementChild);
+  scrollBottom();
+}
+
+function showTyping(status){
+  var t=document.getElementById('typing-msg');
+  t.style.display='flex';
+  document.getElementById('typing-status').textContent=status||'正在思考...';
+  document.getElementById('typing-time').textContent=now();
+  scrollBottom();
+}
+
+function hideTyping(){
+  document.getElementById('typing-msg').style.display='none';
+}
+
+function handleInput(e){
+  if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage();}
+}
+
+var msgCount=0;
+var agentReplies=[
+  '已收到你的消息，正在处理...',
+  '正在调用相关工具，请稍候。',
+  '分析完成，以下是结果：\n1. 代码质量良好\n2. 发现 1 处可优化点',
+  '任务已完成，请查看上方工作流执行结果。',
+];
+
+function sendMessage(){
+  var inp=document.getElementById('msg-input');
+  var txt=inp.value.trim();
+  if(!txt)return;
+  inp.value='';
+  addMsg(`<div class="msg"><div class="msg-avatar" style="background:linear-gradient(135deg,#0969DA,#1F6FEB)">ZH</div><div class="msg-body"><div class="msg-header"><span class="msg-name">张鸿枫</span><span class="msg-time">${now()}</span></div><div class="msg-text">${txt}</div></div></div>`);
+  var delay=800+Math.random()*600;
+  setTimeout(function(){
+    showTyping('正在分析...');
+    var replyDelay=1200+Math.random()*800;
+    setTimeout(function(){
+      hideTyping();
+      var reply=agentReplies[msgCount%agentReplies.length];
+      msgCount++;
+      addMsg(`<div class="msg"><div class="msg-avatar" style="background:linear-gradient(135deg,#7C3AED,#A855F7)"><i class="ti ti-robot" style="font-size:13px;color:#fff"></i></div><div class="msg-body"><div class="msg-header"><span class="msg-name agent">security-bot</span><span class="msg-time">${now()}</span></div><div class="msg-text">${reply.replace(/\n/g,'<br>')}</div></div></div>`);
+    },replyDelay);
+  },delay);
+}
+
+function handleApprove(btn){
+  var card=btn.closest('.approval-card');
+  var fill=card.querySelector('.progress-fill');
+  var meta=card.querySelector('.progress-meta span');
+  fill.style.width='100%';
+  fill.style.background='var(--maple-green)';
+  if(meta)meta.textContent='2 / 2 已批准';
+  var voters=card.querySelector('.approval-voters');
+  if(voters){voters.innerHTML='<span class="voter"><span class="voter-vote">✅</span> 张鸿枫</span><span class="voter"><span class="voter-vote">✅</span> 李四</span>';}
+  var actions=card.querySelector('.approval-actions');
+  if(actions){actions.innerHTML='<span style="font-size:12px;color:var(--maple-green);font-weight:500">✅ 审批通过，Agent 已开始执行修复</span>';}
+  setTimeout(function(){
+    showTyping('正在修复 SQL 注入漏洞...');
+    setTimeout(function(){
+      hideTyping();
+      addMsg(`<div class="msg"><div class="msg-avatar" style="background:linear-gradient(135deg,#7C3AED,#A855F7)"><i class="ti ti-robot" style="font-size:13px;color:#fff"></i></div><div class="msg-body"><div class="msg-header"><span class="msg-name agent">security-bot</span><span class="msg-time">${now()}</span></div><div class="tool-card"><div class="tool-card-header"><i class="ti ti-terminal tool-icon"></i><span>file_edit</span><span class="tool-card-status status-success">✓ 完成 · 0.8s</span></div><div class="tool-card-args">{"file": "api/users.rs", "line": 47, "action": "parameterize_query"}</div></div><div class="msg-text" style="margin-top:6px">修复完成。已将 L47 的原始字符串查询替换为参数化查询，SQL 注入漏洞已消除。<br><span style="color:var(--maple-muted);font-size:12px">是否继续处理第二个漏洞（权限验证缺失）？</span></div></div></div>`);
+    },2000);
+  },500);
+}
+
+function handleReject(btn){
+  var actions=btn.closest('.approval-actions');
+  if(actions){actions.innerHTML='<span style="font-size:12px;color:var(--maple-red);font-weight:500">❌ 审批被拒绝，操作已取消</span>';}
+}
+
+function handleModify(btn){
+  var actions=btn.closest('.approval-actions');
+  if(actions){actions.innerHTML='<span style="font-size:12px;color:var(--maple-yellow)">✏️ 请在消息框中说明你的修改意见...</span>';}
+  document.getElementById('msg-input').focus();
+}
+
+function handleDetails(){
+  addMsg(`<div class="msg"><div class="msg-avatar" style="background:var(--maple-surface3);border:1px solid var(--maple-border)"><i class="ti ti-git-branch" style="font-size:13px;color:var(--maple-primary)"></i></div><div class="msg-body"><div class="msg-header"><span class="msg-name" style="color:var(--maple-primary)">系统</span><span class="msg-time">${now()}</span></div><div class="tool-card expanded"><div class="tool-card-header"><i class="ti ti-code tool-icon"></i><span>代码差异预览</span></div><div class="tool-card-expand" style="display:block"><div style="font-family:monospace;font-size:11px;line-height:1.7"><span style="color:var(--maple-red)">- let query = format!("SELECT * FROM users WHERE id={}", user_id);</span><br><span style="color:var(--maple-green)">+ let query = sqlx::query("SELECT * FROM users WHERE id=$1").bind(user_id);</span></div></div></div></div></div>`);
+}
+
+// Countdown timer
+setInterval(function(){
+  if(countdownSec>0){
+    countdownSec--;
+    var h=Math.floor(countdownSec/3600);
+    var m=Math.floor((countdownSec%3600)/60);
+    var s=countdownSec%60;
+    var el=document.getElementById('countdown');
+    if(el)el.textContent='超时: '+h.toString().padStart(2,'0')+':'+m.toString().padStart(2,'0')+':'+s.toString().padStart(2,'0');
+  }
+},1000);
+
+scrollBottom();
+</script>

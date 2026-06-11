@@ -1,12 +1,20 @@
 use maple_agent::registry::AgentRegistry;
 use maple_agent::session_store::SessionStore;
-use maple_collab::group_rules::GroupRulesEngine;
+use maple_collab::dm_service::DmService;
+use maple_collab::group_cron::GroupCronService;
+use maple_collab::group::GroupManager;
+use maple_collab::group_message::GroupMessageManager;
+use maple_collab::group_rules::{GroupRulesEngine, GroupRulesService};
 use maple_collab::workspace::WorkspaceManager;
+use maple_engine::approval::ApprovalService;
 use maple_engine::event_bus::EventBus;
 use maple_engine::executor::WorkflowExecutor;
+use maple_engine::memory_service::MemoryService;
+use maple_engine::agent_hooks::AgentHookService;
 use maple_engine::skill_registry::SkillRegistry;
 use maple_engine::scheduler::Scheduler;
 use maple_engine::task_queue::TaskQueueService;
+use maple_engine::task_service::TaskService;
 use maple_gateway::auth::AuthService;
 use maple_gateway::mcp_host::McpHostManager;
 use maple_kb::bm25::BM25Searcher;
@@ -90,6 +98,16 @@ pub struct AppState {
     pub task_queue: Arc<TaskQueueService>,
     pub scheduler: Arc<Scheduler>,
     pub group_rules: Arc<tokio::sync::RwLock<GroupRulesEngine>>,
+    pub group_rules_service: Arc<GroupRulesService>,
+    pub group_manager: Arc<GroupManager>,
+    pub group_message_manager: Arc<GroupMessageManager>,
+    pub task_service: Arc<TaskService>,
+    pub approval_service: Arc<ApprovalService>,
+    pub memory_service: Arc<MemoryService>,
+    pub dm_service: Arc<DmService>,
+    pub group_cron_service: Arc<GroupCronService>,
+    pub hook_service: Arc<AgentHookService>,
+    pub workflow_service: Arc<maple_engine::WorkflowService>,
     pub mcp_host: Arc<McpHostManager>,
     pub rate_limiter: RateLimiter,
     pub cache: crate::cache::AppCache,

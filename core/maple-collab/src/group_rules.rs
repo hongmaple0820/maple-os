@@ -214,6 +214,252 @@ pub struct RuleContext {
     pub sender_role: String,
 }
 
+// ── DB-backed service ───────────────────────────────────────────
+
+/// Persistent rule stored in `group_rules_v3`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistentRule {
+    pub id: String,
+    pub group_id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub rule_type: String,
+    pub config: serde_json::Value,
+    pub enabled: bool,
+    pub priority: i64,
+    pub condition_expr: Option<String>,
+    pub created_by: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// Request to create a new rule.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateGroupRuleRequest {
+    pub name: String,
+    pub description: Option<String>,
+    pub rule_type: String,
+    pub config: serde_json::Value,
+    pub priority: Option<i64>,
+    pub condition_expr: Option<String>,
+}
+
+/// Service that persists group rules to SQLite and syncs with the in-memory engine.
+pub struct GroupRulesService {
+    pool: sqlx::SqlitePool,
+    engine: std::sync::Arc<tokio::sync::RwLock<GroupRulesEngine>>,
+}
+
+impl GroupRulesService {
+    pub fn new(
+        pool: sqlx::SqlitePool,
+        engine: std::sync::Arc<tokio::sync::RwLock<GroupRulesEngine>>,
+    ) -> Self {
+        Self { pool, engine }
+    }
+
+    /// Load all enabled rules for a group from DB into the in-memory engine.
+    pub async fn load_group_rules(&self, group_id: &str) -> Result<(), anyhow::Error> {
+        let rows = sqlx::query_as::<_, (String, String, String, String, i64)>(
+            "SELECT id, name, rule_type, config, priority FROM group_rules_v3 WHERE group_id = ? AND enabled = 1 ORDER BY priority DESC"
+        )
+        .bind(group_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut engine = self.engine.write().await;
+        engine.rules.retain(|r| !r.id.starts_with(&format!("{}:", group_id)));
+
+        for (id, name, rule_type, config_json, _priority) in rows {
+            if let Ok(config) = serde_json::from_str::<serde_json::Value>(&config_json) {
+                if let Some(rule) = Self::build_in_memory_rule(&id, &name, &rule_type, &config) {
+                    engine.rules.push(rule);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Create a new rule in DB and add to in-memory engine.
+    pub async fn create_rule(
+        &self,
+        group_id: &str,
+        created_by: &str,
+        req: CreateGroupRuleRequest,
+    ) -> Result<PersistentRule, anyhow::Error> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().timestamp();
+        let config_str = serde_json::to_string(&req.config)?;
+        let priority = req.priority.unwrap_or(0);
+
+        sqlx::query(
+            "INSERT INTO group_rules_v3 (id, group_id, name, description, rule_type, config, enabled, priority, condition_expr, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)"
+        )
+        .bind(&id)
+        .bind(group_id)
+        .bind(&req.name)
+        .bind(&req.description)
+        .bind(&req.rule_type)
+        .bind(&config_str)
+        .bind(priority)
+        .bind(&req.condition_expr)
+        .bind(created_by)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+
+        if let Some(rule) = Self::build_in_memory_rule(&id, &req.name, &req.rule_type, &req.config) {
+            let mut engine = self.engine.write().await;
+            engine.rules.push(rule);
+        }
+
+        Ok(PersistentRule {
+            id,
+            group_id: group_id.to_string(),
+            name: req.name,
+            description: req.description,
+            rule_type: req.rule_type,
+            config: req.config,
+            enabled: true,
+            priority,
+            condition_expr: req.condition_expr,
+            created_by: created_by.to_string(),
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    /// List all rules for a group from DB.
+    pub async fn list_rules(&self, group_id: &str) -> Result<Vec<PersistentRule>, anyhow::Error> {
+        let rows = sqlx::query_as::<_, (String, String, String, Option<String>, String, String, i64, i64, Option<String>, String, i64, i64)>(
+            "SELECT id, group_id, name, description, rule_type, config, enabled, priority, condition_expr, created_by, created_at, updated_at FROM group_rules_v3 WHERE group_id = ? ORDER BY priority DESC, created_at DESC"
+        )
+        .bind(group_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|r| PersistentRule {
+            id: r.0,
+            group_id: r.1,
+            name: r.2,
+            description: r.3,
+            rule_type: r.4,
+            config: serde_json::from_str(&r.5).unwrap_or(serde_json::json!({})),
+            enabled: r.6 != 0,
+            priority: r.7,
+            condition_expr: r.8,
+            created_by: r.9,
+            created_at: r.10,
+            updated_at: r.11,
+        }).collect())
+    }
+
+    /// Update a rule in DB and sync to in-memory engine.
+    pub async fn update_rule(
+        &self,
+        rule_id: &str,
+        config: Option<serde_json::Value>,
+        priority: Option<i64>,
+        enabled: Option<bool>,
+        condition_expr: Option<String>,
+    ) -> Result<bool, anyhow::Error> {
+        let now = chrono::Utc::now().timestamp();
+        let mut sets = Vec::new();
+
+        if config.is_some() { sets.push("config = ?"); }
+        if priority.is_some() { sets.push("priority = ?"); }
+        if enabled.is_some() { sets.push("enabled = ?"); }
+        if condition_expr.is_some() { sets.push("condition_expr = ?"); }
+
+        if sets.is_empty() {
+            return Ok(false);
+        }
+
+        sets.push("updated_at = ?");
+        let sql = format!("UPDATE group_rules_v3 SET {} WHERE id = ?", sets.join(", "));
+
+        let mut query = sqlx::query(&sql);
+        if let Some(ref c) = config { query = query.bind(serde_json::to_string(c)?); }
+        if let Some(p) = priority { query = query.bind(p); }
+        if let Some(e) = enabled { query = query.bind(if e { 1i64 } else { 0 }); }
+        if let Some(ref ce) = condition_expr { query = query.bind(ce.as_str()); }
+        query = query.bind(now);
+        query = query.bind(rule_id);
+        let result = query.execute(&self.pool).await?;
+
+        if result.rows_affected() > 0 {
+            if let Some((gid,)) = sqlx::query_as::<_, (String,)>("SELECT group_id FROM group_rules_v3 WHERE id = ?")
+                .bind(rule_id)
+                .fetch_optional(&self.pool)
+                .await?
+            {
+                let _ = self.load_group_rules(&gid).await;
+            }
+        }
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Delete a rule from DB and remove from in-memory engine.
+    pub async fn delete_rule(&self, rule_id: &str) -> Result<bool, anyhow::Error> {
+        let group_id = sqlx::query_as::<_, (String,)>("SELECT group_id FROM group_rules_v3 WHERE id = ?")
+            .bind(rule_id)
+            .fetch_optional(&self.pool)
+            .await?;
+
+        let result = sqlx::query("DELETE FROM group_rules_v3 WHERE id = ?")
+            .bind(rule_id)
+            .execute(&self.pool)
+            .await?;
+
+        if result.rows_affected() > 0 {
+            let mut engine = self.engine.write().await;
+            engine.remove_rule(rule_id);
+            if let Some((gid,)) = group_id {
+                drop(engine);
+                let _ = self.load_group_rules(&gid).await;
+            }
+        }
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    fn build_in_memory_rule(id: &str, name: &str, rule_type: &str, config: &serde_json::Value) -> Option<GroupRule> {
+        let rt = match rule_type {
+            "auto_assign" => GroupRuleType::AutoAssign {
+                keyword: config["keyword"].as_str().unwrap_or("").to_string(),
+                agent_id: config["agent_id"].as_str().unwrap_or("").to_string(),
+            },
+            "auto_approve" => GroupRuleType::AutoApprove {
+                agent_id: config["agent_id"].as_str().unwrap_or("").to_string(),
+                confidence_threshold: config["confidence_threshold"].as_f64().unwrap_or(0.8) as f32,
+                auto_approve_roles: config["auto_approve_roles"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                    .unwrap_or_default(),
+            },
+            "rate_limit" => GroupRuleType::RateLimit {
+                agent_id: config["agent_id"].as_str().unwrap_or("").to_string(),
+                max_messages_per_minute: config["max_messages_per_minute"].as_u64().unwrap_or(10) as u32,
+            },
+            "time_window" => GroupRuleType::TimeWindow {
+                agent_id: config["agent_id"].as_str().unwrap_or("").to_string(),
+                allowed_hours: config["allowed_hours"].as_str().unwrap_or("").to_string(),
+                timezone: config["timezone"].as_str().unwrap_or("UTC").to_string(),
+            },
+            _ => return None,
+        };
+
+        Some(GroupRule {
+            id: id.to_string(),
+            name: name.to_string(),
+            rule_type: rt,
+            enabled: true,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -271,6 +271,7 @@ trigger:
                 completed_at: None,
                 agent_id: None,
                 error: None,
+                group_id: None,
             };
 
             assert_eq!(exec.status, status);
@@ -379,6 +380,8 @@ pub struct WorkflowExecution {
     pub completed_at: Option<DateTime<Utc>>,
     pub agent_id: Option<String>,
     pub error: Option<String>,
+    /// When set, workflow events are published as group messages
+    pub group_id: Option<String>,
 }
 
 impl WorkflowExecution {
@@ -397,6 +400,7 @@ impl WorkflowExecution {
             completed_at: None,
             agent_id: None,
             error: None,
+            group_id: None,
         }
     }
 

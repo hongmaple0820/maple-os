@@ -575,18 +575,41 @@ impl WorkflowExecutor {
         workflow_version: u32,
         input: Value,
     ) -> Result<ExecResult> {
+        self.execute_with_group(workflow_nodes, workflow_id, workflow_version, input, None).await
+    }
+
+    /// Execute workflow with optional group chat integration.
+    /// When `group_id` is set, workflow lifecycle events are published as group messages.
+    pub async fn execute_with_group(
+        &self,
+        workflow_nodes: &[WorkflowNode],
+        workflow_id: &str,
+        workflow_version: u32,
+        input: Value,
+        group_id: Option<String>,
+    ) -> Result<ExecResult> {
         {
             let mut ne = self.node_executor.write().await;
             ne.set_workflow_nodes(workflow_nodes.to_vec());
         }
 
         let mut exec = WorkflowExecution::new(workflow_id, workflow_version, input);
+        exec.group_id = group_id.clone();
         exec.set_running();
 
         self.event_bus.publish(Event::WorkflowStarted {
             workflow_id: workflow_id.to_string(),
             exec_id: exec.exec_id,
         }).await;
+
+        if let Some(ref gid) = group_id {
+            self.publish_group_msg(gid, "system", &serde_json::json!({
+                "type": "workflow_run",
+                "workflow_id": workflow_id,
+                "exec_id": exec.exec_id.to_string(),
+                "status": "started"
+            }).to_string()).await;
+        }
 
         let topo = build_topological_order(workflow_nodes)?;
 
@@ -605,6 +628,29 @@ impl WorkflowExecutor {
                 node_id: node_id.clone(),
             }).await;
 
+            if let Some(ref gid) = group_id {
+                let node_type_str = match &node.node_type {
+                    crate::workflow::NodeType::Llm { .. } => "llm",
+                    crate::workflow::NodeType::Tool { .. } => "tool",
+                    crate::workflow::NodeType::Condition { .. } => "condition",
+                    crate::workflow::NodeType::Parallel { .. } => "parallel",
+                    crate::workflow::NodeType::Loop { .. } => "loop",
+                    crate::workflow::NodeType::HumanApproval { .. } => "human_approval",
+                    crate::workflow::NodeType::SubWorkflow { .. } => "sub_workflow",
+                    crate::workflow::NodeType::Webhook { .. } => "webhook",
+                    crate::workflow::NodeType::Delay { .. } => "delay",
+                    crate::workflow::NodeType::Agent { .. } => "agent",
+                };
+                self.publish_group_msg(gid, "system", &serde_json::json!({
+                    "type": "workflow_step",
+                    "workflow_id": workflow_id,
+                    "exec_id": exec.exec_id.to_string(),
+                    "node_id": node_id,
+                    "node_type": node_type_str,
+                    "status": "running"
+                }).to_string()).await;
+            }
+
             let node_executor = self.node_executor.read().await;
             match self.execute_with_retry(&node_executor, &node, &mut exec).await {
                 Ok(result) => {
@@ -619,6 +665,16 @@ impl WorkflowExecutor {
                         exec_id: exec.exec_id,
                         node_id: node_id.clone(),
                     }).await;
+
+                    if let Some(ref gid) = group_id {
+                        self.publish_group_msg(gid, "system", &serde_json::json!({
+                            "type": "workflow_step",
+                            "workflow_id": workflow_id,
+                            "exec_id": exec.exec_id.to_string(),
+                            "node_id": node_id,
+                            "status": "completed"
+                        }).to_string()).await;
+                    }
                 }
                 Err(e) => {
                     exec.set_failed(&e.to_string());
@@ -629,6 +685,16 @@ impl WorkflowExecutor {
                         node_id: node_id.clone(),
                         error: e.to_string(),
                     }).await;
+
+                    if let Some(ref gid) = group_id {
+                        self.publish_group_msg(gid, "system", &serde_json::json!({
+                            "type": "workflow_failed",
+                            "workflow_id": workflow_id,
+                            "exec_id": exec.exec_id.to_string(),
+                            "node_id": node_id,
+                            "error": e.to_string()
+                        }).to_string()).await;
+                    }
                     break;
                 }
             }
@@ -640,6 +706,15 @@ impl WorkflowExecutor {
                 workflow_id: workflow_id.to_string(),
                 exec_id: exec.exec_id,
             }).await;
+
+            if let Some(ref gid) = group_id {
+                self.publish_group_msg(gid, "system", &serde_json::json!({
+                    "type": "workflow_complete",
+                    "workflow_id": workflow_id,
+                    "exec_id": exec.exec_id.to_string(),
+                    "status": "completed"
+                }).to_string()).await;
+            }
         } else {
             self.event_bus.publish(Event::WorkflowFailed {
                 workflow_id: workflow_id.to_string(),
@@ -649,6 +724,15 @@ impl WorkflowExecutor {
         }
 
         Ok(ExecResult::from_execution(&exec))
+    }
+
+    async fn publish_group_msg(&self, group_id: &str, sender_id: &str, content: &str) {
+        let _ = self.event_bus.publish(Event::GroupMessageSent {
+            group_id: group_id.to_string(),
+            message_id: uuid::Uuid::new_v4().to_string(),
+            sender_id: sender_id.to_string(),
+            content: content.to_string(),
+        }).await;
     }
 
     pub async fn resolve_approval(&self, approval_id: &str, approved: bool) -> bool {

@@ -421,6 +421,934 @@ pub async fn run_migrations(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
         .execute(pool)
         .await?;
 
-    tracing::info!("Database migrations completed");
+    // ================================================================
+    // MapleOS v3 Migrations
+    // ================================================================
+
+    // --- 002: Unified users + groups + group_members + group_messages ---
+    run_v3_migration_002(pool).await?;
+    // --- 003: Tasks v3 ---
+    run_v3_migration_003(pool).await?;
+    // --- 004: Approvals ---
+    run_v3_migration_004(pool).await?;
+    // --- 005: Workflow runs ---
+    run_v3_migration_005(pool).await?;
+    // --- 006: Agent memories ---
+    run_v3_migration_006(pool).await?;
+    // --- 007: Sessions + cron jobs ---
+    run_v3_migration_007(pool).await?;
+    // --- 008: Message aux tables ---
+    run_v3_migration_008(pool).await?;
+    // --- 009: DM tables ---
+    run_v3_migration_009(pool).await?;
+    // --- 010: Group cron jobs ---
+    run_v3_migration_010(pool).await?;
+    // --- 011: Message attachments ---
+    run_v3_migration_011(pool).await?;
+    // --- 012: Agent hooks ---
+    run_v3_migration_012(pool).await?;
+    // --- 013: Workflow runs group_id ---
+    run_v3_migration_013(pool).await?;
+
+    tracing::info!("Database migrations completed (including v3)");
+    Ok(())
+}
+
+async fn run_v3_migration_002(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
+    // Unified users table (human + agent)
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS users_v3 (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            email TEXT,
+            password_hash TEXT,
+            avatar_url TEXT,
+            user_type TEXT NOT NULL DEFAULT 'human' CHECK(user_type IN ('human', 'agent')),
+            status TEXT NOT NULL DEFAULT 'offline'
+                CHECK(status IN ('online', 'away', 'busy', 'offline', 'error')),
+            platform_role TEXT NOT NULL DEFAULT 'user'
+                CHECK(platform_role IN ('platform_admin', 'user', 'viewer')),
+            soul_config TEXT,
+            memory_config TEXT,
+            agent_config TEXT,
+            connection_type TEXT
+                CHECK(connection_type IN ('llm-api', 'http-ws', 'sdk', 'a2a', 'rig') OR connection_type IS NULL),
+            connection_config TEXT,
+            llm_provider TEXT,
+            llm_model TEXT,
+            llm_api_key_encrypted TEXT,
+            llm_base_url TEXT,
+            agent_api_key TEXT,
+            agent_api_secret_encrypted TEXT,
+            rig_provider TEXT,
+            rig_model TEXT,
+            tools_config TEXT,
+            skills_config TEXT,
+            last_heartbeat INTEGER,
+            health_status TEXT DEFAULT 'unknown'
+                CHECK(health_status IN ('healthy', 'degraded', 'unhealthy', 'unknown')),
+            active_task_count INTEGER DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            deleted_at INTEGER
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    // Migrate existing users -> users_v3
+    let _ = sqlx::query(
+        "INSERT OR IGNORE INTO users_v3 (
+            id, name, email, password_hash, user_type, status, platform_role,
+            created_at, updated_at
+        )
+        SELECT
+            id, username, email, password_hash, 'human', 'offline',
+            CASE WHEN role = 'admin' THEN 'platform_admin' ELSE 'user' END,
+            created_at, created_at
+        FROM users",
+    )
+    .execute(pool)
+    .await;
+
+    // Migrate existing agents -> users_v3
+    let _ = sqlx::query(
+        "INSERT OR IGNORE INTO users_v3 (
+            id, name, user_type, status, platform_role,
+            connection_type, connection_config,
+            last_heartbeat, health_status,
+            agent_config, tools_config,
+            created_at, updated_at
+        )
+        SELECT
+            id, name, 'agent',
+            CASE WHEN status = 'online' THEN 'online' WHEN status = 'busy' THEN 'busy' ELSE 'offline' END,
+            'user',
+            CASE transport_type
+                WHEN 'websocket' THEN 'http-ws' WHEN 'webhook' THEN 'http-ws'
+                WHEN 'mcp' THEN 'sdk' WHEN 'rest' THEN 'llm-api'
+                WHEN 'sse' THEN 'llm-api' ELSE 'llm-api'
+            END,
+            transport_config, last_heartbeat,
+            CASE WHEN status = 'online' THEN 'healthy' WHEN status = 'busy' THEN 'degraded' ELSE 'unknown' END,
+            capabilities, capabilities, created_at, created_at
+        FROM agents",
+    )
+    .execute(pool)
+    .await;
+
+    for idx in [
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_v3_email ON users_v3(email) WHERE email IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_users_v3_heartbeat ON users_v3(user_type, last_heartbeat) WHERE user_type = 'agent'",
+        "CREATE INDEX IF NOT EXISTS idx_users_v3_status ON users_v3(user_type, status)",
+        "CREATE INDEX IF NOT EXISTS idx_users_v3_type ON users_v3(user_type) WHERE deleted_at IS NULL",
+    ] {
+        let _ = sqlx::query(idx).execute(pool).await;
+    }
+
+    // Groups table
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS groups (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT,
+            avatar_url TEXT,
+            group_type TEXT NOT NULL DEFAULT 'collaboration'
+                CHECK(group_type IN ('collaboration', 'project', 'channel', 'dm')),
+            owner_id TEXT NOT NULL,
+            settings TEXT NOT NULL DEFAULT '{}',
+            dm_pair_key TEXT,
+            dm_type TEXT CHECK(dm_type IN ('human_human', 'human_agent', 'agent_agent') OR dm_type IS NULL),
+            member_count INTEGER NOT NULL DEFAULT 0,
+            message_count INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            archived_at INTEGER,
+            deleted_at INTEGER
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    let _ = sqlx::query(
+        "INSERT OR IGNORE INTO groups (id, name, description, group_type, owner_id, settings, member_count, created_at, updated_at)
+         SELECT id, name, description, 'collaboration', owner_id,
+                json_object('max_agents', max_agents, 'auto_approve', auto_approve, 'knowledge_base_enabled', knowledge_base_enabled),
+                0, created_at, created_at
+         FROM workspaces",
+    )
+    .execute(pool)
+    .await;
+
+    let _ = sqlx::query(
+        "UPDATE groups SET member_count = (SELECT COUNT(*) FROM workspace_members WHERE workspace_members.workspace_id = groups.id) WHERE member_count = 0",
+    )
+    .execute(pool)
+    .await;
+
+    for idx in [
+        "CREATE INDEX IF NOT EXISTS idx_groups_owner ON groups(owner_id)",
+        "CREATE INDEX IF NOT EXISTS idx_groups_type ON groups(group_type) WHERE deleted_at IS NULL",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_dm_pair ON groups(dm_pair_key) WHERE group_type = 'dm' AND deleted_at IS NULL",
+    ] {
+        let _ = sqlx::query(idx).execute(pool).await;
+    }
+
+    // Group members
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS group_members (
+            group_id TEXT NOT NULL,
+            member_id TEXT NOT NULL,
+            member_type TEXT NOT NULL CHECK(member_type IN ('human', 'agent')),
+            role TEXT NOT NULL DEFAULT 'member'
+                CHECK(role IN ('owner', 'admin', 'member', 'viewer')),
+            nickname TEXT,
+            can_approve INTEGER NOT NULL DEFAULT 0,
+            approval_scope TEXT,
+            joined_at INTEGER NOT NULL,
+            last_active_at INTEGER,
+            muted_until INTEGER,
+            PRIMARY KEY (group_id, member_id)
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    let _ = sqlx::query(
+        "INSERT OR IGNORE INTO group_members (group_id, member_id, member_type, role, joined_at)
+         SELECT workspace_id, member_id, member_type, role, strftime('%s', 'now') * 1000
+         FROM workspace_members",
+    )
+    .execute(pool)
+    .await;
+
+    for idx in [
+        "CREATE INDEX IF NOT EXISTS idx_gm_member ON group_members(member_id)",
+        "CREATE INDEX IF NOT EXISTS idx_gm_role ON group_members(group_id, role)",
+    ] {
+        let _ = sqlx::query(idx).execute(pool).await;
+    }
+
+    // Group messages
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS group_messages (
+            id TEXT PRIMARY KEY,
+            group_id TEXT NOT NULL,
+            sender_id TEXT NOT NULL,
+            sender_type TEXT NOT NULL CHECK(sender_type IN ('human', 'agent', 'system')),
+            message_type TEXT NOT NULL CHECK(message_type IN (
+                'text', 'markdown', 'image', 'file', 'voice',
+                'tool_call', 'tool_result', 'thinking',
+                'approval_request', 'approval_response',
+                'workflow_run', 'workflow_step', 'workflow_complete', 'workflow_failed',
+                'skill_call', 'skill_result',
+                'task_created', 'task_updated', 'task_completed',
+                'system', 'member_join', 'member_leave',
+                'cron_trigger', 'external_message'
+            )),
+            content TEXT NOT NULL,
+            reply_to_id TEXT,
+            thread_root_id TEXT,
+            thread_reply_count INTEGER NOT NULL DEFAULT 0,
+            source_channel TEXT NOT NULL DEFAULT 'web'
+                CHECK(source_channel IN (
+                    'web', 'api', 'sdk', 'cli', 'webhook',
+                    'im_feishu', 'im_wechat', 'im_dingtalk', 'im_telegram', 'im_slack'
+                )),
+            external_message_id TEXT,
+            external_channel_id TEXT,
+            pinned INTEGER NOT NULL DEFAULT 0,
+            edited_at INTEGER,
+            deleted_at INTEGER,
+            created_at INTEGER NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    let _ = sqlx::query(
+        "INSERT OR IGNORE INTO group_messages (id, group_id, sender_id, sender_type, message_type, content, source_channel, created_at)
+         SELECT id, workspace_id, sender_id, sender_type,
+                CASE type WHEN 'text' THEN 'text' WHEN 'system' THEN 'system' ELSE 'text' END,
+                CASE WHEN metadata IS NOT NULL THEN json_object('text', content, 'metadata', json(metadata)) ELSE json_object('text', content) END,
+                'web', created_at
+         FROM messages",
+    )
+    .execute(pool)
+    .await;
+
+    for idx in [
+        "CREATE INDEX IF NOT EXISTS idx_gm_group_time ON group_messages(group_id, created_at DESC) WHERE deleted_at IS NULL",
+        "CREATE INDEX IF NOT EXISTS idx_gm_thread ON group_messages(thread_root_id, created_at) WHERE thread_root_id IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_gm_sender ON group_messages(sender_id, created_at DESC)",
+    ] {
+        let _ = sqlx::query(idx).execute(pool).await;
+    }
+
+    // Group unread counts
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS group_unread_counts (
+            group_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            unread_count INTEGER NOT NULL DEFAULT 0,
+            last_read_message_id TEXT,
+            last_read_at INTEGER,
+            PRIMARY KEY (group_id, user_id)
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    tracing::info!("v3 migration 002 (users+groups+messages) completed");
+    Ok(())
+}
+
+async fn run_v3_migration_003(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
+    // Projects
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS projects (
+            id TEXT PRIMARY KEY,
+            group_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            description TEXT,
+            status TEXT NOT NULL DEFAULT 'active'
+                CHECK(status IN ('active', 'paused', 'completed', 'archived')),
+            owner_id TEXT NOT NULL,
+            start_date TEXT,
+            end_date TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await?;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_projects_group ON projects(group_id, status)").execute(pool).await;
+
+    // Tasks v3
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS tasks_v3 (
+            id TEXT PRIMARY KEY,
+            group_id TEXT NOT NULL,
+            project_id TEXT,
+            parent_task_id TEXT,
+            title TEXT NOT NULL,
+            description TEXT,
+            status TEXT NOT NULL DEFAULT 'backlog'
+                CHECK(status IN ('backlog', 'todo', 'in_progress', 'review', 'done', 'cancelled', 'blocked')),
+            priority TEXT NOT NULL DEFAULT 'medium'
+                CHECK(priority IN ('critical', 'high', 'medium', 'low', 'urgent')),
+            assignee_id TEXT,
+            assignee_type TEXT CHECK(assignee_type IN ('human', 'agent') OR assignee_type IS NULL),
+            creator_id TEXT NOT NULL,
+            source_message_id TEXT,
+            due_date INTEGER,
+            completed_at INTEGER,
+            estimated_hours REAL,
+            actual_hours REAL,
+            tags TEXT NOT NULL DEFAULT '[]',
+            metadata TEXT NOT NULL DEFAULT '{}',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            deleted_at INTEGER
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    for idx in [
+        "CREATE INDEX IF NOT EXISTS idx_tasks_v3_group ON tasks_v3(group_id, status, created_at DESC) WHERE deleted_at IS NULL",
+        "CREATE INDEX IF NOT EXISTS idx_tasks_v3_assignee ON tasks_v3(assignee_id, status) WHERE deleted_at IS NULL",
+        "CREATE INDEX IF NOT EXISTS idx_tasks_v3_due ON tasks_v3(due_at) WHERE due_at IS NOT NULL AND deleted_at IS NULL",
+        "CREATE INDEX IF NOT EXISTS idx_tasks_v3_parent ON tasks_v3(parent_task_id) WHERE parent_task_id IS NOT NULL",
+    ] {
+        let _ = sqlx::query(idx).execute(pool).await;
+    }
+
+    // Task status history
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS task_status_history (
+            id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL,
+            old_status TEXT NOT NULL,
+            new_status TEXT NOT NULL,
+            changed_by TEXT NOT NULL,
+            reason TEXT,
+            changed_at INTEGER NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await?;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_tsh_task ON task_status_history(task_id, changed_at DESC)").execute(pool).await;
+
+    // Task comments v3
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS task_comments_v3 (
+            id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL,
+            author_id TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            edited_at INTEGER,
+            deleted_at INTEGER
+        )",
+    )
+    .execute(pool)
+    .await?;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_tc_v3_task ON task_comments_v3(task_id, created_at DESC) WHERE deleted_at IS NULL").execute(pool).await;
+
+    // Task attachments
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS task_attachments (
+            id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL,
+            uploader_id TEXT NOT NULL,
+            file_name TEXT NOT NULL,
+            file_size INTEGER NOT NULL,
+            file_type TEXT NOT NULL,
+            storage_path TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await?;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_ta_task ON task_attachments(task_id)").execute(pool).await;
+
+    tracing::info!("v3 migration 003 (tasks) completed");
+    Ok(())
+}
+
+async fn run_v3_migration_004(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
+    // Approval requests
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS approval_requests (
+            id TEXT PRIMARY KEY,
+            group_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT,
+            request_type TEXT NOT NULL DEFAULT 'general',
+            requester_id TEXT NOT NULL,
+            urgency TEXT NOT NULL DEFAULT 'normal'
+                CHECK(urgency IN ('low', 'normal', 'high', 'critical')),
+            quorum_type TEXT NOT NULL DEFAULT 'any'
+                CHECK(quorum_type IN ('any', 'all', 'majority')),
+            required_count INTEGER NOT NULL DEFAULT 1,
+            approver_spec TEXT NOT NULL,
+            context TEXT,
+            execution_status TEXT NOT NULL DEFAULT 'pending',
+            timeout_at INTEGER,
+            auto_action TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            resolved_at INTEGER
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    for idx in [
+        "CREATE INDEX IF NOT EXISTS idx_ar_group ON approval_requests(group_id, execution_status, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_ar_requester ON approval_requests(requester_id)",
+    ] {
+        let _ = sqlx::query(idx).execute(pool).await;
+    }
+
+    // Approval votes
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS approval_votes (
+            id TEXT PRIMARY KEY,
+            approval_id TEXT NOT NULL,
+            voter_id TEXT NOT NULL,
+            decision TEXT NOT NULL CHECK(decision IN ('approve', 'reject', 'abstain')),
+            comment TEXT,
+            voted_at INTEGER NOT NULL,
+            UNIQUE(approval_id, voter_id)
+        )",
+    )
+    .execute(pool)
+    .await?;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_av_approval ON approval_votes(approval_id, voted_at)").execute(pool).await;
+
+    // Approval timeout logs
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS approval_timeout_logs (
+            id TEXT PRIMARY KEY,
+            approval_id TEXT NOT NULL,
+            timeout_action TEXT NOT NULL
+                CHECK(timeout_action IN ('auto_reject', 'auto_approve', 'escalate', 'notify')),
+            processed_at INTEGER NOT NULL,
+            result TEXT
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    tracing::info!("v3 migration 004 (approvals) completed");
+    Ok(())
+}
+
+async fn run_v3_migration_005(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
+    // Workflow runs
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS workflow_runs (
+            id TEXT PRIMARY KEY,
+            workflow_id TEXT NOT NULL,
+            group_id TEXT NOT NULL,
+            trigger_type TEXT NOT NULL
+                CHECK(trigger_type IN ('manual', 'webhook', 'cron', 'event', 'message')),
+            trigger_payload TEXT,
+            triggered_by TEXT,
+            run_message_id TEXT,
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK(status IN ('pending', 'running', 'paused', 'success', 'failed', 'cancelled', 'waiting_approval')),
+            current_step_id TEXT,
+            completed_steps INTEGER NOT NULL DEFAULT 0,
+            total_steps INTEGER,
+            context TEXT NOT NULL DEFAULT '{}',
+            output TEXT,
+            error TEXT,
+            started_at INTEGER,
+            completed_at INTEGER,
+            created_at INTEGER NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    for idx in [
+        "CREATE INDEX IF NOT EXISTS idx_wr_workflow ON workflow_runs(workflow_id, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_wr_group ON workflow_runs(group_id, status, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_wr_status ON workflow_runs(status) WHERE status IN ('pending', 'running', 'waiting_approval')",
+    ] {
+        let _ = sqlx::query(idx).execute(pool).await;
+    }
+
+    // Workflow step executions
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS workflow_step_executions (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            step_id TEXT NOT NULL,
+            step_name TEXT NOT NULL,
+            step_type TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK(status IN ('pending', 'running', 'success', 'failed', 'skipped', 'waiting_approval')),
+            input TEXT,
+            output TEXT,
+            error TEXT,
+            started_at INTEGER,
+            completed_at INTEGER,
+            duration_ms INTEGER,
+            approval_id TEXT
+        )",
+    )
+    .execute(pool)
+    .await?;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_wse_run ON workflow_step_executions(run_id, step_id)").execute(pool).await;
+
+    // Migrate existing workflow executions
+    let _ = sqlx::query(
+        "INSERT OR IGNORE INTO workflow_runs (id, workflow_id, group_id, trigger_type, status, output, error, started_at, completed_at, created_at)
+         SELECT we.id, we.workflow_id, COALESCE((SELECT id FROM groups LIMIT 1), 'default'), 'manual',
+                CASE we.status WHEN 'running' THEN 'running' WHEN 'completed' THEN 'success' WHEN 'failed' THEN 'failed' WHEN 'cancelled' THEN 'cancelled' ELSE 'pending' END,
+                we.output, we.error, we.started_at, we.completed_at, we.started_at
+         FROM workflow_executions we",
+    )
+    .execute(pool)
+    .await;
+
+    tracing::info!("v3 migration 005 (workflow runs) completed");
+    Ok(())
+}
+
+async fn run_v3_migration_006(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
+    // Agent memories (3-layer)
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS agent_memories (
+            id TEXT PRIMARY KEY,
+            agent_id TEXT NOT NULL,
+            memory_type TEXT NOT NULL CHECK(memory_type IN ('working', 'episodic', 'semantic')),
+            content TEXT NOT NULL,
+            summary TEXT,
+            embedding BLOB,
+            embedding_model TEXT,
+            source_type TEXT CHECK(source_type IN ('chat', 'skill', 'workflow', 'task', 'manual', 'import') OR source_type IS NULL),
+            source_id TEXT,
+            group_id TEXT,
+            relevance_score REAL NOT NULL DEFAULT 0.7,
+            access_count INTEGER NOT NULL DEFAULT 0,
+            last_accessed_at INTEGER,
+            expires_at INTEGER,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    for idx in [
+        "CREATE INDEX IF NOT EXISTS idx_am_agent_type ON agent_memories(agent_id, memory_type, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_am_agent_group ON agent_memories(agent_id, group_id) WHERE group_id IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_am_expires ON agent_memories(expires_at) WHERE expires_at IS NOT NULL AND memory_type = 'working'",
+    ] {
+        let _ = sqlx::query(idx).execute(pool).await;
+    }
+
+    // FTS5 virtual table for full-text search on memory content
+    let _ = sqlx::query(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS agent_memories_fts USING fts5(content, content='agent_memories', content_rowid='rowid')"
+    ).execute(pool).await;
+
+    // Triggers to keep FTS in sync
+    let _ = sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS am_ai AFTER INSERT ON agent_memories BEGIN
+            INSERT INTO agent_memories_fts(rowid, content) VALUES (new.rowid, new.content);
+        END"
+    ).execute(pool).await;
+    let _ = sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS am_ad AFTER DELETE ON agent_memories BEGIN
+            INSERT INTO agent_memories_fts(agent_memories_fts, rowid, content) VALUES('delete', old.rowid, old.content);
+        END"
+    ).execute(pool).await;
+    let _ = sqlx::query(
+        "CREATE TRIGGER IF NOT EXISTS am_au AFTER UPDATE ON agent_memories BEGIN
+            INSERT INTO agent_memories_fts(agent_memories_fts, rowid, content) VALUES('delete', old.rowid, old.content);
+            INSERT INTO agent_memories_fts(rowid, content) VALUES (new.rowid, new.content);
+        END"
+    ).execute(pool).await;
+
+    // Migrate existing memories
+    let _ = sqlx::query(
+        "INSERT OR IGNORE INTO agent_memories (id, agent_id, memory_type, content, source_type, relevance_score, access_count, created_at, updated_at)
+         SELECT m.id, COALESCE(json_extract(m.metadata, '$.agent_id'), 'system'),
+                CASE m.memory_type WHEN 'working' THEN 'working' WHEN 'episodic' THEN 'episodic' WHEN 'semantic' THEN 'semantic' ELSE 'episodic' END,
+                m.content, json_extract(m.metadata, '$.source_type'), 0.7, m.access_count, m.created_at, m.created_at
+         FROM memories m",
+    )
+    .execute(pool)
+    .await;
+
+    tracing::info!("v3 migration 006 (agent memories) completed");
+    Ok(())
+}
+
+async fn run_v3_migration_007(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
+    // Sessions
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS sessions (
+            id TEXT PRIMARY KEY,
+            group_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            session_type TEXT NOT NULL DEFAULT 'chat'
+                CHECK(session_type IN ('chat', 'task', 'workflow', 'cron')),
+            related_task_id TEXT,
+            related_workflow_run_id TEXT,
+            status TEXT NOT NULL DEFAULT 'active'
+                CHECK(status IN ('active', 'paused', 'completed', 'archived')),
+            conversation_history TEXT NOT NULL DEFAULT '[]',
+            context TEXT NOT NULL DEFAULT '{}',
+            message_count INTEGER NOT NULL DEFAULT 0,
+            tool_call_count INTEGER NOT NULL DEFAULT 0,
+            token_count INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            archived_at INTEGER
+        )",
+    )
+    .execute(pool)
+    .await?;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_group_agent ON sessions(group_id, agent_id, status)").execute(pool).await;
+
+    // Cron jobs
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS cron_jobs (
+            id TEXT PRIMARY KEY,
+            group_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            creator_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            description TEXT,
+            cron_expr TEXT NOT NULL,
+            timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
+            prompt TEXT,
+            workflow_id TEXT,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            last_run_at INTEGER,
+            last_run_status TEXT CHECK(last_run_status IN ('success', 'failed', 'running') OR last_run_status IS NULL),
+            next_run_at INTEGER,
+            run_count INTEGER NOT NULL DEFAULT 0,
+            success_count INTEGER NOT NULL DEFAULT 0,
+            failure_count INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    // Cron run logs
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS cron_run_logs (
+            id TEXT PRIMARY KEY,
+            cron_job_id TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('success', 'failed', 'timeout')),
+            triggered_at INTEGER NOT NULL,
+            started_at INTEGER,
+            completed_at INTEGER,
+            duration_ms INTEGER,
+            output TEXT,
+            error TEXT,
+            session_id TEXT,
+            trigger_message_id TEXT
+        )",
+    )
+    .execute(pool)
+    .await?;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_crl_job ON cron_run_logs(cron_job_id, triggered_at DESC)").execute(pool).await;
+
+    tracing::info!("v3 migration 007 (sessions+cron) completed");
+    Ok(())
+}
+
+async fn run_v3_migration_008(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
+    // Message edit history
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS message_edit_history (
+            id TEXT PRIMARY KEY,
+            message_id TEXT NOT NULL,
+            old_content TEXT NOT NULL,
+            edited_by TEXT NOT NULL,
+            edited_at INTEGER NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await?;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_meh_message ON message_edit_history(message_id, edited_at DESC)").execute(pool).await;
+
+    // Message reads
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS message_reads (
+            message_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            read_at INTEGER NOT NULL,
+            PRIMARY KEY (message_id, user_id)
+        )",
+    )
+    .execute(pool)
+    .await?;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_mr_user_group ON message_reads(user_id)").execute(pool).await;
+
+    // Message reactions
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS message_reactions (
+            id TEXT PRIMARY KEY,
+            message_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            emoji TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            UNIQUE(message_id, user_id, emoji)
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    // Message bookmarks
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS message_bookmarks (
+            id TEXT PRIMARY KEY,
+            message_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            note TEXT,
+            created_at INTEGER NOT NULL,
+            UNIQUE(message_id, user_id)
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    // Pinned messages
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS pinned_messages (
+            id TEXT PRIMARY KEY,
+            message_id TEXT NOT NULL,
+            group_id TEXT NOT NULL,
+            pinned_by TEXT NOT NULL,
+            pinned_at INTEGER NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await?;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_pm_group ON pinned_messages(group_id, pinned_at DESC)").execute(pool).await;
+
+    // Expanded group rules v3
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS group_rules_v3 (
+            id TEXT PRIMARY KEY,
+            group_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            description TEXT,
+            rule_type TEXT NOT NULL CHECK(rule_type IN (
+                'auto_assign', 'auto_approve', 'rate_limit', 'time_window',
+                'tool_restriction', 'knowledge_scope', 'workflow_permission',
+                'prompt_template', 'approval_policy'
+            )),
+            config TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            priority INTEGER NOT NULL DEFAULT 0,
+            condition_expr TEXT,
+            created_by TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await?;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_gr_v3_group ON group_rules_v3(group_id, enabled, priority DESC)").execute(pool).await;
+
+    tracing::info!("v3 migration 008 (message aux + group rules) completed");
+    Ok(())
+}
+
+async fn run_v3_migration_009(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
+    // DM columns on groups table
+    for stmt in [
+        "ALTER TABLE groups ADD COLUMN dm_type TEXT",
+        "ALTER TABLE groups ADD COLUMN dm_pair_key TEXT",
+    ] {
+        let _ = sqlx::query(stmt).execute(pool).await;
+    }
+
+    // A2A delegations
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS a2a_delegations (
+            id TEXT PRIMARY KEY,
+            dm_group_id TEXT NOT NULL,
+            delegator_id TEXT NOT NULL,
+            executor_id TEXT NOT NULL,
+            task_id TEXT,
+            prompt TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            result TEXT,
+            visible_to TEXT NOT NULL DEFAULT 'both',
+            created_at INTEGER NOT NULL,
+            completed_at INTEGER
+        )",
+    ).execute(pool).await?;
+
+    // DM tool grants
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS dm_tool_grants (
+            id TEXT PRIMARY KEY,
+            dm_group_id TEXT NOT NULL,
+            tool_name TEXT NOT NULL,
+            granted_by TEXT NOT NULL,
+            granted_at INTEGER NOT NULL,
+            expires_at INTEGER,
+            scope TEXT
+        )",
+    ).execute(pool).await?;
+
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_a2a_dm ON a2a_delegations(dm_group_id)").execute(pool).await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_dg_dm ON dm_tool_grants(dm_group_id)").execute(pool).await;
+
+    tracing::info!("v3 migration 009 (DM) completed");
+    Ok(())
+}
+
+async fn run_v3_migration_010(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS group_cron_jobs (
+            id TEXT PRIMARY KEY,
+            group_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            cron_expr TEXT NOT NULL,
+            message_template TEXT NOT NULL,
+            job_type TEXT NOT NULL DEFAULT 'system_broadcast',
+            target_agent_id TEXT,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_by TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            last_run_at INTEGER,
+            next_run_at INTEGER NOT NULL,
+            run_count INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
+        )",
+    ).execute(pool).await?;
+
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_gcj_group ON group_cron_jobs(group_id)").execute(pool).await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_gcj_next ON group_cron_jobs(next_run_at)").execute(pool).await;
+
+    tracing::info!("v3 migration 010 (group cron) completed");
+    Ok(())
+}
+
+async fn run_v3_migration_011(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS message_attachments (
+            id TEXT PRIMARY KEY,
+            group_id TEXT NOT NULL,
+            message_id TEXT,
+            uploader_id TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            content_type TEXT NOT NULL,
+            size INTEGER NOT NULL,
+            data BLOB NOT NULL,
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
+        )",
+    ).execute(pool).await?;
+
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_ma_group ON message_attachments(group_id)").execute(pool).await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_ma_message ON message_attachments(message_id)").execute(pool).await;
+
+    tracing::info!("v3 migration 011 (message attachments) completed");
+    Ok(())
+}
+
+async fn run_v3_migration_012(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS agent_hooks (
+            id TEXT PRIMARY KEY,
+            group_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            event_types TEXT NOT NULL DEFAULT '[]',
+            condition_expr TEXT,
+            action_type TEXT NOT NULL DEFAULT 'notify',
+            action_config TEXT NOT NULL DEFAULT '{}',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            priority INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )"
+    ).execute(pool).await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS agent_hook_logs (
+            id TEXT PRIMARY KEY,
+            hook_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            event_data TEXT,
+            status TEXT NOT NULL DEFAULT 'success',
+            result TEXT,
+            error TEXT,
+            executed_at INTEGER NOT NULL
+        )"
+    ).execute(pool).await?;
+
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_ah_group ON agent_hooks(group_id)").execute(pool).await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_ah_agent ON agent_hooks(agent_id)").execute(pool).await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_ahl_hook ON agent_hook_logs(hook_id)").execute(pool).await;
+
+    tracing::info!("v3 migration 012 (agent hooks) completed");
+    Ok(())
+}
+
+async fn run_v3_migration_013(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
+    // Add group_id column to workflow_executions (safe if already exists)
+    let _ = sqlx::query("ALTER TABLE workflow_executions ADD COLUMN group_id TEXT")
+        .execute(pool).await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_we_group ON workflow_executions(group_id)")
+        .execute(pool).await;
+
+    tracing::info!("v3 migration 013 (workflow runs group_id) completed");
     Ok(())
 }
