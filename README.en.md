@@ -116,12 +116,14 @@ git clone --recurse-submodules https://github.com/hongmaple0820/maple-os.git
 # Rust backend
 cargo run --release -p mapleos-server
 
-# SCALE Engine HTTP bridge (optional, port 7790)
-cd core/scale-engine && pnpm install && pnpm run build
-node bridge-http.mjs
+# Install frontend dependencies
+pnpm install
 
 # Frontend web app
-pnpm install && pnpm --filter=mapleos-web dev
+pnpm --filter=mapleos-web dev
+
+# Tauri desktop app (optional)
+pnpm desktop:build
 ```
 
 ### Docker Deployment

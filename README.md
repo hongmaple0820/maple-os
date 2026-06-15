@@ -121,12 +121,14 @@ git clone --recurse-submodules https://github.com/hongmaple0820/maple-os.git
 # Rust 后端
 cargo run --release -p mapleos-server
 
-# SCALE Engine HTTP bridge（可选，端口 7790）
-cd core/scale-engine && pnpm install && pnpm run build
-node bridge-http.mjs
+# 安装前端依赖
+pnpm install
 
 # 前端 Web 应用
-pnpm install && pnpm --filter=mapleos-web dev
+pnpm --filter=mapleos-web dev
+
+# Tauri 桌面端（可选）
+pnpm desktop:build
 ```
 
 ### Docker 一键部署
