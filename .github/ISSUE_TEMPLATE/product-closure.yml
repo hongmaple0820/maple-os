@@ -1,0 +1,91 @@
+name: Product closure
+description: Track a real product-loop gap that still breaks the MapleOS user journey
+title: "[P1-closure] <area>: <user-visible gap>"
+labels:
+  - product-closure
+body:
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: Choose the real user impact level.
+      options:
+        - priority:p0
+        - priority:p1
+        - priority:p2
+    validations:
+      required: true
+
+  - type: input
+    id: area
+    attributes:
+      label: Area
+      description: Example: chat, workflow, agents, knowledge, llm-settings, desktop, sync
+      placeholder: area:workflow
+    validations:
+      required: true
+
+  - type: textarea
+    id: user_entry
+    attributes:
+      label: User entry point
+      description: Where does the user start this flow?
+      placeholder: From Dashboard > New Workflow, or from Agent Center > Chat
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected_loop
+    attributes:
+      label: Expected closed loop
+      description: Describe the full path that should work from input to outcome.
+      placeholder: user input -> runtime -> tools/approval -> artifact -> audit/activity -> visible result
+    validations:
+      required: true
+
+  - type: textarea
+    id: current_gap
+    attributes:
+      label: Current gap
+      description: What is broken, partial, mock-only, or misleading today?
+      placeholder: The page renders, but execution trace is missing and failure state cannot be resumed.
+    validations:
+      required: true
+
+  - type: textarea
+    id: runtime_path
+    attributes:
+      label: Runtime and data path
+      description: List the expected backend/runtime path and persistence path.
+      placeholder: rpc/workflow.execute -> execution_events -> tasks -> audit -> activity -> UI
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Define concrete done conditions.
+      placeholder: |
+        1. User can complete the flow from one real entry point.
+        2. Success and failure states are both visible.
+        3. Recovery path is available.
+        4. At least one automated verification path exists.
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Verification evidence
+      description: Add commands, screenshots, trace ids, or test files that prove closure.
+      placeholder: playwright test ..., cargo test ..., screenshot path, execution id
+    validations:
+      required: true
+
+  - type: textarea
+    id: related
+    attributes:
+      label: Related issues or PRs
+      description: Link dependent or overlapping work.
+      placeholder: "#89, #90, PR #123"

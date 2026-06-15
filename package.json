@@ -8,6 +8,7 @@
     "lint": "turbo lint",
     "typecheck": "turbo typecheck",
     "test:e2e": "playwright test",
+    "test:e2e:product": "playwright test tests/e2e/product-gate.spec.ts",
     "test:e2e:ui": "playwright test --ui",
     "desktop:dev": "pnpm --filter=mapleos-desktop dev",
     "desktop:build": "pnpm --filter=mapleos-desktop build"

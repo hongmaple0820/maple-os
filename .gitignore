@@ -43,6 +43,8 @@ apps/web/out/
 
 # Test artifacts
 test-results/
+playwright-report/
+.tmp/
 
 # OMC local state
 .omc/
