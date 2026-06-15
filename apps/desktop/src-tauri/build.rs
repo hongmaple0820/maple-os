@@ -28,14 +28,26 @@ fn ensure_sidecar_binary(
     profile: &str,
 ) {
     let binary_name = exe_name("mapleos-server");
-    let server_binary = workspace_root.join("target").join(profile).join(&binary_name);
+    let sidecar_target_dir = workspace_root.join("target").join("desktop-sidecar");
+    let server_binary = sidecar_target_dir
+        .join(target_triple)
+        .join(profile)
+        .join(&binary_name);
     let sidecar_dir = manifest_dir.join("binaries");
     let sidecar_binary = sidecar_dir.join(format!("mapleos-server-{target_triple}.exe"));
 
     if !server_binary.exists() {
         let status = Command::new("cargo")
             .current_dir(workspace_root)
-            .args(["build", "-p", "mapleos-server"])
+            .args([
+                "build",
+                "-p",
+                "mapleos-server",
+                "--target",
+                target_triple,
+                "--target-dir",
+            ])
+            .arg(&sidecar_target_dir)
             .status()
             .expect("failed to invoke cargo build for mapleos-server");
 
