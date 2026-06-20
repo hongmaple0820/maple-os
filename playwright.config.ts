@@ -12,10 +12,18 @@ export default defineConfig({
   projects: [
     { name: "chromium", use: { browserName: "chromium" } },
   ],
-  webServer: {
-    command: "cd apps/web && pnpm dev",
-    port: 3000,
-    reuseExistingServer: true,
-    timeout: 120000,
-  },
+  webServer: [
+    {
+      command: "node scripts/qa/start-e2e-backend.mjs",
+      url: "http://127.0.0.1:7788/health",
+      reuseExistingServer: true,
+      timeout: 180000,
+    },
+    {
+      command: "pnpm --filter=mapleos-web dev",
+      url: "http://127.0.0.1:3000",
+      reuseExistingServer: true,
+      timeout: 120000,
+    },
+  ],
 });

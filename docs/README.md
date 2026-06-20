@@ -81,3 +81,7 @@
 - [README](../README.md) — 项目主页
 - [CHANGELOG](../CHANGELOG.md) — 版本更新日志
 - [GitHub](https://github.com/hongmaple0820/maple-os) — 源代码
+## 开源共建入口
+
+- [Product Closure Roadmap](./MapleOS_Product_Closure_Roadmap.md) — 当前产品闭环状态与 issue 映射
+- [Open-Source Co-build Backlog](./MapleOS_Open_Source_Cobuild_Backlog.md) — 剩余迭代升级与社区共建接力说明

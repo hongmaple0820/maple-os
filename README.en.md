@@ -154,6 +154,9 @@ rules:
 - [`#[tool]` Macro](./docs/tool-macro.md) — Declarative tool definition with auto-generated JSON Schema
 - [Competitive Analysis](./docs/competitive-analysis.md) — Deep competitor comparison & best practices
 - [Unified Implementation Plan](./docs/unified-implementation-plan.md) — Architecture upgrade roadmap
+ 
+- [Product Closure Roadmap](./docs/MapleOS_Product_Closure_Roadmap.md) — Current closure status, remaining gaps, and linked GitHub issues
+- [Open-Source Co-build Backlog](./docs/MapleOS_Open_Source_Cobuild_Backlog.md) — Community implementation tracks for the remaining upgrades
 
 ---
 

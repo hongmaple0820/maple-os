@@ -2,8 +2,12 @@ name: CI
 
 on:
   push:
+    branches:
+      - master
+      - "codex/**"
     tags:
       - "v*"
+  pull_request:
 
 env:
   CARGO_TERM_COLOR: always
@@ -75,6 +79,44 @@ jobs:
 
       - name: Frontend build
         run: pnpm --filter=mapleos-web build
+
+  e2e-product-gate:
+    name: E2E Product Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Enable corepack & install pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@latest --activate
+
+      - name: Install frontend dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Build shared packages first
+        run: pnpm --filter=@mapleos/ui --filter=@mapleos/sdk build
+
+      - name: Install Playwright browser
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run real product gate
+        run: pnpm exec playwright test tests/e2e/product-gate.spec.ts
 
   docker-build:
     name: Docker Build Test

@@ -154,3 +154,13 @@
 | Memory/KB context 对齐 | #55、#56 |
 | 工具真实能力 | #57、#58、#72 |
 | 插件与生态 | #22、#23、#69 |
+## 10. Open-source co-build handoff
+
+剩余的迭代升级和产品闭环实现，统一以 `docs/MapleOS_Open_Source_Cobuild_Backlog.md` 作为开源共建入口。
+
+后续社区 PR 至少要满足四点：
+
+- 不只做页面，要说明真实用户路径
+- 要写清 runtime path 和 data path
+- 要覆盖失败、恢复或重试路径
+- 要附带自动化或可复现的验证证据
