@@ -224,6 +224,8 @@ pub fn build_v3_test_router(state: Arc<AppState>) -> Router {
         // Triggers (#15, #16)
         .route("/api/v3/triggers", get(trigger_handlers::v3_list_triggers).post(trigger_handlers::v3_create_trigger))
         .route("/api/v3/triggers/:id", delete(trigger_handlers::v3_delete_trigger))
+        // Audit logs (#18)
+        .route("/api/v3/audit-logs", get(audit_handlers::v3_list_audit_logs))
         .with_state(state)
 }
 
@@ -1466,6 +1468,68 @@ pub mod trigger_handlers {
     ) -> Json<serde_json::Value> {
         match state.trigger_manager.remove_rule(&id).await {
             Ok(()) => Json(serde_json::json!({ "deleted": true })),
+            Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
+        }
+    }
+}
+
+// ============================================================
+// Audit log handlers (#18)
+// ============================================================
+
+pub mod audit_handlers {
+    use super::*;
+    use axum::extract::{Query, State};
+    use axum::Json;
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize)]
+    pub struct AuditQuery {
+        pub limit: Option<i64>,
+        pub path: Option<String>,
+    }
+
+    /// GET /api/v3/audit-logs — list recent audit log entries (#18)
+    pub async fn v3_list_audit_logs(
+        State(state): State<Arc<state::AppState>>,
+        Query(q): Query<AuditQuery>,
+    ) -> Json<serde_json::Value> {
+        let limit = q.limit.unwrap_or(100).clamp(1, 1000);
+        let rows: Result<Vec<(i64, String, String, Option<String>, i64, i64, Option<String>, Option<String>, Option<String>, i64)>, _> = if let Some(path) = q.path {
+            sqlx::query_as(
+                "SELECT id, method, path, query, status, duration_ms, user_agent, client_ip, actor, created_at
+                   FROM audit_logs WHERE path = ? ORDER BY created_at DESC LIMIT ?"
+            )
+            .bind(path)
+            .bind(limit)
+            .fetch_all(&state.db)
+            .await
+        } else {
+            sqlx::query_as(
+                "SELECT id, method, path, query, status, duration_ms, user_agent, client_ip, actor, created_at
+                   FROM audit_logs ORDER BY created_at DESC LIMIT ?"
+            )
+            .bind(limit)
+            .fetch_all(&state.db)
+            .await
+        };
+
+        match rows {
+            Ok(rows) => {
+                let logs: Vec<_> = rows.into_iter().map(|r| serde_json::json!({
+                    "id": r.0,
+                    "method": r.1,
+                    "path": r.2,
+                    "query": r.3,
+                    "status": r.4,
+                    "duration_ms": r.5,
+                    "user_agent": r.6,
+                    "client_ip": r.7,
+                    "actor": r.8,
+                    "created_at": r.9,
+                })).collect();
+                Json(serde_json::json!({ "audit_logs": logs, "count": logs.len() }))
+            }
             Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
         }
     }

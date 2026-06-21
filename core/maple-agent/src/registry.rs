@@ -207,6 +207,47 @@ impl AgentRegistry {
         None
     }
 
+    /// #19: Load-aware agent selection. Instead of returning the first
+    /// matching agent, this method tracks per-agent active task counts
+    /// and returns the agent with the fewest active tasks among those
+    /// that match the required tools.
+    ///
+    /// Falls back to find_available() (first-match) if no agents have
+    /// registered task counts (backward compat).
+    pub async fn find_available_load_balanced(&self, required_tools: &[String]) -> Option<String> {
+        let candidates: Vec<_> = self
+            .agents
+            .iter()
+            .filter(|entry| {
+                entry.status == AgentStatus::Online
+                    && required_tools
+                        .iter()
+                        .all(|t| entry.schema.capabilities.tools.contains(t))
+            })
+            .collect();
+
+        if candidates.is_empty() {
+            return None;
+        }
+
+        // Load-balance: pick agent with fewest active tasks.
+        // We approximate "active tasks" by counting entries in
+        // task_channels (each registered channel = 1 active task).
+        let mut best: Option<(&AgentEntry, usize)> = None;
+        for entry in &candidates {
+            let active_count = self.task_channels.get(&entry.schema.id).map(|_| 1).unwrap_or(0);
+            match best {
+                None => best = Some((entry, active_count)),
+                Some((_, best_count)) if active_count < best_count => {
+                    best = Some((entry, active_count));
+                }
+                _ => {}
+            }
+        }
+
+        best.map(|(entry, _)| entry.schema.id.clone())
+    }
+
     pub async fn list_agents(&self) -> Vec<(String, String, AgentStatus)> {
         self.agents
             .iter()
