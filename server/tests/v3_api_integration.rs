@@ -3,16 +3,26 @@ use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use mapleos_server::build_test_app_state;
 use mapleos_server::build_v3_test_router;
+use mapleos_server::state::AppState;
 use serde_json::Value;
+use std::sync::Arc;
 use tower::ServiceExt;
 
 async fn setup() -> axum::Router {
+    let (_, router) = setup_with_state().await;
+    router
+}
+
+/// Build a router + the underlying AppState so tests can drive the
+/// ExecutionRecorder directly while still exercising the HTTP layer.
+async fn setup_with_state() -> (Arc<AppState>, axum::Router) {
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .connect("sqlite::memory:")
         .await
         .unwrap();
     let state = build_test_app_state(pool).await;
-    build_v3_test_router(state)
+    let router = build_v3_test_router(state.clone());
+    (state, router)
 }
 
 async fn send_json(app: &axum::Router, method: &str, path: &str, body: Value) -> (StatusCode, Value) {
@@ -772,4 +782,142 @@ async fn test_workflow_definitions_and_runs() {
     // Verify deletion
     let (status, _) = get_json(&app, "/api/v3/workflows/wf-other").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+// ============================================================
+// Execution fact chain (Track 1 / T1-2)
+// ============================================================
+
+#[tokio::test]
+async fn test_execution_routes_get_unknown_returns_404() {
+    let app = setup().await;
+    let (status, body) = get_json(&app, "/api/v3/executions/exec_does_not_exist").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"], "execution exec_does_not_exist not found");
+}
+
+#[tokio::test]
+async fn test_execution_routes_list_events_unknown_returns_404() {
+    let app = setup().await;
+    let (status, _) = get_json(&app, "/api/v3/executions/exec_unknown/events").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_execution_routes_happy_path() {
+    // Drive the recorder directly to seed an execution + events, then
+    // verify the HTTP routes surface them correctly.
+    let (state, app) = setup_with_state().await;
+
+    let exec_id = state
+        .execution_recorder
+        .start(
+            "chat",
+            Some("u1"),
+            Some("human"),
+            "manual",
+            serde_json::json!({"message": "hello"}),
+            None,
+        )
+        .await
+        .unwrap();
+
+    state
+        .execution_recorder
+        .append(
+            &exec_id,
+            "agent",
+            "tool_call",
+            serde_json::json!({
+                "tool_name": "kb_search",
+                "input": {"query": "maple"},
+                "permission_level": "read_only",
+                "invocation_id": "inv_1"
+            }),
+            Some("agent_default"),
+            Some("agent"),
+        )
+        .await
+        .unwrap();
+
+    state
+        .execution_recorder
+        .append(
+            &exec_id,
+            "tool",
+            "tool_result",
+            serde_json::json!({
+                "invocation_id": "inv_1",
+                "output": {"hits": 3},
+                "error": null,
+                "duration_ms": 42
+            }),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    state
+        .execution_recorder
+        .done(&exec_id, "answered: maple is an AI OS")
+        .await
+        .unwrap();
+
+    // GET /api/v3/executions/:id
+    let (status, body) = get_json(&app, &format!("/api/v3/executions/{exec_id}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["id"], exec_id);
+    assert_eq!(body["source"], "chat");
+    assert_eq!(body["status"], "success");
+    assert_eq!(body["actor"], "u1");
+    assert_eq!(body["actor_type"], "human");
+    assert_eq!(body["event_count"], 4); // started + tool_call + tool_result + done
+    assert!(body["completed_at"].as_i64().is_some());
+
+    // GET /api/v3/executions/:id/events
+    let (status, body) = get_json(&app, &format!("/api/v3/executions/{exec_id}/events")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["execution_id"], exec_id);
+    let events = body["events"].as_array().unwrap();
+    assert_eq!(events.len(), 4);
+    assert_eq!(events[0]["event_type"], "started");
+    assert_eq!(events[0]["source"], "chat");
+    assert_eq!(events[1]["event_type"], "tool_call");
+    assert_eq!(events[1]["source"], "agent");
+    assert_eq!(events[1]["payload"]["tool_name"], "kb_search");
+    assert_eq!(events[2]["event_type"], "tool_result");
+    assert_eq!(events[2]["source"], "tool");
+    assert_eq!(events[2]["payload"]["invocation_id"], "inv_1");
+    assert_eq!(events[3]["event_type"], "done");
+    assert_eq!(events[3]["source"], "system");
+}
+
+#[tokio::test]
+async fn test_execution_routes_failed_status_carries_error() {
+    let (state, app) = setup_with_state().await;
+
+    let exec_id = state
+        .execution_recorder
+        .start("task", None, None, "cron", serde_json::json!({}), None)
+        .await
+        .unwrap();
+
+    state
+        .execution_recorder
+        .fail(&exec_id, "tool timeout", true)
+        .await
+        .unwrap();
+
+    let (status, body) = get_json(&app, &format!("/api/v3/executions/{exec_id}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "failed");
+    assert_eq!(body["error"], "tool timeout");
+
+    let (_, events_body) = get_json(&app, &format!("/api/v3/executions/{exec_id}/events")).await;
+    let events = events_body["events"].as_array().unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[1]["event_type"], "error");
+    assert_eq!(events[1]["payload"]["recoverable"], true);
+    assert_eq!(events[1]["payload"]["message"], "tool timeout");
 }

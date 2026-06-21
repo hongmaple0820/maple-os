@@ -1,8 +1,13 @@
 pub mod cache;
 pub mod config;
 pub mod db;
+pub mod execution_handlers;
 pub mod metrics;
+pub mod middleware;
+pub mod sandbox;
+pub mod skills;
 pub mod state;
+pub mod v3_auth;
 
 use axum::Router;
 use axum::routing::{delete, get, post, put};
@@ -127,6 +132,7 @@ pub async fn build_test_app_state(pool: sqlx::SqlitePool) -> Arc<AppState> {
         rate_limiter: state::RateLimiter::new(1000, 60),
         cache: cache::AppCache::new(),
         metrics: metrics::AppMetrics::new(),
+        execution_recorder: maple_engine::ExecutionRecorder::new(pool.clone()),
     })
 }
 
@@ -193,10 +199,22 @@ pub fn build_v3_test_router(state: Arc<AppState>) -> Router {
         .route("/api/v3/workflow-runs/:rid", get(v3_get_workflow_run))
         .route("/api/v3/workflow-runs/:rid/status", put(v3_update_workflow_run_status))
         .route("/api/v3/workflow-runs/:rid/checkpoints", get(v3_list_checkpoints).post(v3_record_checkpoint))
+        // Unified execution fact chain (Track 1 / T1-2)
+        // NOTE: legacy /api/executions/:id (workflow_executions) is mounted
+        // in main.rs; the new unified chain lives under /api/v3/executions/*.
+        .route("/api/v3/executions/:id", get(execution_handlers::get_execution_handler))
+        .route("/api/v3/executions/:id/events", get(execution_handlers::list_events_handler))
+        .route("/api/v3/executions/:id/events/stream", get(execution_handlers::sse_events_handler))
         .with_state(state)
 }
 
 /// Thin v3 handler wrappers used by `build_v3_test_router`.
+/// Unified execution fact chain handlers live in `crate::execution_handlers`
+/// (declared at the top of this file). See `docs/execution-fact-chain-spec.md`
+/// §6 for the API contract. Routes are mounted in `build_v3_test_router`
+/// (lib) and in `main.rs::build_app` (bin) via
+/// `mapleos_server::execution_handlers::*`.
+
 mod v3_handlers {
     use axum::extract::{Path, Query, State};
     use axum::http::StatusCode;

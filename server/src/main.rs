@@ -1,12 +1,11 @@
-mod cache;
-mod config;
-mod db;
-mod metrics;
-mod middleware;
-mod sandbox;
-mod skills;
-mod state;
-mod v3_auth;
+// All shared modules live in the lib crate (server/src/lib.rs) so that
+// bin and integration tests share the same AppState / handler types.
+// T0-4 in docs/MapleOS_Implementation_Plan_2026Q3.md tracks the
+// incremental cleanup; previously each module was `mod foo;` here which
+// produced a duplicate (structurally identical but distinct) copy in the
+// bin crate, preventing lib handlers from being mounted into the bin's
+// Router without adapter shims.
+use mapleos_server::{cache, config, db, metrics, middleware, sandbox, skills, state, v3_auth};
 
 use axum::Json;
 use axum::Router;
@@ -4707,6 +4706,7 @@ async fn main() -> anyhow::Result<()> {
         rate_limiter,
         cache: cache::AppCache::new(),
         metrics: metrics::AppMetrics::new(),
+        execution_recorder: maple_engine::ExecutionRecorder::new(pool.clone()),
     });
 
     // Initialize group cron service
@@ -4930,6 +4930,17 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v3/workflow-runs/:rid", get(v3_get_workflow_run_handler))
         .route("/api/v3/workflow-runs/:rid/status", put(v3_update_workflow_run_status_handler))
         .route("/api/v3/workflow-runs/:rid/checkpoints", get(v3_list_checkpoints_handler).post(v3_record_checkpoint_handler))
+        // Unified execution fact chain (Track 1 / T1-2)
+        // Handlers live in lib crate (server/src/execution_handlers.rs) so
+        // the same code is reused by integration tests in
+        // server/tests/v3_api_integration.rs via build_v3_test_router.
+        //
+        // NOTE: legacy `/api/executions/:id` (workflow_executions) still
+        // exists below for backward compat with the old workflow UI; the
+        // new unified chain lives under /api/v3/executions/*.
+        .route("/api/v3/executions/:id", get(mapleos_server::execution_handlers::get_execution_handler))
+        .route("/api/v3/executions/:id/events", get(mapleos_server::execution_handlers::list_events_handler))
+        .route("/api/v3/executions/:id/events/stream", get(mapleos_server::execution_handlers::sse_events_handler))
         .with_state(state.clone());
 
     let cors = if config.require_auth {

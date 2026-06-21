@@ -7,6 +7,7 @@ use maple_collab::group_message::GroupMessageManager;
 use maple_collab::group_rules::{GroupRulesEngine, GroupRulesService};
 use maple_collab::workspace::WorkspaceManager;
 use maple_engine::approval::ApprovalService;
+use maple_engine::execution_chain::ExecutionRecorder;
 use maple_engine::event_bus::EventBus;
 use maple_engine::executor::WorkflowExecutor;
 use maple_engine::memory_service::MemoryService;
@@ -112,6 +113,8 @@ pub struct AppState {
     pub rate_limiter: RateLimiter,
     pub cache: crate::cache::AppCache,
     pub metrics: crate::metrics::AppMetrics,
+    /// Unified execution fact chain recorder — see docs/execution-fact-chain-spec.md
+    pub execution_recorder: ExecutionRecorder,
 }
 
 impl AppState {

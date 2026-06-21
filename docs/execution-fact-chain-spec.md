@@ -116,17 +116,17 @@ impl ExecutionRecorder {
 
 /// 查询接口（供 API handler 使用）
 impl ExecutionRecorder {
-    /// GET /api/executions/:id/events
+    /// GET /api/v3/executions/:id/events
     pub async fn list_events(&self, execution_id: &str) -> Result<Vec<ExecutionEvent>>;
 
-    /// GET /api/executions/:id
+    /// GET /api/v3/executions/:id
     pub async fn get_execution(&self, execution_id: &str) -> Result<Execution>;
 }
 ```
 
 ## 6. API 契约
 
-### 6.1 GET /api/executions/:id
+### 6.1 GET /api/v3/executions/:id
 
 返回聚合视图：
 
@@ -147,7 +147,7 @@ impl ExecutionRecorder {
 }
 ```
 
-### 6.2 GET /api/executions/:id/events
+### 6.2 GET /api/v3/executions/:id/events
 
 返回事件列表（按 created_at ASC）：
 
@@ -184,7 +184,7 @@ impl ExecutionRecorder {
 }
 ```
 
-### 6.3 GET /api/executions/:id/events/stream (SSE)
+### 6.3 GET /api/v3/executions/:id/events/stream (SSE)
 
 服务端推送事件流，客户端用 EventSource 订阅：
 
@@ -252,7 +252,7 @@ recorder.append(&exec_id, "workflow", "resumed", json!({"reason":"approval_grant
 <ExecutionTimeline executionId="exec_abc123" />
 ```
 
-- 内部用 SSE 订阅 `GET /api/executions/:id/events/stream`
+- 内部用 SSE 订阅 `GET /api/v3/executions/:id/events/stream`
 - 渲染时间线：started → delta（折叠）→ tool_call + tool_result（成对）→ artifact → done
 - 不同 source 用不同颜色：chat 蓝 / workflow 紫 / agent 绿 / tool 黄 / approval 橙 / error 红
 
@@ -281,7 +281,7 @@ recorder.append(&exec_id, "workflow", "resumed", json!({"reason":"approval_grant
 ## 10. 验收标准（对应 #92）
 
 - [ ] 所有运行入口（chat send / workflow run / agent run / tool call / approval create）调 `recorder.start(...)` / `recorder.append(...)` / `recorder.done(...)`
-- [ ] `GET /api/executions/:id/events` 返回完整事件链
+- [ ] `GET /api/v3/executions/:id/events` 返回完整事件链
 - [ ] Chat/Workflow/Task/Agent 4 个 UI 面板都用 `<ExecutionTimeline />` 渲染，不再有模块私有 trace 组件
 - [ ] approval approve/reject / retry / cancel / resume 都 append 事件到同一 execution_id
 - [ ] E2E 测试：用一个 execution_id 拉事件，断言包含 started + tool_call + tool_result + done
@@ -297,7 +297,7 @@ recorder.append(&exec_id, "workflow", "resumed", json!({"reason":"approval_grant
 ## 12. 迁移路径（Track 1 实施步骤）
 
 1. **T1-1**：实现 `ExecutionRecorder` + 单元测试
-2. **T1-2**：实现 `GET /api/executions/:id/events` + `GET /api/executions/:id`
+2. **T1-2**：实现 `GET /api/v3/executions/:id/events` + `GET /api/v3/executions/:id`
 3. **T1-3**：Chat handler 接入 recorder，移除 chat-panel 私有 trace 状态
 4. **T1-4**：Workflow executor 接入 recorder，node_started/finished 走事件链
 5. **T1-5**：Agent react loop 接入 recorder，tool_call/tool_result 走事件链
@@ -312,6 +312,6 @@ recorder.append(&exec_id, "workflow", "resumed", json!({"reason":"approval_grant
 
 - ❌ handler 直接 `UPDATE executions SET status = 'success'` — 必须调 `recorder.done()`
 - ❌ 模块自己建 trace 表（如 `chat_traces`、`workflow_traces`）— 用统一事件链
-- ❌ 前端组件直接 fetch `/api/chat/:id/trace` — 用 `/api/executions/:id/events`
+- ❌ 前端组件直接 fetch `/api/chat/:id/trace` — 用 `/api/v3/executions/:id/events`
 - ❌ 事件 payload 里放二进制或大对象（> 64KB）— 用 artifact 引用
 - ❌ 跨 execution_id 引用事件 — 用 parent_execution_id 表达嵌套
