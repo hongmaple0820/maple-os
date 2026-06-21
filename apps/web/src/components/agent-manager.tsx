@@ -70,6 +70,11 @@ export function AgentManager() {
   const [collabSending, setCollabSending] = useState(false);
   const [memoryQuery, setMemoryQuery] = useState("");
   const [registerName, setRegisterName] = useState("");
+  // T3-5: per-agent model override. Empty string means "inherit global
+  // default_model from settings". When user selects a specific model
+  // here, that model is used for this agent; otherwise the global
+  // routing rule (auto) is applied.
+  const [registerModel, setRegisterModel] = useState<string>("");
   const [showRegister, setShowRegister] = useState(false);
   const [dispatchTask, setDispatchTask] = useState({ agentId: "", prompt: "" });
   const [showDispatch, setShowDispatch] = useState(false);
@@ -147,8 +152,13 @@ export function AgentManager() {
   const handleRegister = async () => {
     if (!registerName.trim()) return;
     try {
-      await rpcCall("agent.register", { name: registerName.trim() });
-      setShowRegister(false); setRegisterName("");
+      // T3-5: pass model only when user selected a specific one. Empty
+      // string means "inherit global default_model" — server-side
+      // routing rule (auto) applies.
+      const params: Record<string, unknown> = { name: registerName.trim() };
+      if (registerModel) params.model = registerModel;
+      await rpcCall("agent.register", params);
+      setShowRegister(false); setRegisterName(""); setRegisterModel("");
       setCollabMessages((prev) => [...prev, { role: "system", content: t("agent.messages.registered", { name: registerName }), timestamp: Date.now() }]);
       await loadAll();
     } catch (err) {
@@ -205,10 +215,24 @@ export function AgentManager() {
       </div>
 
       {showRegister && (
-        <div className="h-9 border-b bg-muted/50 flex items-center gap-2 px-4">
+        <div className="h-9 border-b bg-muted/50 flex items-center gap-2 px-4 flex-wrap">
           <Input value={registerName} onChange={(e) => setRegisterName(e.target.value)} placeholder={t("agent.agentName") + "..."} className="w-40 h-7 text-xs" />
+          {/* T3-5: model selector with "inherit global" option */}
+          <select
+            value={registerModel}
+            onChange={(e) => setRegisterModel(e.target.value)}
+            className="h-7 rounded border bg-background text-xs px-2"
+            title={t("agent.modelInheritHint", "Empty = inherit global default_model from settings")}
+          >
+            <option value="">{t("agent.modelInherit", "Inherit global model")}</option>
+            {models.filter((m) => m.registered !== false).map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name ?? m.id} ({m.provider}){m.is_local ? " · local" : ""}
+              </option>
+            ))}
+          </select>
           <Button size="sm" onClick={handleRegister} disabled={!registerName.trim()}>{t("agent.confirmRegister")}</Button>
-          <Button size="sm" variant="ghost" onClick={() => { setShowRegister(false); setRegisterName(""); }}>{t("common.cancel")}</Button>
+          <Button size="sm" variant="ghost" onClick={() => { setShowRegister(false); setRegisterName(""); setRegisterModel(""); }}>{t("common.cancel")}</Button>
         </div>
       )}
 
