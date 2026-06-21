@@ -8,7 +8,7 @@ pub mod vector_store;
 pub mod parser;
 pub mod learning_governance;
 
-pub use retriever::HybridRetriever;
+pub use retriever::{HybridRetriever, RetrievalResult, Reranker, NoopReranker, LlmReranker};
 pub use evolver::{Evolver, EvolutionConfig, DistillationResult, EvolutionStats, KnowledgeLink};
 pub use memory::MemoryStore;
 pub use bm25::BM25Searcher;
