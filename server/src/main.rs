@@ -5536,6 +5536,8 @@ async fn main() -> anyhow::Result<()> {
         // Triggers (#15, #16)
         .route("/api/v3/triggers", get(mapleos_server::trigger_handlers::v3_list_triggers).post(mapleos_server::trigger_handlers::v3_create_trigger))
         .route("/api/v3/triggers/:id", delete(mapleos_server::trigger_handlers::v3_delete_trigger))
+        // Audit logs (#18)
+        .route("/api/v3/audit-logs", get(mapleos_server::audit_handlers::v3_list_audit_logs))
         .with_state(state.clone());
 
     let cors = if config.require_auth {
@@ -5577,7 +5579,10 @@ async fn main() -> anyhow::Result<()> {
             state.clone(),
             middleware::auth_middleware,
         ))
-        .layer(axum::middleware::from_fn(middleware::audit_log_middleware))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::audit_log_middleware,
+        ))
         .layer(cors)
         .layer(TraceLayer::new_for_http());
 

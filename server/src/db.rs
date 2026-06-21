@@ -461,6 +461,8 @@ pub async fn run_migrations(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
     run_v3_migration_018(pool).await?;
     // --- 019: System agents (#24) ---
     run_v3_migration_019(pool).await?;
+    // --- 020: Audit logs (#18) ---
+    run_v3_migration_020(pool).await?;
 
     tracing::info!("Database migrations completed (including v3)");
     Ok(())
@@ -1574,5 +1576,27 @@ async fn run_v3_migration_019(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
         ).bind(id).bind(name).bind(desc).bind(tags).execute(pool).await;
     }
     tracing::info!("v3 migration 019 (system agents seeded) completed");
+    Ok(())
+}
+
+async fn run_v3_migration_020(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
+    // #18: Audit logs — persistent record of all API requests
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS audit_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            method TEXT NOT NULL,
+            path TEXT NOT NULL,
+            query TEXT,
+            status INTEGER NOT NULL,
+            duration_ms INTEGER NOT NULL,
+            user_agent TEXT,
+            client_ip TEXT,
+            actor TEXT,
+            created_at INTEGER NOT NULL
+        )"
+    ).execute(pool).await?;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at DESC)").execute(pool).await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_audit_path ON audit_logs(path, created_at DESC)").execute(pool).await;
+    tracing::info!("v3 migration 020 (audit_logs) completed");
     Ok(())
 }
