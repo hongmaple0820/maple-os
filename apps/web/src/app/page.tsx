@@ -11,6 +11,7 @@ import { CommandPalette } from "@/components/command-palette";
 import { SettingsPage } from "@/components/settings-page";
 import { PluginsPage } from "@/components/plugins-page";
 import CollaborationWorkspace from "@/components/collaboration/workspace-page";
+import { DashboardView, type SystemInfo, type TaskStats } from "@/components/dashboard-view";
 import { Badge, Button } from "@mapleos/ui";
 import { rpcCall, mapleApi, isAuthenticated, getAuthState, clearAuthState, setAuthState } from "@/lib/api";
 import { AuthPage } from "@/components/auth-page";
@@ -18,23 +19,6 @@ import { LanguageSwitcher } from "@/components/language-switcher";
 import { ModeSelection } from "@/components/mode-selection";
 
 type NavId = "dashboard" | "chat" | "workflows" | "agents" | "knowledge" | "collaboration" | "scale" | "plugins" | "settings";
-
-interface SystemInfo {
-  version: string;
-  uptime_secs: number;
-  agents_count: number;
-  workflows_count: number;
-  tasks_count: number;
-}
-
-interface TaskStats {
-  total: number;
-  pending: number;
-  running: number;
-  completed: number;
-  failed: number;
-  dead_letter: number;
-}
 
 const iconPaths: Record<string, string> = {
   "layout-dashboard": "M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z",
@@ -275,128 +259,3 @@ export default function Home() {
   );
 }
 
-function DashboardView({ sysInfo, taskStats, serverOnline, onNavigate }: { sysInfo: SystemInfo | null; taskStats: TaskStats | null; serverOnline: boolean; onNavigate?: (id: string) => void }) {
-  const { t } = useTranslation();
-  const uptimeMin = sysInfo ? Math.floor(sysInfo.uptime_secs / 60) : 0;
-  const uptimeHour = Math.floor(uptimeMin / 60);
-  const uptimeDisplay = uptimeHour > 0 ? `${uptimeHour}h ${uptimeMin % 60}m` : `${uptimeMin}m`;
-
-  return (
-    <div className="flex-1 overflow-y-auto p-6 space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-h2">{t("dashboard.title")}</h2>
-        <div className="flex items-center gap-2">
-          <Badge variant={serverOnline ? "default" : "destructive"} className="text-xs">{serverOnline ? t("dashboard.systemNormal") : t("dashboard.serviceOffline")}</Badge>
-          {sysInfo && <Badge variant="outline" className="text-[10px] font-mono">{t("dashboard.uptime", { time: uptimeDisplay })}</Badge>}
-        </div>
-      </div>
-
-      <div className="grid grid-cols-4 gap-3">
-        <MetricCard label={t("dashboard.metrics.agents")} value={sysInfo?.agents_count ?? 0} color="primary" icon="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 14a4 4 0 1 1 4-4 4 4 0 0 1-4 4z" />
-        <MetricCard label={t("dashboard.metrics.workflows")} value={sysInfo?.workflows_count ?? 0} color="secondary" icon="M6 3v12M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6M18 9c0 3-4 6-8 6" />
-        <MetricCard label={t("dashboard.metrics.totalTasks")} value={taskStats?.total ?? 0} color="foreground" icon="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2M9 5a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2M9 5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2m-6 9 2 2 4-4" />
-        <MetricCard label={t("dashboard.metrics.running")} value={taskStats?.running ?? 0} color="warning" icon="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
-      </div>
-
-      {taskStats && (
-        <div className="bg-card border rounded-lg p-4 shadow-card">
-          <h3 className="text-h3 mb-3">{t("dashboard.taskQueue")}</h3>
-          <div className="grid grid-cols-6 gap-3 text-center">
-            <StatusCell label={t("dashboard.status.pending")} value={taskStats.pending} color="text-warning" />
-            <StatusCell label={t("dashboard.status.running")} value={taskStats.running} color="text-primary" />
-            <StatusCell label={t("dashboard.status.completed")} value={taskStats.completed} color="text-success" />
-            <StatusCell label={t("dashboard.status.failed")} value={taskStats.failed} color="text-destructive" />
-            <StatusCell label={t("dashboard.status.deadLetter")} value={taskStats.dead_letter} color="text-muted-foreground" />
-            <StatusCell label={t("dashboard.status.total")} value={taskStats.total} />
-          </div>
-          {taskStats.total > 0 && (
-            <div className="mt-3 flex gap-1 h-3 rounded-full overflow-hidden bg-muted">
-              {taskStats.completed > 0 && <div className="bg-success rounded-full" style={{ width: `${(taskStats.completed / taskStats.total) * 100}%` }} />}
-              {taskStats.running > 0 && <div className="bg-primary rounded-full" style={{ width: `${(taskStats.running / taskStats.total) * 100}%` }} />}
-              {taskStats.pending > 0 && <div className="bg-warning rounded-full" style={{ width: `${(taskStats.pending / taskStats.total) * 100}%` }} />}
-              {taskStats.failed > 0 && <div className="bg-destructive rounded-full" style={{ width: `${(taskStats.failed / taskStats.total) * 100}%` }} />}
-            </div>
-          )}
-        </div>
-      )}
-
-      <div className="bg-card border rounded-lg p-4 shadow-card">
-        <h3 className="text-h3 mb-3">{t("dashboard.quickActions")}</h3>
-        <div className="grid grid-cols-4 gap-2">
-          <QuickAction icon="M6 3v12M18 9a3 3 0 1 0 0-6" label={t("dashboard.actions.newWorkflow")} navId="workflows" onClick={onNavigate} />
-          <QuickAction icon="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" label={t("dashboard.actions.searchKnowledge")} navId="knowledge" onClick={onNavigate} />
-          <QuickAction icon="M12 2a10 10 0 1 0 10 10" label={t("dashboard.actions.registerAgent")} navId="agents" onClick={onNavigate} />
-          <QuickAction icon="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" label={t("dashboard.actions.startChat")} navId="chat" onClick={onNavigate} />
-        </div>
-      </div>
-
-      {sysInfo && (
-        <div className="bg-card border rounded-lg p-4 shadow-card">
-          <h3 className="text-h3 mb-2">{t("dashboard.systemInfo")}</h3>
-          <div className="grid grid-cols-2 gap-3 text-[13px]">
-            <div className="rounded-md bg-muted/50 p-3">
-              <div className="text-[11px] text-muted-foreground mb-0.5">{t("dashboard.info.version")}</div>
-              <div className="font-mono font-medium">{sysInfo.version}</div>
-            </div>
-            <div className="rounded-md bg-muted/50 p-3">
-              <div className="text-[11px] text-muted-foreground mb-0.5">{t("dashboard.info.uptime")}</div>
-              <div className="font-mono font-medium">{uptimeDisplay}</div>
-            </div>
-            <div className="rounded-md bg-muted/50 p-3">
-              <div className="text-[11px] text-muted-foreground mb-0.5">{t("dashboard.info.agentCount")}</div>
-              <div className="font-mono font-medium">{sysInfo.agents_count}</div>
-            </div>
-            <div className="rounded-md bg-muted/50 p-3">
-              <div className="text-[11px] text-muted-foreground mb-0.5">{t("dashboard.info.workflowCount")}</div>
-              <div className="font-mono font-medium">{sysInfo.workflows_count}</div>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function QuickAction({ icon, label, navId, onClick }: { icon: string; label: string; navId: string; onClick?: (id: string) => void }) {
-  return (
-    <button
-      onClick={() => onClick?.(navId)}
-      className="flex items-center gap-2 rounded-md border p-3 hover:bg-accent hover:shadow-card transition-all text-left"
-    >
-      <svg className="w-4 h-4 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d={icon} /></svg>
-      <span className="text-[13px]">{label}</span>
-    </button>
-  );
-}
-
-const colorClassMap: Record<string, string> = {
-  primary: "text-primary",
-  secondary: "text-secondary",
-  foreground: "text-foreground",
-  warning: "text-warning",
-  success: "text-success",
-  destructive: "text-destructive",
-  muted: "text-muted-foreground",
-};
-
-function MetricCard({ label, value, color, icon }: { label: string; value: number; color: string; icon: string }) {
-  const cls = colorClassMap[color] ?? "text-foreground";
-  return (
-    <div className="bg-card border rounded-md p-3 shadow-card">
-      <div className="flex items-center gap-1.5 mb-1">
-        <svg className={`w-3.5 h-3.5 ${cls}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d={icon} /></svg>
-        <div className="text-[11px] text-muted-foreground">{label}</div>
-      </div>
-      <div className={`text-metric ${cls}`}>{value}</div>
-    </div>
-  );
-}
-
-function StatusCell({ label, value, color }: { label: string; value: number; color?: string }) {
-  return (
-    <div className="rounded-md bg-muted/50 p-2 text-center">
-      <div className="text-[11px] text-muted-foreground">{label}</div>
-      <div className={`text-[18px] font-semibold ${color ?? ""}`}>{value}</div>
-    </div>
-  );
-}
