@@ -481,7 +481,8 @@ export async function createWorkflowRun(data: {
   input: string;
   group_id?: string;
   agent_id?: string;
-}): Promise<{ run: WorkflowRun }> {
+}): Promise<{ run: WorkflowRun; execution_id?: string }> {
+  // T1-4: backend returns execution_id alongside run for unified trace
   return fetchApi(`${V3}/workflow-runs`, { method: 'POST', body: data });
 }
 

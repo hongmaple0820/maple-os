@@ -13,6 +13,13 @@ export interface ChatMessage {
   timestamp: number;
   toolCalls?: ToolCall[];
   knowledgeRefs?: KnowledgeRef[];
+  /**
+   * Execution fact chain id (Track 1 / T1-3). When present, the chat panel
+   * shows a "View trace" toggle that renders <ExecutionTimeline /> for the
+   * full unified execution including tool_calls, tool_results, approval
+   * events, etc.
+   */
+  executionId?: string;
 }
 
 export interface ToolCall {
