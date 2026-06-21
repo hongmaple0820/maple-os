@@ -25,7 +25,7 @@ pub use provider_profile::{
 };
 pub use request::{LlmRequest, Priority, PrivacyLevel, TaskType, ToolDefinition};
 pub use response::{LlmResponse, ParsedToolCall};
-pub use router::LlmRouter;
+pub use router::{LlmRouter, ModelDescriptor};
 pub use token_counter::{
     SimpleTokenCounter, TiktokenCounter, TokenCounter, count_message_tokens, count_tokens,
 };

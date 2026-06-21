@@ -277,6 +277,125 @@ trigger:
             assert_eq!(exec.status, status);
         }
     }
+
+    // ── T2-1: Workflow::validate ──
+
+    fn make_valid_workflow() -> Workflow {
+        // n1 (Llm, entry) <- n2 (Tool) <- n3 (Delay, exit)
+        // n2 depends_on n1; n3 depends_on n2
+        Workflow {
+            id: "wf-test".to_string(),
+            name: "Test".to_string(),
+            description: None,
+            version: 1,
+            trigger: TriggerConfig::Manual,
+            variables: HashMap::new(),
+            nodes: vec![
+                WorkflowNode {
+                    id: "n1".to_string(),
+                    name: "llm".to_string(),
+                    node_type: NodeType::Llm {
+                        model_route: "auto".to_string(),
+                        prompt_ref: "default".to_string(),
+                        temperature: None,
+                    },
+                    depends_on: vec![],
+                    condition: None,
+                    retry: RetryConfig::default(),
+                    timeout_secs: None,
+                },
+                WorkflowNode {
+                    id: "n2".to_string(),
+                    name: "tool".to_string(),
+                    node_type: NodeType::Tool {
+                        skill_id: "web_search".to_string(),
+                        config: json!({}),
+                    },
+                    depends_on: vec!["n1".to_string()],
+                    condition: None,
+                    retry: RetryConfig::default(),
+                    timeout_secs: None,
+                },
+                WorkflowNode {
+                    id: "n3".to_string(),
+                    name: "exit".to_string(),
+                    node_type: NodeType::Delay { duration_secs: 1 },
+                    depends_on: vec!["n2".to_string()],
+                    condition: None,
+                    retry: RetryConfig::default(),
+                    timeout_secs: None,
+                },
+            ],
+            hooks: HookConfig::default(),
+        }
+    }
+
+    #[test]
+    fn test_validate_valid_workflow() {
+        let wf = make_valid_workflow();
+        assert!(wf.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_empty_nodes() {
+        let mut wf = make_valid_workflow();
+        wf.nodes.clear();
+        let errs = wf.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("no nodes")));
+    }
+
+    #[test]
+    fn test_validate_duplicate_node_ids() {
+        let mut wf = make_valid_workflow();
+        wf.nodes[2].id = "n1".to_string(); // duplicate
+        let errs = wf.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("duplicate node id")));
+    }
+
+    #[test]
+    fn test_validate_depends_on_nonexistent_node() {
+        let mut wf = make_valid_workflow();
+        wf.nodes[1].depends_on = vec!["nonexistent".to_string()];
+        let errs = wf.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("non-existent node")));
+    }
+
+    #[test]
+    fn test_validate_self_loop() {
+        let mut wf = make_valid_workflow();
+        wf.nodes[1].depends_on = vec!["n2".to_string()]; // depends on self
+        let errs = wf.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("depends on itself")));
+    }
+
+    #[test]
+    fn test_validate_cycle_detected() {
+        let mut wf = make_valid_workflow();
+        // n1 depends on n3 creates cycle n1 <- n2 <- n3 <- n1
+        wf.nodes[0].depends_on = vec!["n3".to_string()];
+        let errs = wf.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("cycle detected")));
+    }
+
+    #[test]
+    fn test_validate_llm_missing_model_route() {
+        let mut wf = make_valid_workflow();
+        if let NodeType::Llm { model_route, .. } = &mut wf.nodes[0].node_type {
+            model_route.clear();
+        }
+        let errs = wf.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("missing model_route")));
+    }
+
+    #[test]
+    fn test_validate_tool_missing_skill_id() {
+        let mut wf = make_valid_workflow();
+        if let NodeType::Tool { skill_id, .. } = &mut wf.nodes[1].node_type {
+            skill_id.clear();
+        }
+        let errs = wf.validate().unwrap_err();
+        assert!(errs.iter().any(|e| e.contains("missing skill_id")));
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -347,6 +466,166 @@ impl Workflow {
             return Ok(wf);
         }
         Err("Failed to parse as JSON or YAML".to_string())
+    }
+
+    /// Validate the workflow definition (Track 2 / T2-1).
+    ///
+    /// Checks:
+    /// 1. At least one node exists
+    /// 2. All node ids are unique
+    /// 3. All depends_on reference existing node ids
+    /// 4. No self-loops (node depends on itself)
+    /// 5. No cycles (DAG check via DFS on depends_on)
+    /// 6. Required fields per node type are present (model_route for LLM,
+    ///    skill_id for Tool, expression for Condition, etc.)
+    /// 7. Entry nodes (no depends_on) exist
+    /// 8. Exit nodes (nothing depends on them) exist
+    ///
+    /// Returns Ok(()) if valid, Err(Vec<String>) with all violations.
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let mut errors: Vec<String> = Vec::new();
+
+        // 1. At least one node
+        if self.nodes.is_empty() {
+            errors.push("workflow has no nodes".to_string());
+            return Err(errors);
+        }
+
+        // 2. Unique node ids
+        let mut seen_ids = std::collections::HashSet::new();
+        for node in &self.nodes {
+            if !seen_ids.insert(&node.id) {
+                errors.push(format!("duplicate node id: {}", node.id));
+            }
+        }
+
+        let node_id_set: std::collections::HashSet<&str> =
+            self.nodes.iter().map(|n| n.id.as_str()).collect();
+
+        // 3. depends_on references + 4. No self-loops
+        for node in &self.nodes {
+            for dep in &node.depends_on {
+                if dep == &node.id {
+                    errors.push(format!("node '{}' depends on itself", node.id));
+                }
+                if !node_id_set.contains(dep.as_str()) {
+                    errors.push(format!(
+                        "node '{}' depends on non-existent node '{}'",
+                        node.id, dep
+                    ));
+                }
+            }
+        }
+
+        // 5. Cycle detection via DFS on depends_on
+        // Build reverse adjacency: for each node, its "parents" are its depends_on
+        // Cycle = a node reachable from itself by following depends_on.
+        let mut color: HashMap<&str, u8> = HashMap::new(); // 0=white, 1=gray, 2=black
+        for node in &self.nodes {
+            color.insert(node.id.as_str(), 0);
+        }
+        for node in &self.nodes {
+            if color[node.id.as_str()] == 0 {
+                if let Some(cycle) = Self::detect_cycle_dfs(&self.nodes, node.id.as_str(), &mut color) {
+                    errors.push(format!("cycle detected: {}", cycle));
+                    break;
+                }
+            }
+        }
+
+        // 6. Required fields per node type
+        for node in &self.nodes {
+            match &node.node_type {
+                NodeType::Llm { model_route, prompt_ref, .. } => {
+                    if model_route.is_empty() {
+                        errors.push(format!("node '{}' (Llm) missing model_route", node.id));
+                    }
+                    if prompt_ref.is_empty() {
+                        errors.push(format!("node '{}' (Llm) missing prompt_ref", node.id));
+                    }
+                }
+                NodeType::Tool { skill_id, .. } => {
+                    if skill_id.is_empty() {
+                        errors.push(format!("node '{}' (Tool) missing skill_id", node.id));
+                    }
+                }
+                NodeType::Condition { expression, branches } => {
+                    if expression.is_empty() {
+                        errors.push(format!("node '{}' (Condition) missing expression", node.id));
+                    }
+                    if branches.is_empty() {
+                        errors.push(format!("node '{}' (Condition) has no branches", node.id));
+                    }
+                }
+                NodeType::HumanApproval { timeout_secs, .. } => {
+                    if *timeout_secs == 0 {
+                        errors.push(format!("node '{}' (HumanApproval) timeout_secs must be > 0", node.id));
+                    }
+                }
+                NodeType::SubWorkflow { workflow_id, .. } => {
+                    if workflow_id.is_empty() {
+                        errors.push(format!("node '{}' (SubWorkflow) missing workflow_id", node.id));
+                    }
+                }
+                NodeType::Agent { agent_id, goal, .. } => {
+                    if agent_id.is_empty() {
+                        errors.push(format!("node '{}' (Agent) missing agent_id", node.id));
+                    }
+                    if goal.is_empty() {
+                        errors.push(format!("node '{}' (Agent) missing goal", node.id));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // 7. Entry nodes (no depends_on)
+        let entry_count = self.nodes.iter().filter(|n| n.depends_on.is_empty()).count();
+        if entry_count == 0 {
+            errors.push("no entry nodes (all nodes have depends_on — cycle?)".to_string());
+        }
+
+        // 8. Exit nodes (nothing depends on them)
+        let has_dependents: std::collections::HashSet<&str> = self
+            .nodes
+            .iter()
+            .flat_map(|n| n.depends_on.iter().map(|d| d.as_str()))
+            .collect();
+        let exit_count = self.nodes.iter().filter(|n| !has_dependents.contains(n.id.as_str())).count();
+        if exit_count == 0 {
+            errors.push("no exit nodes (all nodes are depended on — may run forever)".to_string());
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+
+    fn detect_cycle_dfs<'a>(
+        nodes: &'a [WorkflowNode],
+        node_id: &'a str,
+        color: &mut HashMap<&'a str, u8>,
+    ) -> Option<String> {
+        color.insert(node_id, 1); // gray
+        let node = nodes.iter().find(|n| n.id == node_id)?;
+        for dep in &node.depends_on {
+            match color.get(dep.as_str()).copied().unwrap_or(0) {
+                1 => {
+                    // gray → back edge → cycle
+                    return Some(format!("{} -> {}", node_id, dep));
+                }
+                0 => {
+                    if let Some(cycle) = Self::detect_cycle_dfs(nodes, dep, color) {
+                        return Some(format!("{} -> {}", node_id, cycle));
+                    }
+                }
+                _ => {} // black → already done
+            }
+        }
+        color.insert(node_id, 2); // black
+        None
     }
 }
 

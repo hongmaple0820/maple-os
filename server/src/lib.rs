@@ -1,8 +1,14 @@
 pub mod cache;
 pub mod config;
 pub mod db;
+pub mod execution_handlers;
+pub mod learning_handlers;
 pub mod metrics;
+pub mod middleware;
+pub mod sandbox;
+pub mod skills;
 pub mod state;
+pub mod v3_auth;
 
 use axum::Router;
 use axum::routing::{delete, get, post, put};
@@ -117,7 +123,9 @@ pub async fn build_test_app_state(pool: sqlx::SqlitePool) -> Arc<AppState> {
         group_manager,
         group_message_manager: Arc::new(GroupMessageManager::new(pool.clone())),
         task_service: Arc::new(TaskService::new(pool.clone())),
-        approval_service: Arc::new(ApprovalService::new(pool.clone())),
+        approval_service: Arc::new(ApprovalService::new(pool.clone()).with_recorder(
+            maple_engine::ExecutionRecorder::new(pool.clone()),
+        )),
         memory_service: Arc::new(MemoryService::new(pool.clone())),
         dm_service: Arc::new(DmService::new(pool.clone(), GroupManager::new(pool.clone()))),
         group_cron_service,
@@ -127,6 +135,8 @@ pub async fn build_test_app_state(pool: sqlx::SqlitePool) -> Arc<AppState> {
         rate_limiter: state::RateLimiter::new(1000, 60),
         cache: cache::AppCache::new(),
         metrics: metrics::AppMetrics::new(),
+        execution_recorder: maple_engine::ExecutionRecorder::new(pool.clone()),
+        learning_governance: Arc::new(maple_kb::LearningGovernanceService::new(pool.clone())),
     })
 }
 
@@ -188,15 +198,38 @@ pub fn build_v3_test_router(state: Arc<AppState>) -> Router {
         // Workflow definitions
         .route("/api/v3/workflows", get(v3_list_workflows).post(v3_create_workflow))
         .route("/api/v3/workflows/:wid", get(v3_get_workflow).put(v3_update_workflow).delete(v3_delete_workflow))
+        // T2-1: workflow validate endpoint
+        .route("/api/v3/workflows/:wid/validate", post(v3_validate_workflow))
         // Workflow runs
         .route("/api/v3/workflow-runs", get(v3_list_workflow_runs).post(v3_create_workflow_run))
         .route("/api/v3/workflow-runs/:rid", get(v3_get_workflow_run))
         .route("/api/v3/workflow-runs/:rid/status", put(v3_update_workflow_run_status))
         .route("/api/v3/workflow-runs/:rid/checkpoints", get(v3_list_checkpoints).post(v3_record_checkpoint))
+        // Unified execution fact chain (Track 1 / T1-2)
+        // NOTE: legacy /api/executions/:id (workflow_executions) is mounted
+        // in main.rs; the new unified chain lives under /api/v3/executions/*.
+        .route("/api/v3/executions/:id", get(execution_handlers::get_execution_handler))
+        .route("/api/v3/executions/:id/events", get(execution_handlers::list_events_handler))
+        .route("/api/v3/executions/:id/tool-invocations", get(execution_handlers::list_tool_invocations_handler))
+        .route("/api/v3/executions/:id/events/stream", get(execution_handlers::sse_events_handler))
+        // Learning governance (Track 3 / T3-6..T3-11)
+        .route("/api/v3/learning/candidates", get(learning_handlers::list_candidates_handler))
+        .route("/api/v3/learning/candidates/pending", get(learning_handlers::list_pending_handler))
+        .route("/api/v3/learning/candidates/:id", get(learning_handlers::get_candidate_handler))
+        .route("/api/v3/learning/candidates/:id/approve", post(learning_handlers::approve_handler))
+        .route("/api/v3/learning/candidates/:id/reject", post(learning_handlers::reject_handler))
+        .route("/api/v3/learning/candidates/:id/revoke", post(learning_handlers::revoke_handler))
+        .route("/api/v3/learning/blocked", get(learning_handlers::is_blocked_handler))
         .with_state(state)
 }
 
 /// Thin v3 handler wrappers used by `build_v3_test_router`.
+/// Unified execution fact chain handlers live in `crate::execution_handlers`
+/// (declared at the top of this file). See `docs/execution-fact-chain-spec.md`
+/// §6 for the API contract. Routes are mounted in `build_v3_test_router`
+/// (lib) and in `main.rs::build_app` (bin) via
+/// `mapleos_server::execution_handlers::*`.
+
 mod v3_handlers {
     use axum::extract::{Path, Query, State};
     use axum::http::StatusCode;
@@ -1235,6 +1268,51 @@ mod v3_handlers {
         match state.workflow_service.delete_definition(&wid).await {
             Ok(deleted) => Json(serde_json::json!({ "deleted": deleted })),
             Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
+        }
+    }
+
+    /// T2-1: Validate a workflow definition.
+    /// POST /api/v3/workflows/:wid/validate
+    /// Returns { valid: bool, errors: [...] } with all validation violations.
+    pub async fn v3_validate_workflow(
+        State(state): State<Arc<AppState>>,
+        Path(wid): Path<String>,
+    ) -> Json<serde_json::Value> {
+        match state.workflow_service.get_definition(&wid).await {
+            Ok(Some(def)) => {
+                match maple_engine::Workflow::parse_definition(&def.yaml_content) {
+                    Ok(wf) => match wf.validate() {
+                        Ok(()) => Json(serde_json::json!({
+                            "valid": true,
+                            "errors": [],
+                            "workflow_id": wid,
+                            "version": def.version,
+                        })),
+                        Err(errors) => Json(serde_json::json!({
+                            "valid": false,
+                            "errors": errors,
+                            "workflow_id": wid,
+                            "version": def.version,
+                        })),
+                    },
+                    Err(e) => Json(serde_json::json!({
+                        "valid": false,
+                        "errors": [format!("parse error: {e}")],
+                        "workflow_id": wid,
+                        "version": def.version,
+                    })),
+                }
+            }
+            Ok(None) => Json(serde_json::json!({
+                "valid": false,
+                "errors": ["workflow not found"],
+                "workflow_id": wid,
+            })),
+            Err(e) => Json(serde_json::json!({
+                "valid": false,
+                "errors": [format!("fetch error: {e}")],
+                "workflow_id": wid,
+            })),
         }
     }
 
