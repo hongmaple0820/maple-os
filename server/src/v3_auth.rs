@@ -99,6 +99,13 @@ mod tests {
     use super::*;
     use maple_gateway::auth::AuthService;
 
+    /// Build a `Parts` for testing — `axum::http::request::Parts` does not
+    /// implement `Default` in axum 0.7, so we construct a minimal Request
+    /// and split it.
+    fn make_test_parts() -> Parts {
+        axum::http::Request::<()>::new(()).into_parts().0
+    }
+
     #[test]
     fn test_extract_user_from_user_token() {
         let auth = AuthService::new("test-secret".to_string());
@@ -121,9 +128,9 @@ mod tests {
 
     #[test]
     fn test_extract_token_from_bearer_header() {
-        let mut parts = Parts::default();
+        let mut parts = make_test_parts();
         parts.headers.insert(
-            "Authorization".parse().unwrap(),
+            axum::http::HeaderName::from_static("authorization"),
             "Bearer mytoken123".parse().unwrap(),
         );
         assert_eq!(extract_token(&parts), Some("mytoken123".to_string()));
@@ -131,14 +138,14 @@ mod tests {
 
     #[test]
     fn test_extract_token_from_query() {
-        let mut parts = Parts::default();
+        let mut parts = make_test_parts();
         parts.uri = "/ws/groups?token=abc123".parse().unwrap();
         assert_eq!(extract_token(&parts), Some("abc123".to_string()));
     }
 
     #[test]
     fn test_extract_token_none() {
-        let parts = Parts::default();
+        let parts = make_test_parts();
         assert_eq!(extract_token(&parts), None);
     }
 }
