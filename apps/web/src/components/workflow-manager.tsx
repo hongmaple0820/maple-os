@@ -19,8 +19,9 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Card, CardContent, Badge, Button, Input, Spinner } from "@mapleos/ui";
-import { rpcCall, mapleApi } from "@/lib/api";
+import { rpcCall, mapleApi, getAuthState } from "@/lib/api";
 import { useTranslation } from "react-i18next";
+import { ExecutionTimeline } from "./execution-timeline";
 
 /* ─── types ─── */
 
@@ -180,6 +181,11 @@ export function WorkflowManager() {
   const [execHistory, setExecHistory] = useState<{ id: string; status: string; started_at: number; completed_at: number | null }[]>([]);
   const [selectedWfName, setSelectedWfName] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  // T2-6: validation errors surfaced from backend validate API
+  const [validationErrors, setValidationErrors] = useState<string[]>([]);
+  // T2-8: execution_id from the last run, for trace view
+  const [lastRunExecId, setLastRunExecId] = useState<string | null>(null);
+  const [showTrace, setShowTrace] = useState(false);
   const [schedulerJobs, setSchedulerJobs] = useState<{ id: string; workflow_id: string; cron_expr: string; enabled: boolean; next_run_at: number; last_run_at: number | null }[]>([]);
   const [newJobCron, setNewJobCron] = useState("");
   const [showNewJob, setShowNewJob] = useState(false);
@@ -254,6 +260,7 @@ export function WorkflowManager() {
   const saveWorkflow = useCallback(async () => {
     if (!selectedWf) return;
     setSaving(true);
+    setValidationErrors([]);
     try {
       const yamlNodes = nodes.map((n) => ({
         id: n.id,
@@ -279,7 +286,31 @@ export function WorkflowManager() {
         method: "PUT",
         body: { yaml_content: definition },
       });
-      setConsoleLogs((prev) => [...prev, t("workflow.log.saved", { name: selectedWfName ?? selectedWf })]);
+
+      // T2-6: validate after save — surface errors to UI
+      try {
+        const { token } = getAuthState();
+        const validateResp = await fetch(`/api/maple/api/v3/workflows/${selectedWf}/validate`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+        });
+        if (validateResp.ok) {
+          const validateBody = await validateResp.json();
+          if (validateBody.valid) {
+            setConsoleLogs((prev) => [...prev, t("workflow.log.saved", { name: selectedWfName ?? selectedWf }) + " ✓ validate"]);
+          } else {
+            setValidationErrors(validateBody.errors ?? []);
+            setConsoleLogs((prev) => [...prev, `⚠ validate failed: ${(validateBody.errors ?? []).join("; ")}`]);
+          }
+        }
+      } catch (validateErr) {
+        // validate is best-effort; save succeeded
+        setConsoleLogs((prev) => [...prev, t("workflow.log.saved", { name: selectedWfName ?? selectedWf })]);
+      }
+
       await loadWorkflows();
     } catch (err) {
       setConsoleLogs((prev) => [...prev, t("workflow.log.saveError", { error: (err as Error).message })]);
@@ -403,6 +434,32 @@ export function WorkflowManager() {
         setConsoleLogs((prev) => [...prev, t("workflow.log.execFailed", { error: result.error })]);
       } else {
         setConsoleLogs((prev) => [...prev, t("workflow.log.execSubmit", { id: result.exec_id, status: result.status })]);
+      }
+
+      // T2-8: also call v3 create-run to get execution_id for unified trace
+      try {
+        const { token } = getAuthState();
+        const runResp = await fetch(`/api/maple/api/v3/workflow-runs`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({
+            workflow_id: workflowId,
+            workflow_version: 1,
+            input: "{}",
+          }),
+        });
+        if (runResp.ok) {
+          const runBody = await runResp.json();
+          if (runBody.execution_id) {
+            setLastRunExecId(runBody.execution_id);
+            setConsoleLogs((prev) => [...prev, `📋 execution_id: ${runBody.execution_id}`]);
+          }
+        }
+      } catch {
+        // v3 run is best-effort; legacy RPC already handled
       }
     } catch (err) {
       setConsoleLogs((prev) => [...prev, t("workflow.log.execError", { error: (err as Error).message })]);
@@ -631,9 +688,29 @@ export function WorkflowManager() {
               <Button size="sm" className="w-full" onClick={() => handleExecute(selectedWf)} disabled={executing === selectedWf}>
                 {executing === selectedWf ? t("workflow.executing") : t("workflow.runWorkflow")}
               </Button>
+              {/* T2-8: trace toggle — show ExecutionTimeline for the last run */}
+              {lastRunExecId && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="w-full"
+                  onClick={() => setShowTrace((s) => !s)}
+                >
+                  {showTrace ? t("workflow.trace.hide", "Hide trace") : t("workflow.trace.view", "View trace")}
+                </Button>
+              )}
               <Button size="sm" variant="outline" className="w-full" onClick={() => loadExecHistory(selectedWf)}>
                 {t("workflow.execHistory")}
               </Button>
+              {/* T2-6: validation errors panel */}
+              {validationErrors.length > 0 && (
+                <div className="text-[10px] text-red-600 bg-red-50 border border-red-200 rounded p-2 space-y-1">
+                  <div className="font-medium">⚠ {t("workflow.validation.failed", "Validation failed")}:</div>
+                  {validationErrors.map((err, i) => (
+                    <div key={i}>• {err}</div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -670,6 +747,12 @@ export function WorkflowManager() {
             />
             <Background gap={20} size={1} className="text-muted-foreground/20" />
           </ReactFlow>
+          {/* T2-8: trace panel below canvas when toggled */}
+          {showTrace && lastRunExecId && (
+            <div className="absolute bottom-0 left-0 right-0 max-h-[300px] overflow-y-auto bg-card border-t shadow-lg z-10">
+              <ExecutionTimeline executionId={lastRunExecId} compact />
+            </div>
+          )}
         </div>
 
         {/* ── right sidebar ── */}
