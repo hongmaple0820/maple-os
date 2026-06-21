@@ -198,6 +198,8 @@ pub fn build_v3_test_router(state: Arc<AppState>) -> Router {
         // Workflow definitions
         .route("/api/v3/workflows", get(v3_list_workflows).post(v3_create_workflow))
         .route("/api/v3/workflows/:wid", get(v3_get_workflow).put(v3_update_workflow).delete(v3_delete_workflow))
+        // T2-1: workflow validate endpoint
+        .route("/api/v3/workflows/:wid/validate", post(v3_validate_workflow))
         // Workflow runs
         .route("/api/v3/workflow-runs", get(v3_list_workflow_runs).post(v3_create_workflow_run))
         .route("/api/v3/workflow-runs/:rid", get(v3_get_workflow_run))
@@ -1266,6 +1268,51 @@ mod v3_handlers {
         match state.workflow_service.delete_definition(&wid).await {
             Ok(deleted) => Json(serde_json::json!({ "deleted": deleted })),
             Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
+        }
+    }
+
+    /// T2-1: Validate a workflow definition.
+    /// POST /api/v3/workflows/:wid/validate
+    /// Returns { valid: bool, errors: [...] } with all validation violations.
+    pub async fn v3_validate_workflow(
+        State(state): State<Arc<AppState>>,
+        Path(wid): Path<String>,
+    ) -> Json<serde_json::Value> {
+        match state.workflow_service.get_definition(&wid).await {
+            Ok(Some(def)) => {
+                match maple_engine::Workflow::parse_definition(&def.yaml_content) {
+                    Ok(wf) => match wf.validate() {
+                        Ok(()) => Json(serde_json::json!({
+                            "valid": true,
+                            "errors": [],
+                            "workflow_id": wid,
+                            "version": def.version,
+                        })),
+                        Err(errors) => Json(serde_json::json!({
+                            "valid": false,
+                            "errors": errors,
+                            "workflow_id": wid,
+                            "version": def.version,
+                        })),
+                    },
+                    Err(e) => Json(serde_json::json!({
+                        "valid": false,
+                        "errors": [format!("parse error: {e}")],
+                        "workflow_id": wid,
+                        "version": def.version,
+                    })),
+                }
+            }
+            Ok(None) => Json(serde_json::json!({
+                "valid": false,
+                "errors": ["workflow not found"],
+                "workflow_id": wid,
+            })),
+            Err(e) => Json(serde_json::json!({
+                "valid": false,
+                "errors": [format!("fetch error: {e}")],
+                "workflow_id": wid,
+            })),
         }
     }
 

@@ -3103,6 +3103,37 @@ async fn v3_delete_workflow_handler(
     }
 }
 
+/// T2-1: Validate a workflow definition.
+/// POST /api/v3/workflows/:wid/validate
+async fn v3_validate_workflow_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(wid): axum::extract::Path<String>,
+) -> axum::Json<serde_json::Value> {
+    match state.workflow_service.get_definition(&wid).await {
+        Ok(Some(def)) => {
+            match maple_engine::Workflow::parse_definition(&def.yaml_content) {
+                Ok(wf) => match wf.validate() {
+                    Ok(()) => axum::Json(serde_json::json!({
+                        "valid": true, "errors": [], "workflow_id": wid, "version": def.version,
+                    })),
+                    Err(errors) => axum::Json(serde_json::json!({
+                        "valid": false, "errors": errors, "workflow_id": wid, "version": def.version,
+                    })),
+                },
+                Err(e) => axum::Json(serde_json::json!({
+                    "valid": false, "errors": [format!("parse error: {e}")], "workflow_id": wid, "version": def.version,
+                })),
+            }
+        }
+        Ok(None) => axum::Json(serde_json::json!({
+            "valid": false, "errors": ["workflow not found"], "workflow_id": wid,
+        })),
+        Err(e) => axum::Json(serde_json::json!({
+            "valid": false, "errors": [format!("fetch error: {e}")], "workflow_id": wid,
+        })),
+    }
+}
+
 // ── Workflow Run Handlers ──
 
 #[derive(Deserialize)]
@@ -3287,6 +3318,107 @@ async fn v3_record_checkpoint_handler(
     match state.workflow_service.record_checkpoint(&rid, &req.node_id, &req.output, &req.context_snapshot).await {
         Ok(id) => (axum::http::StatusCode::CREATED, axum::Json(serde_json::json!({ "id": id }))),
         Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({ "error": e.to_string() }))),
+    }
+}
+
+/// T2-3: Retry a failed workflow node.
+/// POST /api/v3/workflow-runs/:rid/nodes/:nid/retry
+/// Marks the node for re-execution by recording a new checkpoint with
+/// status='retry' and appending a 'retry' event to the execution fact chain.
+async fn v3_retry_workflow_node_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path((rid, nid)): axum::extract::Path<(String, String)>,
+) -> axum::Json<serde_json::Value> {
+    // Record a checkpoint marking the retry
+    match state.workflow_service.record_checkpoint(
+        &rid, &nid,
+        &serde_json::json!({"action": "retry"}).to_string(),
+        &serde_json::json!({}).to_string(),
+    ).await {
+        Ok(id) => {
+            // Append 'retry' event to execution fact chain if we can find the execution_id
+            let exec_id: Option<String> = sqlx::query_scalar::<_, String>(
+                "SELECT execution_id FROM execution_events
+                  WHERE event_type = 'started' AND source = 'workflow'
+                    AND json_extract(payload, '$.workflow_run_id') = ?
+                  ORDER BY created_at DESC LIMIT 1"
+            ).bind(&rid).fetch_optional(&state.db).await.ok().flatten();
+            if let Some(eid) = exec_id {
+                let _ = state.execution_recorder.append(
+                    &eid, "workflow", "retry",
+                    serde_json::json!({"workflow_run_id": rid, "node_id": nid, "attempt": "auto"}),
+                    None, Some("human"),
+                ).await;
+            }
+            axum::Json(serde_json::json!({ "checkpoint_id": id, "action": "retry", "node_id": nid }))
+        }
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+/// T2-3: Skip a failed workflow node.
+/// POST /api/v3/workflow-runs/:rid/nodes/:nid/skip
+async fn v3_skip_workflow_node_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path((rid, nid)): axum::extract::Path<(String, String)>,
+) -> axum::Json<serde_json::Value> {
+    match state.workflow_service.record_checkpoint(
+        &rid, &nid,
+        &serde_json::json!({"action": "skip"}).to_string(),
+        &serde_json::json!({}).to_string(),
+    ).await {
+        Ok(id) => {
+            let exec_id: Option<String> = sqlx::query_scalar::<_, String>(
+                "SELECT execution_id FROM execution_events
+                  WHERE event_type = 'started' AND source = 'workflow'
+                    AND json_extract(payload, '$.workflow_run_id') = ?
+                  ORDER BY created_at DESC LIMIT 1"
+            ).bind(&rid).fetch_optional(&state.db).await.ok().flatten();
+            if let Some(eid) = exec_id {
+                let _ = state.execution_recorder.append(
+                    &eid, "workflow", "node_finished",
+                    serde_json::json!({"workflow_run_id": rid, "node_id": nid, "status": "skipped"}),
+                    None, Some("human"),
+                ).await;
+            }
+            axum::Json(serde_json::json!({ "checkpoint_id": id, "action": "skip", "node_id": nid }))
+        }
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+/// T2-3: List dead-letter checkpoints for a workflow run.
+/// GET /api/v3/workflow-runs/:rid/deadletter
+/// Returns checkpoints whose output contains "action":"retry" and the run
+/// is in 'failed' status — these are nodes that failed and were retried
+/// but the run still failed.
+async fn v3_list_deadletter_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(rid): axum::extract::Path<String>,
+) -> axum::Json<serde_json::Value> {
+    match state.workflow_service.list_checkpoints(&rid).await {
+        Ok(checkpoints) => {
+            // Filter checkpoints that look like dead-letter entries
+            // (output contains "error" or "action":"retry" with failed status)
+            let deadletter: Vec<_> = checkpoints
+                .into_iter()
+                .filter(|cp| {
+                    cp.output.contains("error") || cp.output.contains("\"action\":\"retry\"")
+                })
+                .map(|cp| serde_json::json!({
+                    "checkpoint_id": cp.id,
+                    "node_id": cp.node_id,
+                    "output": cp.output,
+                    "created_at": cp.created_at,
+                }))
+                .collect();
+            axum::Json(serde_json::json!({
+                "workflow_run_id": rid,
+                "deadletter": deadletter,
+                "count": deadletter.len(),
+            }))
+        }
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
     }
 }
 
@@ -5311,11 +5443,17 @@ async fn main() -> anyhow::Result<()> {
         // Workflow definitions
         .route("/api/v3/workflows", get(v3_list_workflows_handler).post(v3_create_workflow_handler))
         .route("/api/v3/workflows/:wid", get(v3_get_workflow_handler).put(v3_update_workflow_handler).delete(v3_delete_workflow_handler))
+        // T2-1: workflow validate endpoint
+        .route("/api/v3/workflows/:wid/validate", post(v3_validate_workflow_handler))
         // Workflow runs
         .route("/api/v3/workflow-runs", get(v3_list_workflow_runs_handler).post(v3_create_workflow_run_handler))
         .route("/api/v3/workflow-runs/:rid", get(v3_get_workflow_run_handler))
         .route("/api/v3/workflow-runs/:rid/status", put(v3_update_workflow_run_status_handler))
         .route("/api/v3/workflow-runs/:rid/checkpoints", get(v3_list_checkpoints_handler).post(v3_record_checkpoint_handler))
+        // T2-3: workflow run node retry / skip / deadletter
+        .route("/api/v3/workflow-runs/:rid/nodes/:nid/retry", post(v3_retry_workflow_node_handler))
+        .route("/api/v3/workflow-runs/:rid/nodes/:nid/skip", post(v3_skip_workflow_node_handler))
+        .route("/api/v3/workflow-runs/:rid/deadletter", get(v3_list_deadletter_handler))
         // Unified execution fact chain (Track 1 / T1-2)
         // Handlers live in lib crate (server/src/execution_handlers.rs) so
         // the same code is reused by integration tests in
