@@ -4,7 +4,7 @@ RUN apt-get update && apt-get install -y pkg-config libsqlite3-dev && rm -rf /va
 
 WORKDIR /app
 
-COPY Cargo.toml Cargo.lock ./
+COPY Cargo.toml ./
 COPY core/maple-engine/Cargo.toml core/maple-engine/Cargo.toml
 COPY core/maple-llm/Cargo.toml core/maple-llm/Cargo.toml
 COPY core/maple-agent/Cargo.toml core/maple-agent/Cargo.toml
