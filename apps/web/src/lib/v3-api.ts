@@ -508,3 +508,145 @@ export async function recordCheckpoint(rid: string, data: {
 }): Promise<{ id: number }> {
   return fetchApi(`${V3}/workflow-runs/${rid}/checkpoints`, { method: 'POST', body: data });
 }
+
+// ============================================================
+// Execution fact chain (Track 1 / T1-2)
+// See docs/execution-fact-chain-spec.md
+// ============================================================
+
+export interface ExecutionEvent {
+  id: string;
+  execution_id: string;
+  parent_execution_id: string | null;
+  source: 'chat' | 'workflow' | 'task' | 'approval' | 'agent' | 'tool' | 'scheduler' | 'system';
+  event_type:
+    | 'started' | 'delta' | 'tool_call' | 'tool_result'
+    | 'node_started' | 'node_finished' | 'artifact' | 'usage'
+    | 'approval_requested' | 'approval_decided'
+    | 'retry' | 'cancelled' | 'resumed' | 'paused'
+    | 'done' | 'error';
+  payload: Record<string, unknown>;
+  actor: string | null;
+  actor_type: 'human' | 'agent' | 'system' | null;
+  created_at: number;
+}
+
+export interface Execution {
+  id: string;
+  parent_execution_id: string | null;
+  source: string;
+  status: 'pending' | 'running' | 'paused' | 'success' | 'failed' | 'cancelled';
+  actor: string | null;
+  actor_type: 'human' | 'agent' | 'system' | null;
+  trigger_type: string | null;
+  trigger_payload: Record<string, unknown> | null;
+  started_at: number;
+  completed_at: number | null;
+  error: string | null;
+  event_count: number;
+  updated_at: number;
+}
+
+export async function getExecution(executionId: string): Promise<Execution> {
+  return fetchApi(`${V3}/executions/${executionId}`);
+}
+
+export async function listExecutionEvents(executionId: string): Promise<{
+  execution_id: string;
+  events: ExecutionEvent[];
+}> {
+  return fetchApi(`${V3}/executions/${executionId}/events`);
+}
+
+/**
+ * Subscribe to an execution's event stream via Server-Sent Events.
+ *
+ * Returns an unsubscribe function. The callback is invoked once per event
+ * plus once with a 'stream_end' marker when the execution reaches a
+ * terminal state.
+ *
+ * Falls back to polling listExecutionEvents every 1s if EventSource is
+ * unavailable (e.g. during SSR or in tests).
+ */
+export function subscribeExecutionEvents(
+  executionId: string,
+  onEvent: (event: ExecutionEvent) => void,
+  onEnd?: (finalStatus: string) => void,
+  onError?: (err: Error) => void
+): () => void {
+  const { token } = getAuthState();
+  const url = `${API_BASE_URL}${V3}/executions/${executionId}/events/stream`;
+
+  // EventSource doesn't support custom headers — pass token as query param.
+  const streamUrl = token ? `${url}?token=${encodeURIComponent(token)}` : url;
+
+  if (typeof window === 'undefined' || typeof EventSource === 'undefined') {
+    // SSR / test fallback: poll listExecutionEvents every 1s
+    let stopped = false;
+    let lastSeen = 0;
+    const poll = async () => {
+      if (stopped) return;
+      try {
+        const { events } = await listExecutionEvents(executionId);
+        for (let i = lastSeen; i < events.length; i++) {
+          onEvent(events[i]);
+        }
+        lastSeen = events.length;
+        // Heuristic: if last event is terminal, stop
+        const last = events[events.length - 1];
+        if (last && (last.event_type === 'done' || last.event_type === 'error' || last.event_type === 'cancelled')) {
+          onEnd?.(last.event_type === 'done' ? 'success' : last.event_type);
+          return;
+        }
+      } catch (e) {
+        onError?.(e as Error);
+        return;
+      }
+      setTimeout(poll, 1000);
+    };
+    poll();
+    return () => { stopped = true; };
+  }
+
+  const es = new EventSource(streamUrl);
+
+  // EventSource allows listening to named events. The server emits events
+  // with `event: <event_type>` so we register handlers for each known type.
+  const eventTypes = [
+    'started', 'delta', 'tool_call', 'tool_result',
+    'node_started', 'node_finished', 'artifact', 'usage',
+    'approval_requested', 'approval_decided',
+    'retry', 'cancelled', 'resumed', 'paused',
+    'done', 'error', 'stream_end',
+  ];
+
+  const handler = (ev: MessageEvent) => {
+    try {
+      const payload = JSON.parse(ev.data);
+      if (ev.type === 'stream_end') {
+        onEnd?.(payload.final_status ?? 'success');
+        es.close();
+        return;
+      }
+      onEvent(payload as ExecutionEvent);
+    } catch (e) {
+      onError?.(e as Error);
+    }
+  };
+
+  for (const t of eventTypes) {
+    es.addEventListener(t, handler as EventListener);
+  }
+  es.onerror = () => {
+    // EventSource auto-reconnects; only surface fatal errors after retries
+    // fail. For now, log and let the browser handle reconnection.
+    // If the stream is closed (readyState === CLOSED), surface the error.
+    if (es.readyState === EventSource.CLOSED) {
+      onError?.(new Error('SSE stream closed'));
+    }
+  };
+
+  return () => {
+    es.close();
+  };
+}
