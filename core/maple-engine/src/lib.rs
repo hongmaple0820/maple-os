@@ -15,7 +15,7 @@ pub mod execution_chain;
 
 pub use workflow::{Workflow, WorkflowNode, NodeType, TriggerConfig, WorkflowExecution, ExecStatus};
 pub use executor::WorkflowExecutor;
-pub use workflow_service::{WorkflowService, WorkflowDef, WorkflowRun, RunCheckpoint};
+pub use workflow_service::{WorkflowService, WorkflowDef, WorkflowRun, RunCheckpoint, WorkflowVersion};
 pub use event_bus::{EventBus, Event};
 pub use checkpoint::CheckpointManager;
 pub use hooks::{HookRunner, HookDecision, HookConfig};

@@ -37,6 +37,18 @@ pub struct RunCheckpoint {
     pub created_at: i64,
 }
 
+/// A saved version of a workflow definition (T2-2).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowVersion {
+    pub id: i64,
+    pub workflow_id: String,
+    pub version: i64,
+    pub yaml_content: String,
+    pub saved_by: Option<String>,
+    pub change_summary: Option<String>,
+    pub created_at: i64,
+}
+
 pub struct WorkflowService {
     pool: SqlitePool,
 }
@@ -91,16 +103,74 @@ impl WorkflowService {
 
     pub async fn update_definition(&self, id: &str, name: Option<&str>, yaml: Option<&str>, status: Option<&str>) -> anyhow::Result<bool> {
         let now = chrono::Utc::now().timestamp();
+
+        // T2-2: when yaml changes, bump version + save history
+        if let Some(y) = yaml {
+            // Fetch current version
+            let current_version: i64 = sqlx::query_scalar(
+                "SELECT version FROM workflows WHERE id = ?"
+            ).bind(id).fetch_one(&self.pool).await.unwrap_or(1);
+
+            let new_version = current_version + 1;
+
+            // Save the OLD version to workflow_versions before overwriting
+            let old_yaml: String = sqlx::query_scalar(
+                "SELECT yaml_content FROM workflows WHERE id = ?"
+            ).bind(id).fetch_one(&self.pool).await.unwrap_or_default();
+
+            let _ = sqlx::query(
+                "INSERT OR REPLACE INTO workflow_versions (workflow_id, version, yaml_content, saved_by, change_summary, created_at)
+                 VALUES (?, ?, ?, 'system', ?, ?)"
+            )
+            .bind(id)
+            .bind(current_version)
+            .bind(&old_yaml)
+            .bind(format!("version {} saved before update to {}", current_version, new_version))
+            .bind(now)
+            .execute(&self.pool).await;
+
+            // Also save the NEW version to workflow_versions
+            let _ = sqlx::query(
+                "INSERT OR REPLACE INTO workflow_versions (workflow_id, version, yaml_content, saved_by, change_summary, created_at)
+                 VALUES (?, ?, ?, 'system', ?, ?)"
+            )
+            .bind(id)
+            .bind(new_version)
+            .bind(y)
+            .bind(format!("version {} saved", new_version))
+            .bind(now)
+            .execute(&self.pool).await;
+
+            // Update workflows table with new version + yaml
+            let mut sets = vec!["updated_at = ?", "version = ?", "yaml_content = ?"];
+            let mut values: Vec<String> = vec![now.to_string(), new_version.to_string(), y.to_string()];
+
+            if let Some(n) = name {
+                sets.push("name = ?");
+                values.push(n.to_string());
+            }
+            if let Some(s) = status {
+                sets.push("status = ?");
+                values.push(s.to_string());
+            }
+
+            let sql = format!("UPDATE workflows SET {} WHERE id = ?", sets.join(", "));
+            let mut query = sqlx::query(&sql);
+            for v in &values {
+                query = query.bind(v);
+            }
+            query = query.bind(id);
+            let result = query.execute(&self.pool).await?;
+            return Ok(result.rows_affected() > 0);
+        }
+
+        // Name/status-only update (no version bump)
         let mut sets = vec!["updated_at = ?".to_string()];
         let mut values: Vec<String> = vec![];
 
         if let Some(n) = name {
             sets.push("name = ?".to_string());
             values.push(n.to_string());
-        }
-        if let Some(y) = yaml {
-            sets.push("yaml_content = ?".to_string());
-            values.push(y.to_string());
         }
         if let Some(s) = status {
             sets.push("status = ?".to_string());
@@ -120,6 +190,94 @@ impl WorkflowService {
     pub async fn delete_definition(&self, id: &str) -> anyhow::Result<bool> {
         let result = sqlx::query("DELETE FROM workflows WHERE id = ?")
             .bind(id).execute(&self.pool).await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    // ── Workflow Versions (T2-2) ──
+
+    /// List all saved versions of a workflow, newest first.
+    pub async fn list_versions(&self, workflow_id: &str) -> anyhow::Result<Vec<WorkflowVersion>> {
+        let rows = sqlx::query_as::<_, (i64, i64, String, Option<String>, Option<String>, i64)>(
+            "SELECT id, version, yaml_content, saved_by, change_summary, created_at
+               FROM workflow_versions
+              WHERE workflow_id = ?
+              ORDER BY version DESC"
+        )
+        .bind(workflow_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|r| WorkflowVersion {
+            id: r.0,
+            workflow_id: workflow_id.to_string(),
+            version: r.1,
+            yaml_content: r.2,
+            saved_by: r.3,
+            change_summary: r.4,
+            created_at: r.5,
+        }).collect())
+    }
+
+    /// Get a specific version's full definition.
+    pub async fn get_version(&self, workflow_id: &str, version: i64) -> anyhow::Result<Option<WorkflowVersion>> {
+        let row = sqlx::query_as::<_, (i64, i64, String, Option<String>, Option<String>, i64)>(
+            "SELECT id, version, yaml_content, saved_by, change_summary, created_at
+               FROM workflow_versions
+              WHERE workflow_id = ? AND version = ?"
+        )
+        .bind(workflow_id)
+        .bind(version)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|r| WorkflowVersion {
+            id: r.0,
+            workflow_id: workflow_id.to_string(),
+            version: r.1,
+            yaml_content: r.2,
+            saved_by: r.3,
+            change_summary: r.4,
+            created_at: r.5,
+        }))
+    }
+
+    /// Rollback the workflow to a previous version.
+    /// Copies the old version's yaml_content into the workflows table,
+    /// bumps the version counter, and saves the rolled-back content as
+    /// a new version entry.
+    pub async fn rollback_to_version(&self, workflow_id: &str, target_version: i64) -> anyhow::Result<bool> {
+        let target = self.get_version(workflow_id, target_version).await?
+            .ok_or_else(|| anyhow::anyhow!("version {} not found for workflow {}", target_version, workflow_id))?;
+
+        let now = chrono::Utc::now().timestamp();
+        let current_version: i64 = sqlx::query_scalar(
+            "SELECT version FROM workflows WHERE id = ?"
+        ).bind(workflow_id).fetch_one(&self.pool).await.unwrap_or(1);
+
+        let new_version = current_version + 1;
+
+        // Update the workflows table with the rolled-back content
+        let result = sqlx::query(
+            "UPDATE workflows SET yaml_content = ?, version = ?, updated_at = ? WHERE id = ?"
+        )
+        .bind(&target.yaml_content)
+        .bind(new_version)
+        .bind(now)
+        .bind(workflow_id)
+        .execute(&self.pool).await?;
+
+        // Save the rolled-back version to workflow_versions
+        let _ = sqlx::query(
+            "INSERT OR REPLACE INTO workflow_versions (workflow_id, version, yaml_content, saved_by, change_summary, created_at)
+             VALUES (?, ?, ?, 'system', ?, ?)"
+        )
+        .bind(workflow_id)
+        .bind(new_version)
+        .bind(&target.yaml_content)
+        .bind(format!("rollback to version {}", target_version))
+        .bind(now)
+        .execute(&self.pool).await;
+
         Ok(result.rows_affected() > 0)
     }
 

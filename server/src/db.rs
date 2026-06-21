@@ -455,6 +455,8 @@ pub async fn run_migrations(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
     run_v3_migration_015(pool).await?;
     // --- 016: Learning governance (candidates + blocklist) ---
     run_v3_migration_016(pool).await?;
+    // --- 017: Workflow version history ---
+    run_v3_migration_017(pool).await?;
 
     tracing::info!("Database migrations completed (including v3)");
     Ok(())
@@ -1510,5 +1512,30 @@ async fn run_v3_migration_016(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
     let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_lb_hash ON learning_blocklist(content_hash)").execute(pool).await;
 
     tracing::info!("v3 migration 016 (learning_candidates + learning_blocklist) completed");
+    Ok(())
+}
+
+async fn run_v3_migration_017(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
+    // ============================================================
+    // Workflow version history (Track 2 / T2-2).
+    // See migrations/017_workflow_versions.sql and Issue #90, #17.
+    // ============================================================
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS workflow_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            workflow_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            yaml_content TEXT NOT NULL,
+            saved_by TEXT,
+            change_summary TEXT,
+            created_at INTEGER NOT NULL,
+            UNIQUE(workflow_id, version)
+        )"
+    ).execute(pool).await?;
+
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_wv_workflow ON workflow_versions(workflow_id, version DESC)").execute(pool).await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_wv_created ON workflow_versions(created_at DESC)").execute(pool).await;
+
+    tracing::info!("v3 migration 017 (workflow_versions) completed");
     Ok(())
 }

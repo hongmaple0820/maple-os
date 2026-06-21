@@ -3134,6 +3134,60 @@ async fn v3_validate_workflow_handler(
     }
 }
 
+/// T2-2: List all versions of a workflow.
+/// GET /api/v3/workflows/:wid/versions
+async fn v3_list_workflow_versions_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(wid): axum::extract::Path<String>,
+) -> axum::Json<serde_json::Value> {
+    match state.workflow_service.list_versions(&wid).await {
+        Ok(versions) => axum::Json(serde_json::json!({
+            "workflow_id": wid,
+            "versions": versions.iter().map(|v| serde_json::json!({
+                "version": v.version,
+                "saved_by": v.saved_by,
+                "change_summary": v.change_summary,
+                "created_at": v.created_at,
+            })).collect::<Vec<_>>(),
+            "count": versions.len(),
+        })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+/// T2-2: Get a specific version's full definition.
+/// GET /api/v3/workflows/:wid/versions/:version
+async fn v3_get_workflow_version_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path((wid, version)): axum::extract::Path<(String, i64)>,
+) -> axum::Json<serde_json::Value> {
+    match state.workflow_service.get_version(&wid, version).await {
+        Ok(Some(v)) => axum::Json(serde_json::json!({
+            "version": v,
+        })),
+        Ok(None) => axum::Json(serde_json::json!({
+            "error": format!("version {} not found for workflow {}", version, wid),
+        })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+/// T2-2: Rollback to a previous version.
+/// POST /api/v3/workflows/:wid/versions/:version/rollback
+async fn v3_rollback_workflow_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path((wid, version)): axum::extract::Path<(String, i64)>,
+) -> axum::Json<serde_json::Value> {
+    match state.workflow_service.rollback_to_version(&wid, version).await {
+        Ok(rolled_back) => axum::Json(serde_json::json!({
+            "rolled_back": rolled_back,
+            "workflow_id": wid,
+            "target_version": version,
+        })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
 // ── Workflow Run Handlers ──
 
 #[derive(Deserialize)]
@@ -5445,6 +5499,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v3/workflows/:wid", get(v3_get_workflow_handler).put(v3_update_workflow_handler).delete(v3_delete_workflow_handler))
         // T2-1: workflow validate endpoint
         .route("/api/v3/workflows/:wid/validate", post(v3_validate_workflow_handler))
+        // T2-2: workflow version management
+        .route("/api/v3/workflows/:wid/versions", get(v3_list_workflow_versions_handler))
+        .route("/api/v3/workflows/:wid/versions/:version", get(v3_get_workflow_version_handler))
+        .route("/api/v3/workflows/:wid/versions/:version/rollback", post(v3_rollback_workflow_handler))
         // Workflow runs
         .route("/api/v3/workflow-runs", get(v3_list_workflow_runs_handler).post(v3_create_workflow_run_handler))
         .route("/api/v3/workflow-runs/:rid", get(v3_get_workflow_run_handler))
