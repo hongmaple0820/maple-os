@@ -10,6 +10,7 @@ members = [
     "core/maple-collab",
     "core/maple-rpc",
     "core/maple-macro",
+    "apps/cli",
     "server",
 ]
 
@@ -69,3 +70,4 @@ maple-gateway = { path = "core/maple-gateway" }
 maple-collab = { path = "core/maple-collab" }
 maple-rpc = { path = "core/maple-rpc" }
 maple-macro = { path = "core/maple-macro" }
+
