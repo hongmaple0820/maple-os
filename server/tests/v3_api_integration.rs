@@ -921,3 +921,40 @@ async fn test_execution_routes_failed_status_carries_error() {
     assert_eq!(events[1]["payload"]["recoverable"], true);
     assert_eq!(events[1]["payload"]["message"], "tool timeout");
 }
+
+// ============================================================
+// Chat handler → ExecutionRecorder integration (T1-3)
+// ============================================================
+//
+// The chat_stream_handler is mounted only in the bin's state_routes
+// (main.rs), not in the lib's build_v3_test_router. Full verification
+// that chat sends emit `execution_id` and recorder events is therefore
+// covered by:
+//   - product-gate.spec.ts E2E (Chat section visits /api/chat/stream)
+//   - manual verification via the dev server
+// Once T0-4 splits main.rs into per-domain route modules, the chat
+// handler will be re-mounted in build_v3_test_router and this test
+// will become possible. For now, see the recorder unit tests in
+// core/maple-engine/src/execution_chain.rs (10 tests covering
+// start/append/done/fail/cancel/pause/resume) for the recorder
+// contract.
+
+#[tokio::test]
+async fn test_chat_recorder_contract_placeholder() {
+    // Placeholder: ensures the test module compiles. Real coverage is
+    // in execution_chain::tests + product-gate.spec.ts.
+    let (state, _app) = setup_with_state().await;
+
+    // Verify the AppState has a working execution_recorder — same one
+    // the chat handler uses.
+    let exec_id = state
+        .execution_recorder
+        .start("chat", Some("u1"), Some("human"), "manual", serde_json::json!({"message": "test"}), None)
+        .await
+        .unwrap();
+    state.execution_recorder.done(&exec_id, "ok").await.unwrap();
+
+    let exec = state.execution_recorder.get_execution(&exec_id).await.unwrap().unwrap();
+    assert_eq!(exec.source, "chat");
+    assert_eq!(exec.status, "success");
+}

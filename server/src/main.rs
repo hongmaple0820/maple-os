@@ -508,6 +508,37 @@ async fn chat_stream_handler(
         .save_message(&session_id, "user", &req.message, None, None)
         .await;
 
+    // ── Track 1 / T1-3: open a unified execution fact chain ──
+    // The execution_id is emitted to the client as the first SSE event
+    // (event: execution) so the frontend can subscribe to
+    // /api/v3/executions/:id/events/stream for a unified trace view
+    // (see docs/execution-fact-chain-spec.md §7.1).
+    let execution_recorder = state.execution_recorder.clone();
+    let exec_id = execution_recorder
+        .start(
+            "chat",
+            None, // user_id — not available without auth context; T1-3.1
+                  // will wire this once auth middleware exposes user_id.
+            Some("human"),
+            "manual",
+            serde_json::json!({
+                "session_id": session_id,
+                "message_preview": if req.message.len() > 200 {
+                    req.message[..200].to_string()
+                } else {
+                    req.message.clone()
+                },
+                "agent_id": req.agent_id,
+                "model": req.model,
+            }),
+            None,
+        )
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "failed to start execution recorder");
+            String::new()
+        });
+
     let route_key = if req.model != "auto" {
         &req.model
     } else {
@@ -562,6 +593,12 @@ async fn chat_stream_handler(
     let evolver = state.evolver.clone();
 
     let stream = async_stream::stream! {
+        // ── T1-3: emit execution_id first so client can subscribe ──
+        if !exec_id.is_empty() {
+            yield Ok(Event::default().event("execution").data(serde_json::json!({
+                "execution_id": exec_id,
+            }).to_string()));
+        }
         if !kb_sources_json.is_empty() {
             yield Ok(Event::default().event("kb_sources").data(serde_json::json!({"sources": kb_sources_json}).to_string()));
         }
@@ -582,6 +619,22 @@ async fn chat_stream_handler(
                                             yield Ok(Event::default().event("thinking").data(serde_json::json!({"token": chunk.delta}).to_string()));
                                         } else {
                                             full_content.push_str(&chunk.delta);
+                                            // ── T1-3: append delta event to fact chain ──
+                                            // (best-effort; failure is logged, not surfaced — the SSE
+                                            // token stream is the primary delivery channel)
+                                            if !exec_id.is_empty() {
+                                                let _ = execution_recorder.append(
+                                                    &exec_id,
+                                                    "chat",
+                                                    "delta",
+                                                    serde_json::json!({
+                                                        "token": chunk.delta,
+                                                        "message_id": sid,
+                                                    }),
+                                                    None,
+                                                    Some("human"),
+                                                ).await;
+                                            }
                                             yield Ok(Event::default().event("token").data(serde_json::json!({"token": chunk.delta}).to_string()));
                                         }
                                     }
@@ -592,6 +645,13 @@ async fn chat_stream_handler(
                                 Ok(None) => break,
                                 Err(e) => {
                                     yield Ok(Event::default().event("error").data(format!("Stream error: {}", e)));
+                                    if !exec_id.is_empty() {
+                                        let _ = execution_recorder.fail(
+                                            &exec_id,
+                                            &format!("LLM stream error: {e}"),
+                                            true,
+                                        ).await;
+                                    }
                                     break;
                                 }
                             }
@@ -607,16 +667,39 @@ async fn chat_stream_handler(
                                 tracing::warn!(error = %e, "Chat knowledge precipitation failed");
                             }
                         });
-                        yield Ok(Event::default().event("done").data(serde_json::json!({"done": true}).to_string()));
+                        // ── T1-3: mark execution done ──
+                        if !exec_id.is_empty() {
+                            let summary = if full_content.len() > 200 {
+                                full_content[..200].to_string()
+                            } else {
+                                full_content.clone()
+                            };
+                            let _ = execution_recorder.done(&exec_id, &summary).await;
+                        }
+                        yield Ok(Event::default().event("done").data(serde_json::json!({"done": true, "execution_id": exec_id}).to_string()));
                     }
                     Err(e) => {
                         yield Ok(Event::default().event("error").data(format!("Stream init error: {}", e)));
+                        if !exec_id.is_empty() {
+                            let _ = execution_recorder.fail(
+                                &exec_id,
+                                &format!("LLM stream init error: {e}"),
+                                true,
+                            ).await;
+                        }
                         yield Ok(Event::default().event("done").data("{\"done\":true}"));
                     }
                 }
             }
             Err(e) => {
                 yield Ok(Event::default().event("error").data(format!("No LLM available: {}", e)));
+                if !exec_id.is_empty() {
+                    let _ = execution_recorder.fail(
+                        &exec_id,
+                        &format!("No LLM available: {e}"),
+                        false,
+                    ).await;
+                }
                 yield Ok(Event::default().event("done").data("{\"done\":true}"));
             }
         }
