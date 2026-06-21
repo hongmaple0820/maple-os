@@ -113,6 +113,12 @@ function WFNodeComponent({ data, selected }: NodeProps<RFNode>) {
   const { t } = useTranslation();
   const colors = nodeTypeColor[data.nodeType];
 
+  // T2-9: approval node waiting badge
+  const isApprovalWaiting = data.nodeType === "human_approval" && data.status === "waiting";
+
+  // T2-10: failed node recovery buttons
+  const isFailed = data.status === "failed";
+
   return (
     <div
       className={`rounded-lg shadow-card transition-shadow hover:shadow-lg p-3 bg-card min-w-[160px] ${
@@ -148,6 +154,13 @@ function WFNodeComponent({ data, selected }: NodeProps<RFNode>) {
 
       {data.nodeType === "llm" && <div className="text-[11px] text-muted-foreground mt-1 font-mono">model: {data.model ?? "auto"}</div>}
       {data.nodeType === "tool" && <div className="text-[11px] text-muted-foreground mt-1 font-mono">skill: {data.skillId ?? "-"}</div>}
+
+      {/* T2-9: approval waiting hint */}
+      {isApprovalWaiting && (
+        <div className="mt-1 text-[10px] text-orange-600 bg-orange-50 rounded px-1.5 py-0.5">
+          {t("workflow.approval.waiting", "Waiting for approval")}
+        </div>
+      )}
 
       <Handle type="source" position={Position.Bottom} className="!w-3 !h-3 !bg-muted-foreground/30 !border-2 !border-card hover:!bg-primary hover:!border-primary" />
     </div>
@@ -832,6 +845,111 @@ export function WorkflowManager() {
                   )}
                 </div>
               </div>
+
+              {/* T2-10: failed node recovery — Retry / Skip buttons */}
+              {selectedData.status === "failed" && lastRunExecId && (
+                <div className="mt-3 space-y-1">
+                  <div className="text-[10px] text-red-600 font-medium">
+                    {t("workflow.nodeFailed", "Node failed — recovery:")}
+                  </div>
+                  <div className="flex gap-1">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-6 text-[10px] flex-1"
+                      onClick={async () => {
+                        try {
+                          const { token } = getAuthState();
+                          await fetch(`/api/maple/api/v3/workflow-runs/${lastRunExecId}/nodes/${selectedNode.id}/retry`, {
+                            method: "POST",
+                            headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+                          });
+                          setConsoleLogs((prev) => [...prev, `↻ retried node ${selectedNode.id}`]);
+                          updateNodeData(selectedNode.id, { status: "idle" as const });
+                        } catch (e) {
+                          setConsoleLogs((prev) => [...prev, `retry error: ${e}`]);
+                        }
+                      }}
+                    >
+                      ↻ {t("workflow.retry", "Retry")}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-6 text-[10px] flex-1"
+                      onClick={async () => {
+                        try {
+                          const { token } = getAuthState();
+                          await fetch(`/api/maple/api/v3/workflow-runs/${lastRunExecId}/nodes/${selectedNode.id}/skip`, {
+                            method: "POST",
+                            headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+                          });
+                          setConsoleLogs((prev) => [...prev, `⏭ skipped node ${selectedNode.id}`]);
+                          updateNodeData(selectedNode.id, { status: "completed" as const });
+                        } catch (e) {
+                          setConsoleLogs((prev) => [...prev, `skip error: ${e}`]);
+                        }
+                      }}
+                    >
+                      ⏭ {t("workflow.skip", "Skip")}
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {/* T2-9: approval node — Approve / Reject buttons */}
+              {selectedData.nodeType === "human_approval" && selectedData.status === "waiting" && (
+                <div className="mt-3 space-y-1">
+                  <div className="text-[10px] text-orange-600 font-medium">
+                    {t("workflow.approval.pending", "Approval pending:")}
+                  </div>
+                  <div className="flex gap-1">
+                    <Button
+                      size="sm"
+                      className="h-6 text-[10px] flex-1 bg-green-600 hover:bg-green-700"
+                      onClick={async () => {
+                        if (!lastRunExecId) return;
+                        try {
+                          const { token } = getAuthState();
+                          await fetch(`/api/maple/api/v3/workflow-runs/${lastRunExecId}/status`, {
+                            method: "PUT",
+                            headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+                            body: JSON.stringify({ status: "running" }),
+                          });
+                          setConsoleLogs((prev) => [...prev, `✓ approved node ${selectedNode.id}`]);
+                          updateNodeData(selectedNode.id, { status: "completed" as const });
+                        } catch (e) {
+                          setConsoleLogs((prev) => [...prev, `approve error: ${e}`]);
+                        }
+                      }}
+                    >
+                      ✓ {t("workflow.approval.approve", "Approve")}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      className="h-6 text-[10px] flex-1"
+                      onClick={async () => {
+                        if (!lastRunExecId) return;
+                        try {
+                          const { token } = getAuthState();
+                          await fetch(`/api/maple/api/v3/workflow-runs/${lastRunExecId}/status`, {
+                            method: "PUT",
+                            headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+                            body: JSON.stringify({ status: "failed", error: "rejected by user" }),
+                          });
+                          setConsoleLogs((prev) => [...prev, `✗ rejected node ${selectedNode.id}`]);
+                          updateNodeData(selectedNode.id, { status: "failed" as const });
+                        } catch (e) {
+                          setConsoleLogs((prev) => [...prev, `reject error: ${e}`]);
+                        }
+                      }}
+                    >
+                      ✗ {t("workflow.approval.reject", "Reject")}
+                    </Button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
           {!selectedNode && nodes.length > 0 && (
