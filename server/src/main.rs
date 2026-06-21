@@ -2959,9 +2959,73 @@ async fn v3_create_workflow_run_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
     axum::Json(req): axum::Json<CreateRunRequest>,
 ) -> impl axum::response::IntoResponse {
+    // ── Track 1 / T1-4: open a unified execution fact chain ──
+    // The execution_id is returned to the client so the Workflow trace UI
+    // can subscribe to /api/v3/executions/:id/events for a unified view
+    // (see docs/execution-fact-chain-spec.md §7.2).
+    let trigger_type = "manual"; // this handler is the manual trigger entry
+                                 // point; cron/webhook/event/message triggers
+                                 // go through scheduler and will be wired in T1-4.2
+    let exec_id = state
+        .execution_recorder
+        .start(
+            "workflow",
+            None, // actor — auth context not wired yet (T1-3.1)
+            Some("human"),
+            trigger_type,
+            serde_json::json!({
+                "workflow_id": req.workflow_id,
+                "workflow_version": req.workflow_version,
+                "group_id": req.group_id,
+                "agent_id": req.agent_id,
+                "input_summary": serde_json::to_string(&req.input)
+                    .unwrap_or_default()
+                    .chars()
+                    .take(200)
+                    .collect::<String>(),
+            }),
+            None,
+        )
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "failed to start workflow execution recorder");
+            String::new()
+        });
+
     match state.workflow_service.create_run(&req.workflow_id, req.workflow_version, &req.input, req.group_id.as_deref(), req.agent_id.as_deref()).await {
-        Ok(run) => (axum::http::StatusCode::CREATED, axum::Json(serde_json::json!({ "run": run }))),
-        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({ "error": e.to_string() }))),
+        Ok(run) => {
+            // Append a 'started' artifact event linking the workflow run id
+            // to the execution id, so the workflow UI can later look up
+            // the unified trace by either id.
+            if !exec_id.is_empty() {
+                let _ = state.execution_recorder.append(
+                    &exec_id,
+                    "workflow",
+                    "started",
+                    serde_json::json!({
+                        "workflow_run_id": run.id,
+                        "workflow_id": req.workflow_id,
+                        "status": run.status,
+                    }),
+                    None,
+                    Some("human"),
+                ).await;
+            }
+            (axum::http::StatusCode::CREATED, axum::Json(serde_json::json!({
+                "run": run,
+                "execution_id": exec_id,
+            })))
+        }
+        Err(e) => {
+            if !exec_id.is_empty() {
+                let _ = state.execution_recorder.fail(
+                    &exec_id,
+                    &format!("workflow create_run failed: {e}"),
+                    false,
+                ).await;
+            }
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({ "error": e.to_string() })))
+        }
     }
 }
 
@@ -2981,8 +3045,53 @@ async fn v3_update_workflow_run_status_handler(
     axum::extract::Path(rid): axum::extract::Path<String>,
     axum::Json(req): axum::Json<UpdateRunStatusRequest>,
 ) -> axum::Json<serde_json::Value> {
+    // ── Track 1 / T1-4: workflow status changes project onto execution
+    // events. We look up the most recent execution whose 'started' event
+    // payload references this workflow_run_id and append a corresponding
+    // event (paused / resumed / done / error / cancelled).
+    // See docs/execution-fact-chain-spec.md §7.2.
+    let exec_id: Option<String> = sqlx::query_scalar::<_, String>(
+        "SELECT execution_id FROM execution_events
+          WHERE event_type = 'started'
+            AND source = 'workflow'
+            AND json_extract(payload, '$.workflow_run_id') = ?
+          ORDER BY created_at DESC LIMIT 1"
+    )
+    .bind(&rid)
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten();
+
+    if let (Some(eid), Some(recorder_exec_id)) = (&exec_id, exec_id.as_ref()) {
+        let event_type = match req.status.as_str() {
+            "running" => Some("resumed"),
+            "paused" | "waiting_approval" => Some("paused"),
+            "success" | "completed" => Some("done"),
+            "failed" => Some("error"),
+            "cancelled" => Some("cancelled"),
+            _ => None,
+        };
+        if let Some(et) = event_type {
+            let payload = serde_json::json!({
+                "workflow_run_id": rid,
+                "status": req.status,
+                "output": req.output,
+                "error": req.error,
+            });
+            let _ = state.execution_recorder.append(
+                recorder_exec_id,
+                "workflow",
+                et,
+                payload,
+                None,
+                Some("human"),
+            ).await;
+        }
+    }
+
     match state.workflow_service.update_run_status(&rid, &req.status, req.output.as_deref(), req.error.as_deref()).await {
-        Ok(updated) => axum::Json(serde_json::json!({ "updated": updated })),
+        Ok(updated) => axum::Json(serde_json::json!({ "updated": updated, "execution_id": exec_id })),
         Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
     }
 }
