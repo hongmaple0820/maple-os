@@ -8,7 +8,6 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use maple_engine::hooks::{HookDecision, HookRunner};
 use maple_llm::request::{LlmRequest, Message, ToolDefinition};
-use maple_llm::response::LlmResponse;
 use maple_llm::router::LlmAdapter;
 use serde_json::Value;
 use std::sync::Arc;
@@ -639,6 +638,7 @@ impl ReactLoop {
 
 #[cfg(test)]
 mod tests {
+    use maple_llm::response::LlmResponse;
     use super::*;
 
     /// Verify the ExecutionRecorder field is None by default — smoke test

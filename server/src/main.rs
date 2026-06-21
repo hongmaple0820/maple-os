@@ -5,7 +5,7 @@
 // produced a duplicate (structurally identical but distinct) copy in the
 // bin crate, preventing lib handlers from being mounted into the bin's
 // Router without adapter shims.
-use mapleos_server::{cache, config, db, metrics, middleware, sandbox, skills, state, v3_auth};
+use mapleos_server::{cache, config, db, metrics, middleware, skills, state, v3_auth};
 
 use axum::Json;
 use axum::Router;
@@ -473,7 +473,7 @@ async fn health_handler() -> impl IntoResponse {
 /// Response (503):
 ///   { "ok": false, "error": "connection refused" }
 async fn llm_test_connection_handler(
-    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::State(_state): axum::extract::State<Arc<AppState>>,
     Json(req): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     let provider = req["provider"].as_str().unwrap_or("").to_string();
@@ -3321,7 +3321,7 @@ async fn v3_update_workflow_run_status_handler(
     .ok()
     .flatten();
 
-    if let (Some(eid), Some(recorder_exec_id)) = (&exec_id, exec_id.as_ref()) {
+    if let (Some(_eid), Some(recorder_exec_id)) = (&exec_id, exec_id.as_ref()) {
         let event_type = match req.status.as_str() {
             "running" => Some("resumed"),
             "paused" | "waiting_approval" => Some("paused"),

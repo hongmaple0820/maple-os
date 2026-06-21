@@ -2,7 +2,6 @@ use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use axum::http::StatusCode;
 use maple_gateway::auth::AuthService;
-use std::sync::Arc;
 
 /// Authenticated user extracted from JWT token.
 /// Injected into request extensions by auth_middleware, consumed by v3 handlers.

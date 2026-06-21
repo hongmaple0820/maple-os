@@ -3,9 +3,9 @@ use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use mapleos_server::build_test_app_state;
 use mapleos_server::build_v3_test_router;
-use mapleos_server::state::AppState;
 use serde_json::Value;
 use std::sync::Arc;
+use mapleos_server::state::AppState;
 use tower::ServiceExt;
 
 async fn setup() -> axum::Router {
@@ -267,7 +267,7 @@ async fn test_approval_workflow() {
     assert_eq!(votes[0]["decision"], "approve");
 
     // List pending approvals
-    let (status, body) = get_json(&app, &format!("/api/v3/approvals/pending?user_id=user-3&group_id={}", group_id)).await;
+    let (status, _body) = get_json(&app, &format!("/api/v3/approvals/pending?user_id=user-3&group_id={}", group_id)).await;
     assert_eq!(status, StatusCode::OK);
 }
 
@@ -304,7 +304,7 @@ async fn test_memory_store_and_search() {
     assert!(stats["total_count"].as_i64().unwrap() >= 2, "expected >= 2 memories");
 
     // Search memories
-    let (status, body) = send_json(&app, "POST", "/api/v3/memories/search", serde_json::json!({
+    let (status, _body) = send_json(&app, "POST", "/api/v3/memories/search", serde_json::json!({
         "agent_id": "agent-1",
         "query_text": "Rust",
     })).await;
@@ -326,7 +326,7 @@ async fn test_dm_workflow() {
     assert_eq!(status, StatusCode::CREATED, "create dm failed: {:?}", body);
 
     // List DMs
-    let (status, body) = get_json(&app, "/api/v3/dms").await;
+    let (status, _body) = get_json(&app, "/api/v3/dms").await;
     assert_eq!(status, StatusCode::OK);
 }
 
@@ -965,7 +965,6 @@ async fn test_chat_recorder_contract_placeholder() {
 
 #[tokio::test]
 async fn test_approval_with_execution_records_approval_events() {
-    use mapleos_server::state::AppState;
     use maple_engine::approval::{ApprovalService, ApprovalUrgency, QuorumType, VoteDecision};
     use maple_engine::ExecutionRecorder;
 
