@@ -1,0 +1,15 @@
+{
+  "id": "web-search",
+  "name": "Web Search",
+  "description": "Search the web for real-time information",
+  "version": "1.0.0",
+  "author": "MapleOS",
+  "parameters_schema": {
+    "type": "object",
+    "required": ["query"],
+    "properties": {
+      "query": {"type": "string", "description": "Search query"},
+      "num_results": {"type": "number", "description": "Max results (default 5)"}
+    }
+  }
+}

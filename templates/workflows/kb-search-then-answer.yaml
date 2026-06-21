@@ -1,0 +1,22 @@
+# Search knowledge base then answer
+id: kb-search-answer
+name: KB Search + Answer
+description: Search knowledge base for context, then generate LLM response
+version: 1
+trigger:
+  type: manual
+nodes:
+  - id: search
+    name: KB Search
+    node_type:
+      type: tool
+      skill_id: kb_search
+      config: {}
+    depends_on: []
+  - id: answer
+    name: LLM Answer
+    node_type:
+      type: llm
+      model_route: auto
+      prompt_ref: default
+    depends_on: [search]
