@@ -8,6 +8,7 @@ use maple_collab::group_rules::{GroupRulesEngine, GroupRulesService};
 use maple_collab::workspace::WorkspaceManager;
 use maple_engine::approval::ApprovalService;
 use maple_engine::execution_chain::ExecutionRecorder;
+use maple_engine::trigger::TriggerManager;
 use maple_engine::event_bus::EventBus;
 use maple_engine::executor::WorkflowExecutor;
 use maple_engine::memory_service::MemoryService;
@@ -118,6 +119,8 @@ pub struct AppState {
     pub execution_recorder: ExecutionRecorder,
     /// Learning governance service (Track 3 / T3-6..T3-11). See Issue #91.
     pub learning_governance: Arc<LearningGovernanceService>,
+    /// Trigger manager for event/message-driven workflow execution (#15, #16)
+    pub trigger_manager: Arc<TriggerManager>,
 }
 
 impl AppState {

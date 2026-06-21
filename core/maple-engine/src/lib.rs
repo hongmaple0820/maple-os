@@ -12,6 +12,7 @@ pub mod memory_service;
 pub mod agent_hooks;
 pub mod workflow_service;
 pub mod execution_chain;
+pub mod trigger;
 
 pub use workflow::{Workflow, WorkflowNode, NodeType, TriggerConfig, WorkflowExecution, ExecStatus};
 pub use executor::WorkflowExecutor;
@@ -25,3 +26,4 @@ pub use approval::{ApprovalService, ApprovalRequest, ApprovalUrgency, QuorumType
 pub use memory_service::{MemoryService, AgentMemory, MemoryLayer, MemoryQuery, ScoredMemory, MemoryStatsResult};
 pub use agent_hooks::{AgentHookService, AgentHookRecord, CreateHookRequest, HookLogRecord};
 pub use execution_chain::{ExecutionRecorder, ExecutionEvent, Execution, ToolInvocation, SOURCES, EVENT_TYPES, EXECUTION_STATUSES};
+pub use trigger::{TriggerManager, TriggerRule, TriggerType};
