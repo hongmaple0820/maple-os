@@ -122,7 +122,9 @@ pub async fn build_test_app_state(pool: sqlx::SqlitePool) -> Arc<AppState> {
         group_manager,
         group_message_manager: Arc::new(GroupMessageManager::new(pool.clone())),
         task_service: Arc::new(TaskService::new(pool.clone())),
-        approval_service: Arc::new(ApprovalService::new(pool.clone())),
+        approval_service: Arc::new(ApprovalService::new(pool.clone()).with_recorder(
+            maple_engine::ExecutionRecorder::new(pool.clone()),
+        )),
         memory_service: Arc::new(MemoryService::new(pool.clone())),
         dm_service: Arc::new(DmService::new(pool.clone(), GroupManager::new(pool.clone()))),
         group_cron_service,

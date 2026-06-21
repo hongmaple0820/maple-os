@@ -958,3 +958,116 @@ async fn test_chat_recorder_contract_placeholder() {
     assert_eq!(exec.source, "chat");
     assert_eq!(exec.status, "success");
 }
+
+// ============================================================
+// Approval service → ExecutionRecorder integration (T1-6)
+// ============================================================
+
+#[tokio::test]
+async fn test_approval_with_execution_records_approval_events() {
+    use mapleos_server::state::AppState;
+    use maple_engine::approval::{ApprovalService, ApprovalUrgency, QuorumType, VoteDecision};
+    use maple_engine::ExecutionRecorder;
+
+    // Build an isolated pool + state just for this test (separate from
+    // setup_with_state's router) so we can drive the ApprovalService with
+    // an explicit execution_id.
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    let _state = build_test_app_state(pool.clone()).await;
+
+    // Use the same pool the AppState uses, but construct our own
+    // ApprovalService with the recorder attached.
+    let recorder = ExecutionRecorder::new(pool.clone());
+    let svc = ApprovalService::new(pool.clone()).with_recorder(recorder.clone());
+
+    // Open an execution in the fact chain
+    let exec_id = recorder
+        .start("workflow", Some("u1"), Some("human"), "manual",
+               serde_json::json!({"workflow_run_id":"wf-1"}), None)
+        .await
+        .unwrap();
+
+    // Create approval — should append 'approval_requested' event
+    let approval = svc
+        .create_request_with_execution(
+            "g1", "deploy to prod", Some("Need sign-off"), "deploy",
+            "u1", ApprovalUrgency::High, QuorumType::Any, "u2", None,
+            Some(&exec_id),
+        )
+        .await
+        .unwrap();
+
+    // Verify the event was recorded
+    let events = recorder.list_events(&exec_id).await.unwrap();
+    let last = events.last().unwrap();
+    assert_eq!(last.source, "approval");
+    assert_eq!(last.event_type, "approval_requested");
+    assert_eq!(last.payload["approval_id"], approval.id);
+    assert_eq!(last.payload["action_type"], "deploy");
+    assert_eq!(last.payload["description"], "deploy to prod");
+    assert_eq!(last.payload["urgency"], "high");
+
+    // Cast an approve vote — should append intermediate 'approval_decided'
+    // event + terminal 'approval_decided' event (quorum met for Any)
+    let outcome = svc
+        .vote_with_execution(&approval.id, "u2", VoteDecision::Approve, Some("lgtm"),
+                             Some(&exec_id))
+        .await
+        .unwrap();
+    assert!(outcome.quorum_met);
+
+    // Verify both events (intermediate vote + terminal decision)
+    let events = recorder.list_events(&exec_id).await.unwrap();
+    let approval_events: Vec<_> = events.iter().filter(|e| e.source == "approval").collect();
+    assert_eq!(approval_events.len(), 3);
+    assert_eq!(approval_events[0].event_type, "approval_requested");
+    assert_eq!(approval_events[1].event_type, "approval_decided");
+    assert_eq!(approval_events[1].payload["is_terminal"], false);
+    assert_eq!(approval_events[1].payload["decision"], "approve");
+    assert_eq!(approval_events[1].payload["voter_id"], "u2");
+    assert_eq!(approval_events[2].event_type, "approval_decided");
+    assert_eq!(approval_events[2].payload["is_terminal"], true);
+    assert_eq!(approval_events[2].payload["decision"], "approved");
+    assert_eq!(approval_events[2].payload["approve_count"], 1);
+}
+
+#[tokio::test]
+async fn test_approval_without_execution_id_does_not_record() {
+    // Backward compat: create_request (no _with_execution variant) does
+    // NOT touch the recorder even if one is attached.
+    use maple_engine::approval::{ApprovalService, ApprovalUrgency, QuorumType};
+    use maple_engine::ExecutionRecorder;
+
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    let _state = build_test_app_state(pool.clone()).await;
+
+    let recorder = ExecutionRecorder::new(pool.clone());
+    let svc = ApprovalService::new(pool.clone()).with_recorder(recorder.clone());
+
+    // Open an execution, then create approval WITHOUT linking it
+    let exec_id = recorder
+        .start("chat", Some("u1"), Some("human"), "manual",
+               serde_json::json!({}), None)
+        .await
+        .unwrap();
+
+    let _approval = svc
+        .create_request(
+            "g1", "test", None, "general", "u1",
+            ApprovalUrgency::Normal, QuorumType::Any, "u2", None,
+        )
+        .await
+        .unwrap();
+
+    // Events for this execution should only contain the 'started' event,
+    // NOT an approval_requested event.
+    let events = recorder.list_events(&exec_id).await.unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event_type, "started");
+}

@@ -4122,6 +4122,11 @@ struct CreateApprovalRequest {
     quorum_type: Option<String>,
     approver_spec: String,
     context: Option<String>,
+    /// Optional execution_id from the unified fact chain. When present, the
+    /// approval_requested event will be appended to that execution so the
+    /// approval lifecycle appears in the same trace as the triggering chat
+    /// / workflow / agent run. (Track 1 / T1-6)
+    execution_id: Option<String>,
 }
 
 async fn v3_create_approval_handler(
@@ -4136,9 +4141,10 @@ async fn v3_create_approval_handler(
     };
     let quorum = maple_engine::approval::QuorumType::from_str(&req.quorum_type.unwrap_or_else(|| "any".to_string()));
     let request_type = req.request_type.as_deref().unwrap_or("general");
-    match state.approval_service.create_request(
+    match state.approval_service.create_request_with_execution(
         &req.group_id, &req.title, req.description.as_deref(), request_type,
         &req.requester_id, urgency, quorum, &req.approver_spec, req.context.as_deref(),
+        req.execution_id.as_deref(),
     ).await {
         Ok(approval) => axum::Json(serde_json::json!({ "approval": approval })),
         Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
@@ -4161,6 +4167,11 @@ struct VoteRequest {
     voter_id: String,
     decision: String,
     comment: Option<String>,
+    /// Optional execution_id from the unified fact chain (Track 1 / T1-6).
+    /// When present, the vote + terminal decision events will be appended
+    /// to that execution so the approval lifecycle appears in the same
+    /// trace as the triggering chat / workflow / agent run.
+    execution_id: Option<String>,
 }
 
 async fn v3_vote_handler(
@@ -4173,7 +4184,10 @@ async fn v3_vote_handler(
         "abstain" => maple_engine::approval::VoteDecision::Abstain,
         _ => maple_engine::approval::VoteDecision::Approve,
     };
-    match state.approval_service.vote(&approval_id, &req.voter_id, decision, req.comment.as_deref()).await {
+    match state.approval_service.vote_with_execution(
+        &approval_id, &req.voter_id, decision, req.comment.as_deref(),
+        req.execution_id.as_deref(),
+    ).await {
         Ok(outcome) => {
             state.event_bus.publish(maple_engine::event_bus::Event::ApprovalVoteCast {
                 approval_id: approval_id.clone(),
@@ -4886,7 +4900,9 @@ async fn main() -> anyhow::Result<()> {
         group_manager: Arc::new(GroupManager::new(pool.clone())),
         group_message_manager: Arc::new(GroupMessageManager::new(pool.clone())),
         task_service: Arc::new(TaskService::new(pool.clone())),
-        approval_service: Arc::new(ApprovalService::new(pool.clone())),
+        approval_service: Arc::new(ApprovalService::new(pool.clone()).with_recorder(
+            maple_engine::ExecutionRecorder::new(pool.clone()),
+        )),
         memory_service: Arc::new(MemoryService::new(pool.clone())),
         dm_service: Arc::new(maple_collab::dm_service::DmService::new(pool.clone(), GroupManager::new(pool.clone()))),
         group_cron_service: Arc::new(maple_collab::group_cron::GroupCronService::new(
