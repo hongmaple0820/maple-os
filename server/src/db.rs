@@ -1563,7 +1563,7 @@ async fn run_v3_migration_018(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
 
 async fn run_v3_migration_019(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
     // #24: Seed 4 built-in system agents
-    let now = chrono::Utc::now().timestamp();
+    let _now = chrono::Utc::now().timestamp();
     let agents = vec![
         ("agent-scheduler", "Scheduler", "Automatically receives tasks, decomposes them, and dispatches to specialized agents", "[\"system\",\"scheduler\"]"),
         ("agent-reviewer", "Reviewer", "Reviews agent outputs and workflow results for quality and compliance", "[\"system\",\"reviewer\"]"),
