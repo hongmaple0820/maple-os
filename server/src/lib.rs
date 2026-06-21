@@ -231,6 +231,7 @@ pub fn build_v3_test_router(state: Arc<AppState>) -> Router {
 /// `mapleos_server::execution_handlers::*`.
 
 mod v3_handlers {
+    #![allow(unused_variables)]
     use axum::extract::{Path, Query, State};
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
@@ -376,6 +377,7 @@ mod v3_handlers {
     }
 
     #[derive(Debug, Deserialize)]
+    #[allow(dead_code)]
     pub struct InterveneReq {
         pub action: String,
         pub reason: Option<String>,
