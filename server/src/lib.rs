@@ -137,6 +137,7 @@ pub async fn build_test_app_state(pool: sqlx::SqlitePool) -> Arc<AppState> {
         metrics: metrics::AppMetrics::new(),
         execution_recorder: maple_engine::ExecutionRecorder::new(pool.clone()),
         learning_governance: Arc::new(maple_kb::LearningGovernanceService::new(pool.clone())),
+        trigger_manager: Arc::new(maple_engine::TriggerManager::new(pool.clone())),
     })
 }
 
@@ -220,6 +221,9 @@ pub fn build_v3_test_router(state: Arc<AppState>) -> Router {
         .route("/api/v3/learning/candidates/:id/reject", post(learning_handlers::reject_handler))
         .route("/api/v3/learning/candidates/:id/revoke", post(learning_handlers::revoke_handler))
         .route("/api/v3/learning/blocked", get(learning_handlers::is_blocked_handler))
+        // Triggers (#15, #16)
+        .route("/api/v3/triggers", get(trigger_handlers::v3_list_triggers).post(trigger_handlers::v3_create_trigger))
+        .route("/api/v3/triggers/:id", delete(trigger_handlers::v3_delete_trigger))
         .with_state(state)
 }
 
@@ -1409,6 +1413,60 @@ mod v3_handlers {
         match state.workflow_service.record_checkpoint(&rid, &req.node_id, &req.output, &req.context_snapshot).await {
             Ok(id) => (StatusCode::CREATED, Json(serde_json::json!({ "id": id }))),
             Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))),
+        }
+    }
+}
+
+// ============================================================
+// Trigger handlers (#15, #16)
+// ============================================================
+
+pub mod trigger_handlers {
+    use super::*;
+    use axum::extract::{Path, State};
+    use axum::Json;
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize)]
+    pub struct CreateTriggerReq {
+        pub id: String,
+        pub workflow_id: String,
+        pub trigger_type: maple_engine::TriggerType,
+        pub enabled: Option<bool>,
+    }
+
+    pub async fn v3_create_trigger(
+        State(state): State<Arc<state::AppState>>,
+        Json(req): Json<CreateTriggerReq>,
+    ) -> Json<serde_json::Value> {
+        let now = chrono::Utc::now().timestamp();
+        let rule = maple_engine::TriggerRule {
+            id: req.id,
+            workflow_id: req.workflow_id,
+            trigger_type: req.trigger_type,
+            enabled: req.enabled.unwrap_or(true),
+            created_at: now,
+        };
+        match state.trigger_manager.add_rule(rule).await {
+            Ok(()) => Json(serde_json::json!({ "created": true })),
+            Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
+        }
+    }
+
+    pub async fn v3_list_triggers(
+        State(state): State<Arc<state::AppState>>,
+    ) -> Json<serde_json::Value> {
+        let rules = state.trigger_manager.list_rules().await;
+        Json(serde_json::json!({ "triggers": rules, "count": rules.len() }))
+    }
+
+    pub async fn v3_delete_trigger(
+        State(state): State<Arc<state::AppState>>,
+        Path(id): Path<String>,
+    ) -> Json<serde_json::Value> {
+        match state.trigger_manager.remove_rule(&id).await {
+            Ok(()) => Json(serde_json::json!({ "deleted": true })),
+            Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
         }
     }
 }

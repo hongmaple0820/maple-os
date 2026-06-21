@@ -5278,6 +5278,7 @@ async fn main() -> anyhow::Result<()> {
         metrics: metrics::AppMetrics::new(),
         execution_recorder: maple_engine::ExecutionRecorder::new(pool.clone()),
         learning_governance: learning_governance.clone(),
+        trigger_manager: Arc::new(maple_engine::TriggerManager::new(pool.clone())),
     });
 
     // Initialize group cron service
@@ -5532,6 +5533,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v3/learning/candidates/:id/reject", post(mapleos_server::learning_handlers::reject_handler))
         .route("/api/v3/learning/candidates/:id/revoke", post(mapleos_server::learning_handlers::revoke_handler))
         .route("/api/v3/learning/blocked", get(mapleos_server::learning_handlers::is_blocked_handler))
+        // Triggers (#15, #16)
+        .route("/api/v3/triggers", get(mapleos_server::trigger_handlers::v3_list_triggers).post(mapleos_server::trigger_handlers::v3_create_trigger))
+        .route("/api/v3/triggers/:id", delete(mapleos_server::trigger_handlers::v3_delete_trigger))
         .with_state(state.clone());
 
     let cors = if config.require_auth {

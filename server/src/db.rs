@@ -457,6 +457,10 @@ pub async fn run_migrations(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
     run_v3_migration_016(pool).await?;
     // --- 017: Workflow version history ---
     run_v3_migration_017(pool).await?;
+    // --- 018: Workflow triggers (event + message) ---
+    run_v3_migration_018(pool).await?;
+    // --- 019: System agents (#24) ---
+    run_v3_migration_019(pool).await?;
 
     tracing::info!("Database migrations completed (including v3)");
     Ok(())
@@ -1537,5 +1541,38 @@ async fn run_v3_migration_017(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
     let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_wv_created ON workflow_versions(created_at DESC)").execute(pool).await;
 
     tracing::info!("v3 migration 017 (workflow_versions) completed");
+    Ok(())
+}
+
+async fn run_v3_migration_018(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS workflow_triggers (
+            id TEXT PRIMARY KEY,
+            workflow_id TEXT NOT NULL,
+            trigger_config TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at INTEGER NOT NULL
+        )"
+    ).execute(pool).await?;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_wt_workflow ON workflow_triggers(workflow_id)").execute(pool).await;
+    tracing::info!("v3 migration 018 (workflow_triggers) completed");
+    Ok(())
+}
+
+async fn run_v3_migration_019(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
+    // #24: Seed 4 built-in system agents
+    let now = chrono::Utc::now().timestamp();
+    let agents = vec![
+        ("agent-scheduler", "Scheduler", "Automatically receives tasks, decomposes them, and dispatches to specialized agents", "[\"system\",\"scheduler\"]"),
+        ("agent-reviewer", "Reviewer", "Reviews agent outputs and workflow results for quality and compliance", "[\"system\",\"reviewer\"]"),
+        ("agent-monitor", "Monitor", "Monitors system health, agent uptime, and task queue depth; alerts on anomalies", "[\"system\",\"monitor\"]"),
+        ("agent-evolver", "Evolver", "Extracts learnings from completed executions and proposes knowledge updates", "[\"system\",\"evolver\"]"),
+    ];
+    for (id, name, desc, tags) in agents {
+        let _ = sqlx::query(
+            "INSERT OR IGNORE INTO agents (id, name, status, description, tags) VALUES (?, ?, 'offline', ?, ?)"
+        ).bind(id).bind(name).bind(desc).bind(tags).execute(pool).await;
+    }
+    tracing::info!("v3 migration 019 (system agents seeded) completed");
     Ok(())
 }
