@@ -464,6 +464,156 @@ impl ExecutionRecorder {
 
         Ok(rows.into_iter().map(Into::into).collect())
     }
+
+    // ============================================================
+    // Tool invocations (T5-5 — structured per-call audit record)
+    // ============================================================
+
+    /// Record a completed tool invocation (T5-5). Writes one row to
+    /// `tool_invocations` with the full input/output/error/duration.
+    ///
+    /// Call this AFTER the tool has finished (success or failure). For
+    /// in-progress tracking, use the `tool_call` / `tool_result` events
+    /// on the execution_events table (T1-5).
+    ///
+    /// `permission_level` must be one of: read_only, workspace_write,
+    /// prompt, allow, danger.
+    pub async fn record_tool_invocation(
+        &self,
+        execution_id: &str,
+        tool_name: &str,
+        input: &serde_json::Value,
+        output: Option<&serde_json::Value>,
+        error: Option<&str>,
+        permission_level: &str,
+        status: &str,
+        duration_ms: Option<i64>,
+        invoked_by: Option<&str>,
+        invoked_by_type: Option<&str>,
+    ) -> Result<String> {
+        Self::validate_permission_level(permission_level)?;
+        Self::validate_tool_invocation_status(status)?;
+
+        let id = format!("inv_{}", Uuid::new_v4().simple());
+        let now = chrono::Utc::now().timestamp();
+
+        sqlx::query(
+            "INSERT INTO tool_invocations
+                (id, execution_id, tool_name, input, output, error,
+                 permission_level, approval_id, status,
+                 started_at, completed_at, duration_ms,
+                 invoked_by, invoked_by_type, retry_of, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, ?)",
+        )
+        .bind(&id)
+        .bind(execution_id)
+        .bind(tool_name)
+        .bind(input.to_string())
+        .bind(output.map(|v| v.to_string()))
+        .bind(error)
+        .bind(permission_level)
+        .bind(status)
+        .bind(if duration_ms.is_some() { now - duration_ms.unwrap_or(0) / 1000 } else { now })
+        .bind(now)
+        .bind(duration_ms)
+        .bind(invoked_by)
+        .bind(invoked_by_type)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(id)
+    }
+
+    /// List all tool invocations for an execution, in chronological order.
+    pub async fn list_tool_invocations(
+        &self,
+        execution_id: &str,
+    ) -> Result<Vec<ToolInvocation>> {
+        let rows = sqlx::query_as::<_, ToolInvocationRow>(
+            "SELECT id, execution_id, tool_name, input, output, error,
+                    permission_level, approval_id, status,
+                    started_at, completed_at, duration_ms,
+                    invoked_by, invoked_by_type, retry_of, created_at
+               FROM tool_invocations
+              WHERE execution_id = ?
+              ORDER BY created_at ASC, rowid ASC",
+        )
+        .bind(execution_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+}
+
+// ============================================================
+// Tool invocation types (T5-5)
+// ============================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolInvocation {
+    pub id: String,
+    pub execution_id: String,
+    pub tool_name: String,
+    pub input: Option<serde_json::Value>,
+    pub output: Option<serde_json::Value>,
+    pub error: Option<String>,
+    pub permission_level: String,
+    pub approval_id: Option<String>,
+    pub status: String,
+    pub started_at: Option<i64>,
+    pub completed_at: Option<i64>,
+    pub duration_ms: Option<i64>,
+    pub invoked_by: Option<String>,
+    pub invoked_by_type: Option<String>,
+    pub retry_of: Option<String>,
+    pub created_at: i64,
+}
+
+#[derive(sqlx::FromRow)]
+struct ToolInvocationRow {
+    id: String,
+    execution_id: String,
+    tool_name: String,
+    input: Option<String>,
+    output: Option<String>,
+    error: Option<String>,
+    permission_level: String,
+    approval_id: Option<String>,
+    status: String,
+    started_at: Option<i64>,
+    completed_at: Option<i64>,
+    duration_ms: Option<i64>,
+    invoked_by: Option<String>,
+    invoked_by_type: Option<String>,
+    retry_of: Option<String>,
+    created_at: i64,
+}
+
+impl From<ToolInvocationRow> for ToolInvocation {
+    fn from(r: ToolInvocationRow) -> Self {
+        let input = r.input.and_then(|s| serde_json::from_str(&s).ok());
+        let output = r.output.and_then(|s| serde_json::from_str(&s).ok());
+        Self {
+            id: r.id,
+            execution_id: r.execution_id,
+            tool_name: r.tool_name,
+            input,
+            output,
+            error: r.error,
+            permission_level: r.permission_level,
+            approval_id: r.approval_id,
+            status: r.status,
+            started_at: r.started_at,
+            completed_at: r.completed_at,
+            duration_ms: r.duration_ms,
+            invoked_by: r.invoked_by,
+            invoked_by_type: r.invoked_by_type,
+            retry_of: r.retry_of,
+            created_at: r.created_at,
+        }
+    }
 }
 
 // ============================================================
@@ -495,6 +645,25 @@ impl ExecutionRecorder {
                  use an artifact reference instead",
                 serialized.len()
             );
+        }
+        Ok(())
+    }
+
+    fn validate_permission_level(level: &str) -> Result<()> {
+        const VALID: &[&str] = &["read_only", "workspace_write", "prompt", "allow", "danger"];
+        if !VALID.contains(&level) {
+            anyhow::bail!("invalid permission_level '{level}'; must be one of {VALID:?}");
+        }
+        Ok(())
+    }
+
+    fn validate_tool_invocation_status(status: &str) -> Result<()> {
+        const VALID: &[&str] = &[
+            "pending", "running", "approved", "rejected",
+            "success", "failed", "cancelled", "timeout",
+        ];
+        if !VALID.contains(&status) {
+            anyhow::bail!("invalid tool_invocation status '{status}'; must be one of {VALID:?}");
         }
         Ok(())
     }
@@ -617,6 +786,30 @@ mod tests {
                 error TEXT,
                 event_count INTEGER NOT NULL DEFAULT 0,
                 updated_at INTEGER NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        // T5-5: tool_invocations table
+        sqlx::query(
+            "CREATE TABLE tool_invocations (
+                id TEXT PRIMARY KEY,
+                execution_id TEXT NOT NULL,
+                tool_name TEXT NOT NULL,
+                input TEXT,
+                output TEXT,
+                error TEXT,
+                permission_level TEXT NOT NULL,
+                approval_id TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                started_at INTEGER,
+                completed_at INTEGER,
+                duration_ms INTEGER,
+                invoked_by TEXT,
+                invoked_by_type TEXT,
+                retry_of TEXT,
+                created_at INTEGER NOT NULL
             )",
         )
         .execute(&pool)
@@ -885,5 +1078,126 @@ mod tests {
 
         let child_events = rec.list_events(&child_id).await.unwrap();
         assert_eq!(child_events[0].parent_execution_id.as_deref(), Some(parent_id.as_str()));
+    }
+
+    // ── T5-5: tool_invocations ──
+
+    #[tokio::test]
+    async fn record_tool_invocation_writes_complete_record() {
+        let pool = setup_pool().await;
+        let rec = ExecutionRecorder::new(pool);
+
+        let exec_id = rec
+            .start("chat", None, None, "manual", serde_json::json!({}), None)
+            .await
+            .unwrap();
+
+        let inv_id = rec
+            .record_tool_invocation(
+                &exec_id,
+                "kb_search",
+                &serde_json::json!({"query": "rust"}),
+                Some(&serde_json::json!({"hits": 3})),
+                None,
+                "read_only",
+                "success",
+                Some(42),
+                Some("agent_1"),
+                Some("agent"),
+            )
+            .await
+            .unwrap();
+
+        assert!(inv_id.starts_with("inv_"));
+
+        let invs = rec.list_tool_invocations(&exec_id).await.unwrap();
+        assert_eq!(invs.len(), 1);
+        assert_eq!(invs[0].tool_name, "kb_search");
+        assert_eq!(invs[0].status, "success");
+        assert_eq!(invs[0].permission_level, "read_only");
+        assert_eq!(invs[0].duration_ms, Some(42));
+        assert_eq!(invs[0].input.as_ref().unwrap()["query"], "rust");
+        assert_eq!(invs[0].output.as_ref().unwrap()["hits"], 3);
+        assert!(invs[0].error.is_none());
+    }
+
+    #[tokio::test]
+    async fn record_tool_invocation_with_error() {
+        let pool = setup_pool().await;
+        let rec = ExecutionRecorder::new(pool);
+
+        let exec_id = rec
+            .start("workflow", None, None, "manual", serde_json::json!({}), None)
+            .await
+            .unwrap();
+
+        rec.record_tool_invocation(
+            &exec_id,
+            "http_request",
+            &serde_json::json!({"url": "http://example.com"}),
+            None,
+            Some("connection refused"),
+            "workspace_write",
+            "failed",
+            Some(5000),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let invs = rec.list_tool_invocations(&exec_id).await.unwrap();
+        assert_eq!(invs.len(), 1);
+        assert_eq!(invs[0].status, "failed");
+        assert_eq!(invs[0].error.as_deref(), Some("connection refused"));
+        assert!(invs[0].output.is_none());
+    }
+
+    #[tokio::test]
+    async fn list_tool_invocations_empty_for_unknown_execution() {
+        let pool = setup_pool().await;
+        let rec = ExecutionRecorder::new(pool);
+        let invs = rec.list_tool_invocations("exec_nonexistent").await.unwrap();
+        assert!(invs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn record_tool_invocation_rejects_invalid_permission_level() {
+        let pool = setup_pool().await;
+        let rec = ExecutionRecorder::new(pool);
+        let exec_id = rec
+            .start("chat", None, None, "manual", serde_json::json!({}), None)
+            .await
+            .unwrap();
+
+        let err = rec
+            .record_tool_invocation(
+                &exec_id, "tool", &serde_json::json!({}),
+                None, None, "invalid_level", "success",
+                None, None, None,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("invalid permission_level"));
+    }
+
+    #[tokio::test]
+    async fn record_tool_invocation_rejects_invalid_status() {
+        let pool = setup_pool().await;
+        let rec = ExecutionRecorder::new(pool);
+        let exec_id = rec
+            .start("chat", None, None, "manual", serde_json::json!({}), None)
+            .await
+            .unwrap();
+
+        let err = rec
+            .record_tool_invocation(
+                &exec_id, "tool", &serde_json::json!({}),
+                None, None, "read_only", "invalid_status",
+                None, None, None,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("invalid tool_invocation status"));
     }
 }

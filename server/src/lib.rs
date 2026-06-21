@@ -208,6 +208,7 @@ pub fn build_v3_test_router(state: Arc<AppState>) -> Router {
         // in main.rs; the new unified chain lives under /api/v3/executions/*.
         .route("/api/v3/executions/:id", get(execution_handlers::get_execution_handler))
         .route("/api/v3/executions/:id/events", get(execution_handlers::list_events_handler))
+        .route("/api/v3/executions/:id/tool-invocations", get(execution_handlers::list_tool_invocations_handler))
         .route("/api/v3/executions/:id/events/stream", get(execution_handlers::sse_events_handler))
         // Learning governance (Track 3 / T3-6..T3-11)
         .route("/api/v3/learning/candidates", get(learning_handlers::list_candidates_handler))

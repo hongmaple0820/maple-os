@@ -579,6 +579,31 @@ impl ReactLoop {
                         None,
                         None,
                     ).await;
+
+                    // T5-5: also write a structured tool_invocations row
+                    // for audit. This complements the event stream with
+                    // a queryable per-call record (input/output/error/
+                    // duration/permission_level).
+                    let perm = self.tool_use_context.as_ref()
+                        .map(|ctx| format!("{:?}", ctx.permission_level).to_lowercase())
+                        .unwrap_or_else(|| "read_only".to_string());
+                    let (status, output_val, error_str) = if result.is_error {
+                        ("failed", None, Some(result.output.to_string()))
+                    } else {
+                        ("success", Some(&result.output), None)
+                    };
+                    let _ = rec.record_tool_invocation(
+                        eid,
+                        &result.tool_name,
+                        &serde_json::json!({"tool_use_id": &result.tool_use_id}),
+                        output_val,
+                        error_str.as_deref(),
+                        &perm,
+                        status,
+                        None, // duration_ms — T5-5.1 will wire actual timing
+                        None,
+                        Some("agent"),
+                    ).await;
                 }
             }
 

@@ -5283,6 +5283,7 @@ async fn main() -> anyhow::Result<()> {
         // new unified chain lives under /api/v3/executions/*.
         .route("/api/v3/executions/:id", get(mapleos_server::execution_handlers::get_execution_handler))
         .route("/api/v3/executions/:id/events", get(mapleos_server::execution_handlers::list_events_handler))
+        .route("/api/v3/executions/:id/tool-invocations", get(mapleos_server::execution_handlers::list_tool_invocations_handler))
         .route("/api/v3/executions/:id/events/stream", get(mapleos_server::execution_handlers::sse_events_handler))
         // Learning governance (Track 3 / T3-6..T3-11)
         .route("/api/v3/learning/candidates", get(mapleos_server::learning_handlers::list_candidates_handler))

@@ -133,6 +133,32 @@ pub async fn list_events_handler(
     }))
 }
 
+/// GET /api/v3/executions/:id/tool-invocations — list structured tool
+/// invocation records for an execution (T5-5). Complements the event
+/// stream with a queryable per-call audit record.
+pub async fn list_tool_invocations_handler(
+    State(state): State<std::sync::Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let _exec = state
+        .execution_recorder
+        .get_execution(&id)
+        .await
+        .map_err(|e| ApiError::new(format!("failed to fetch execution: {e}"), "INTERNAL_ERROR"))?
+        .ok_or_else(|| ApiError::new(format!("execution {id} not found"), "NOT_FOUND"))?;
+
+    let invs = state
+        .execution_recorder
+        .list_tool_invocations(&id)
+        .await
+        .map_err(|e| ApiError::new(format!("failed to fetch tool invocations: {e}"), "INTERNAL_ERROR"))?;
+
+    Ok(Json(serde_json::json!({
+        "execution_id": id,
+        "tool_invocations": invs,
+    })))
+}
+
 /// GET /api/executions/:id/events/stream — Server-Sent Events stream.
 ///
 /// Polls the recorder every 1s for new events until the execution reaches a

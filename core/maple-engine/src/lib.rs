@@ -24,4 +24,4 @@ pub use task_service::{TaskService, TaskV3, TaskV3Status, TaskPriority, Project,
 pub use approval::{ApprovalService, ApprovalRequest, ApprovalUrgency, QuorumType, VoteDecision, ApprovalOutcome};
 pub use memory_service::{MemoryService, AgentMemory, MemoryLayer, MemoryQuery, ScoredMemory, MemoryStatsResult};
 pub use agent_hooks::{AgentHookService, AgentHookRecord, CreateHookRequest, HookLogRecord};
-pub use execution_chain::{ExecutionRecorder, ExecutionEvent, Execution, SOURCES, EVENT_TYPES, EXECUTION_STATUSES};
+pub use execution_chain::{ExecutionRecorder, ExecutionEvent, Execution, ToolInvocation, SOURCES, EVENT_TYPES, EXECUTION_STATUSES};
