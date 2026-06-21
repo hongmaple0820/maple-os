@@ -100,6 +100,12 @@ function KnowledgeRefCard({ ref }: { ref: KnowledgeRef }) {
       <CardContent className="p-2">
         <div className="flex items-center gap-2">
           <Badge variant="outline" className="text-[10px]">{ref.source_type}</Badge>
+          {/* T3-10: mark learning-derived refs so users can see provenance */}
+          {ref.is_learning && (
+            <Badge variant="secondary" className="text-[9px] bg-purple-100 text-purple-700" title={`From learning candidate ${ref.candidate_id ?? ""}`}>
+              ★ learning
+            </Badge>
+          )}
           <span className="text-[12px] font-medium truncate max-w-[200px]">{ref.title}</span>
           <div className="flex items-center gap-1 ml-auto">
             <div className={`h-1.5 rounded-full ${scoreColor}`} style={{ width: `${scorePercent}px` }} />

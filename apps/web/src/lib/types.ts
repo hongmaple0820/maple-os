@@ -4,6 +4,10 @@ export interface KnowledgeRef {
   source_type: string;
   score: number;
   snippet: string;
+  /** T3-10: true when this ref comes from an approved learning candidate */
+  is_learning?: boolean;
+  /** T3-10: the learning candidate id that produced this memory entry */
+  candidate_id?: string;
 }
 
 export interface ChatMessage {

@@ -689,9 +689,10 @@ async fn chat_stream_handler(
             .await
             .unwrap_or_default();
 
+        let mut sources = Vec::new();
+        let mut context_parts = Vec::new();
+
         if !kb_results.is_empty() {
-            let mut context_parts = Vec::new();
-            let mut sources = Vec::new();
             for r in &kb_results {
                 context_parts.push(r.content.clone());
                 let snippet = if r.content.len() > 200 {
@@ -707,6 +708,48 @@ async fn chat_stream_handler(
                     "source_type": r.source_type,
                 }));
             }
+        }
+
+        // T3-10: also search episodic memory for learning candidates
+        // that match the query. If a memory entry has candidate_id in
+        // its metadata, mark it as a learning source so the frontend
+        // can display "from learning candidate X" in the context preview.
+        {
+            let memory_store = state.memory_store.lock().await;
+            let keywords: Vec<&str> = req.message.split_whitespace().take(5).collect();
+            for kw in keywords {
+                if let Ok(entries) = memory_store
+                    .search_by_type(&maple_kb::memory::MemoryType::Episodic, kw, 3)
+                    .await
+                {
+                    for entry in entries {
+                        let candidate_id = entry.metadata.get("candidate_id").cloned();
+                        let is_learning = candidate_id.is_some();
+                        let snippet = if entry.content.len() > 200 {
+                            let mut end = 200;
+                            while end > 0 && !entry.content.is_char_boundary(end) {
+                                end -= 1;
+                            }
+                            entry.content[..end].to_string() + "..."
+                        } else {
+                            entry.content.clone()
+                        };
+                        context_parts.push(entry.content.clone());
+                        sources.push(serde_json::json!({
+                            "id": entry.id,
+                            "snippet": snippet,
+                            "score": 0.8,
+                            "source": if is_learning { "learning" } else { "memory" },
+                            "source_type": "episodic_memory",
+                            "is_learning": is_learning,
+                            "candidate_id": candidate_id,
+                        }));
+                    }
+                }
+            }
+        }
+
+        if !context_parts.is_empty() {
             let kb_context = context_parts.join("\n---\n");
             enhanced_message = format!(
                 "[Knowledge Base Context]\n{}\n---\n[User Question]\n{}",
