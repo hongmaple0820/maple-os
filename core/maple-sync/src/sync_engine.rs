@@ -229,7 +229,15 @@ impl SyncEngine {
                                 merged.insert(key.clone(), remote_val.clone());
                             }
                             ConflictResolution::Merged => {
-                                let merged_val = CrdtManager::merge(local_val, remote_val);
+                                // #70: use Automerge for proper CRDT merge
+                                // instead of the custom merge function
+                                let mut crdt = CrdtManager::new();
+                                crdt.create_automerge_doc("local", local_val);
+                                let mut remote_crdt = CrdtManager::new();
+                                remote_crdt.create_automerge_doc("remote", remote_val);
+                                let remote_bytes = remote_crdt.get_automerge_doc();
+                                crdt.merge_automerge_doc(&remote_bytes);
+                                let merged_val = crdt.get_json_from_doc("local");
                                 merged.insert(key.clone(), merged_val);
                             }
                         }
