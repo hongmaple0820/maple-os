@@ -1,0 +1,15 @@
+# Basic chat workflow template
+id: basic-chat
+name: Basic Chat
+description: Simple LLM chat workflow
+version: 1
+trigger:
+  type: manual
+nodes:
+  - id: llm-1
+    name: LLM Response
+    node_type:
+      type: llm
+      model_route: auto
+      prompt_ref: default
+    depends_on: []
