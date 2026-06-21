@@ -62,7 +62,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
         )}
         {/* T1-8: render unified ExecutionTimeline when user toggles it on */}
         {message.executionId && showTrace && (
-          <div className="mt-3">
+          <div className="mt-3 -mx-2">
             <ExecutionTimeline executionId={message.executionId} compact />
           </div>
         )}
@@ -129,7 +129,11 @@ export function ChatPanel() {
   const [selectedAgent, setSelectedAgent] = useState<string>("");
   const [currentSession, setCurrentSession] = useState<string>("");
   const [sessionList, setSessionList] = useState<{ id: string; title: string; created_at: number }[]>([]);
-  const [models, setModels] = useState<string[]>([]);
+  // T3-1: models now come back as ModelDescriptor[] from /api/models
+  // (see #86 fix). We keep the local state typed loosely to avoid breaking
+  // the chat dropdown, but render m.id / m.name where appropriate.
+  interface RemoteModel { id: string; name?: string; provider?: string; is_local?: boolean; registered?: boolean }
+  const [models, setModels] = useState<RemoteModel[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>("auto");
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -144,7 +148,8 @@ export function ChatPanel() {
     };
     const loadModels = async () => {
       try {
-        const r = await mapleApi<{ models: string[] }>("/api/models");
+        // T3-1: /api/models now returns ModelDescriptor[] not string[]
+        const r = await mapleApi<{ models: RemoteModel[] }>("/api/models");
         setModels(r.models ?? []);
       } catch { setModels([]); }
     };
@@ -348,7 +353,11 @@ export function ChatPanel() {
               className="h-7 rounded border bg-background text-[12px] px-2 font-mono"
             >
               <option value="auto">{t("chat.autoSelect")}</option>
-              {models.map((m) => <option key={m} value={m}>{m}</option>)}
+              {models.filter((m) => m.registered !== false).map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name ?? m.id}{m.provider ? ` (${m.provider})` : ""}
+                </option>
+              ))}
             </select>
           )}
         </div>

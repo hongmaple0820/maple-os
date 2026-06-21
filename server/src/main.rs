@@ -456,6 +456,105 @@ async fn health_handler() -> impl IntoResponse {
         "version": env!("CARGO_PKG_VERSION"),
     }))
 }
+/// POST /api/llm/test-connection (Track 3 / T3-3)
+///
+/// Tests connectivity to an LLM provider by sending a minimal chat
+/// completion request. Returns latency + model name on success, error
+/// message on failure.
+///
+/// Request body:
+///   { "provider": "ollama" | "openai" | "anthropic",
+///     "base_url"?: string,    // for ollama
+///     "api_key"?: string,     // for cloud providers
+///     "model"?: string }      // specific model to test (default: first available)
+///
+/// Response (200):
+///   { "ok": true, "provider": "ollama", "model": "qwen2.5:7b", "latency_ms": 42 }
+/// Response (503):
+///   { "ok": false, "error": "connection refused" }
+async fn llm_test_connection_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    Json(req): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let provider = req["provider"].as_str().unwrap_or("").to_string();
+    let base_url = req["base_url"].as_str().unwrap_or("http://localhost:11434").to_string();
+    let api_key = req["api_key"].as_str().unwrap_or("").to_string();
+    let model = req["model"].as_str().unwrap_or("").to_string();
+
+    let start = std::time::Instant::now();
+    let result: anyhow::Result<(String, String)> = async {
+        match provider.as_str() {
+            "ollama" => {
+                let url = format!("{}/v1/chat/completions", base_url.trim_end_matches('/'));
+                let body = serde_json::json!({
+                    "model": if model.is_empty() { "qwen2.5:7b" } else { &model },
+                    "messages": [{"role": "user", "content": "ping"}],
+                    "max_tokens": 5,
+                    "stream": false,
+                });
+                let client = reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(10))
+                    .build()?;
+                let resp = client.post(&url).json(&body).send().await?;
+                if !resp.status().is_success() {
+                    anyhow::bail!("HTTP {}", resp.status());
+                }
+                Ok((provider.clone(), model.clone()))
+            }
+            "openai" => {
+                if api_key.is_empty() {
+                    anyhow::bail!("api_key required for openai provider");
+                }
+                let url = "https://api.openai.com/v1/chat/completions";
+                let model_name = if model.is_empty() { "gpt-4o-mini" } else { &model };
+                let body = serde_json::json!({
+                    "model": model_name,
+                    "messages": [{"role": "user", "content": "ping"}],
+                    "max_tokens": 5,
+                });
+                let client = reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(10))
+                    .build()?;
+                let resp = client.post(url)
+                    .header("Authorization", format!("Bearer {}", api_key))
+                    .json(&body)
+                    .send().await?;
+                if !resp.status().is_success() {
+                    let status = resp.status();
+                    let text = resp.text().await.unwrap_or_default();
+                    anyhow::bail!("HTTP {}: {}", status, text);
+                }
+                Ok((provider.clone(), model_name.to_string()))
+            }
+            _ => {
+                anyhow::bail!("unsupported provider: {} (supported: ollama, openai)", provider);
+            }
+        }
+    }
+    .await;
+
+    let latency_ms = start.elapsed().as_millis() as u64;
+    match result {
+        Ok((prov, mdl)) => (
+            axum::http::StatusCode::OK,
+            axum::Json(serde_json::json!({
+                "ok": true,
+                "provider": prov,
+                "model": mdl,
+                "latency_ms": latency_ms,
+            })),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(serde_json::json!({
+                "ok": false,
+                "error": e.to_string(),
+                "latency_ms": latency_ms,
+            })),
+        ),
+    }
+}
+
 async fn models_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> impl IntoResponse {
@@ -469,10 +568,41 @@ async fn models_handler(
         }));
     }
 
-    // 缓存未命中，从LLM路由获取
-    let models = state.llm_router.list_models().await;
+    // ── T3-1: return ModelDescriptor[] (id + name + provider + is_local)
+    // instead of bare String[]. The frontend settings-page expects this
+    // shape — see #86 where the type mismatch broke model display.
+    let mut models = state.llm_router.list_models_detailed().await;
+
+    // ── T3-2: also discover models from the configured Ollama instance
+    // (if any) so users see what's actually running locally, not just
+    // what's pre-registered. Discovered models that are not already
+    // registered are appended with `registered: false` so the frontend
+    // can show them but mark them as "needs registration before use".
+    //
+    // ollama_url lives in the app_config table (key="config.ollama_url").
+    let ollama_url: String = sqlx::query_scalar::<_, String>(
+        "SELECT value FROM app_config WHERE key = 'config.ollama_url'"
+    )
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or_else(|| "http://localhost:11434".to_string());
+
+    if !ollama_url.is_empty() {
+        let discovered = maple_llm::router::LlmRouter::discover_ollama_models(&ollama_url).await;
+        let existing_ids: std::collections::HashSet<String> =
+            models.iter().map(|m| m.id.clone()).collect();
+        for d in discovered {
+            if !existing_ids.contains(&d.id) {
+                // d.registered is already Some(false) from discover_ollama_models
+                models.push(d);
+            }
+        }
+    }
+
     let models_json: Vec<serde_json::Value> =
-        models.into_iter().map(|m| serde_json::json!(m)).collect();
+        models.into_iter().map(|m| serde_json::to_value(&m).unwrap_or(serde_json::Value::Null)).collect();
 
     // 存入缓存
     state.cache.models.insert(cache_key, models_json.clone());
@@ -4972,6 +5102,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/chat", post(chat_handler))
         .route("/api/chat/stream", post(chat_stream_handler))
         .route("/api/models", get(models_handler))
+        .route("/api/llm/test-connection", post(llm_test_connection_handler))
         .route("/api/skills", get(skills_handler))
         .route(
             "/api/config",
@@ -5435,7 +5566,8 @@ async fn register_business_handlers(dispatcher: &Arc<RpcDispatcher>, state: Arc<
         .register("llm.models", move |_: Option<serde_json::Value>| {
             let router = s.llm_router.clone();
             async move {
-                let models = router.list_models().await;
+                // T3-1: return ModelDescriptor[] with id/name/provider/is_local
+                let models = router.list_models_detailed().await;
                 Ok(serde_json::json!({
                     "models": models,
                 }))
