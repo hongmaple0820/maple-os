@@ -1,0 +1,17 @@
+[package]
+name = "maple-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "maple"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive", "env"] }
+reqwest = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
