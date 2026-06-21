@@ -326,7 +326,7 @@ function summarizePayload(event: ExecutionEvent): string {
     case "resumed":
       return `reason=${p.reason ?? "?"}`;
     case "done":
-      return p.output_summary ?? "(done)";
+      return String(p.output_summary ?? "(done)");
     case "error":
       return `${p.message ?? "?"}${p.recoverable ? " (recoverable)" : ""}`;
     case "cancelled":

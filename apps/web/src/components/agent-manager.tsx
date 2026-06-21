@@ -16,7 +16,7 @@ interface AgentListItem {
   model?: string;
   skills?: string[];
 }
-interface ModelInfo { id: string; name: string; provider: string }
+interface ModelInfo { id: string; name: string; provider: string; is_local?: boolean; registered?: boolean }
 interface SkillInfo { id: string; description: string }
 interface TaskStats { total: number; pending: number; running: number; completed: number; failed: number; dead_letter: number }
 interface MemoryEntry { id: string; content: string; type: string; metadata: Record<string, string>; created_at: number; access_count: number }

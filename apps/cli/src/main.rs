@@ -95,12 +95,14 @@ enum WorkflowCommands {
 }
 
 #[derive(Serialize)]
+#[allow(dead_code)]
 struct LoginReq {
     username: String,
     password: String,
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct LoginResp {
     token: Option<String>,
     user: Option<serde_json::Value>,
@@ -305,7 +307,7 @@ fn summarize_payload(evt: &serde_json::Value) -> String {
         "tool_call" => format!("{}({})", p.get("tool_name").and_then(|v| v.as_str()).unwrap_or("?"), p.get("input").map(|v| v.to_string()).unwrap_or_default().chars().take(40).collect::<String>()),
         "tool_result" => format!("inv={}", p.get("invocation_id").and_then(|v| v.as_str()).unwrap_or("?")),
         "done" => p.get("output_summary").and_then(|v| v.as_str()).map(|s| s.chars().take(50).collect::<String>()).unwrap_or_default(),
-        "error" => format!("{}", p.get("message").and_then(|v| v.as_str()).unwrap_or("?")),
+        "error" => p.get("message").and_then(|v| v.as_str()).unwrap_or("?").to_string(),
         _ => p.to_string().chars().take(60).collect::<String>(),
     }
 }

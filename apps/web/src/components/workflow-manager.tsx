@@ -42,6 +42,7 @@ interface WFNodeData {
   skillId?: string;
   expression?: string;
   status?: "idle" | "running" | "completed" | "failed" | "waiting";
+  [key: string]: unknown;
 }
 
 type RFNode = Node<WFNodeData>;

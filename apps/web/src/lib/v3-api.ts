@@ -99,7 +99,7 @@ export async function unpinMessage(groupId: string, messageId: string): Promise<
   return fetchApi(`${V3}/groups/${groupId}/messages/${messageId}/pin`, { method: 'DELETE' });
 }
 
-export async function getThread(groupId: string, messageId: string): Promise<{ messages: GroupMessage[] }> {
+export async function getThread(groupId: string, messageId: string): Promise<{ messages: GroupMessage[]; root?: GroupMessage | null; replies?: GroupMessage[] }> {
   return fetchApi(`${V3}/groups/${groupId}/messages/${messageId}/thread`);
 }
 

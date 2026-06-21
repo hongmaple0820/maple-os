@@ -14,6 +14,7 @@ COPY core/maple-gateway/Cargo.toml core/maple-gateway/Cargo.toml
 COPY core/maple-collab/Cargo.toml core/maple-collab/Cargo.toml
 COPY core/maple-rpc/Cargo.toml core/maple-rpc/Cargo.toml
 COPY core/maple-macro/Cargo.toml core/maple-macro/Cargo.toml
+COPY apps/cli/Cargo.toml apps/cli/Cargo.toml
 COPY server/Cargo.toml server/Cargo.toml
 
 RUN mkdir -p core/maple-engine/src && echo "" > core/maple-engine/src/lib.rs && \
@@ -25,6 +26,7 @@ RUN mkdir -p core/maple-engine/src && echo "" > core/maple-engine/src/lib.rs && 
     mkdir -p core/maple-collab/src && echo "" > core/maple-collab/src/lib.rs && \
     mkdir -p core/maple-rpc/src && echo "" > core/maple-rpc/src/lib.rs && \
     mkdir -p core/maple-macro/src && echo "" > core/maple-macro/src/lib.rs && \
+    mkdir -p apps/cli/src && echo "fn main(){}" > apps/cli/src/main.rs && \
     mkdir -p server/src && echo "fn main(){}" > server/src/main.rs
 
 RUN cargo build --release -p mapleos-server 2>/dev/null || true
