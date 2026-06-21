@@ -2,6 +2,7 @@ pub mod cache;
 pub mod config;
 pub mod db;
 pub mod execution_handlers;
+pub mod learning_handlers;
 pub mod metrics;
 pub mod middleware;
 pub mod sandbox;
@@ -135,6 +136,7 @@ pub async fn build_test_app_state(pool: sqlx::SqlitePool) -> Arc<AppState> {
         cache: cache::AppCache::new(),
         metrics: metrics::AppMetrics::new(),
         execution_recorder: maple_engine::ExecutionRecorder::new(pool.clone()),
+        learning_governance: Arc::new(maple_kb::LearningGovernanceService::new(pool.clone())),
     })
 }
 
@@ -207,6 +209,14 @@ pub fn build_v3_test_router(state: Arc<AppState>) -> Router {
         .route("/api/v3/executions/:id", get(execution_handlers::get_execution_handler))
         .route("/api/v3/executions/:id/events", get(execution_handlers::list_events_handler))
         .route("/api/v3/executions/:id/events/stream", get(execution_handlers::sse_events_handler))
+        // Learning governance (Track 3 / T3-6..T3-11)
+        .route("/api/v3/learning/candidates", get(learning_handlers::list_candidates_handler))
+        .route("/api/v3/learning/candidates/pending", get(learning_handlers::list_pending_handler))
+        .route("/api/v3/learning/candidates/:id", get(learning_handlers::get_candidate_handler))
+        .route("/api/v3/learning/candidates/:id/approve", post(learning_handlers::approve_handler))
+        .route("/api/v3/learning/candidates/:id/reject", post(learning_handlers::reject_handler))
+        .route("/api/v3/learning/candidates/:id/revoke", post(learning_handlers::revoke_handler))
+        .route("/api/v3/learning/blocked", get(learning_handlers::is_blocked_handler))
         .with_state(state)
 }
 

@@ -21,6 +21,7 @@ use maple_gateway::mcp_host::McpHostManager;
 use maple_kb::bm25::BM25Searcher;
 use maple_kb::evolver::Evolver;
 use maple_kb::indexer::Indexer;
+use maple_kb::learning_governance::LearningGovernanceService;
 use maple_kb::memory::MemoryStore;
 use maple_kb::prompt_version::PromptVersionManager;
 use maple_kb::retriever::HybridRetriever;
@@ -115,6 +116,8 @@ pub struct AppState {
     pub metrics: crate::metrics::AppMetrics,
     /// Unified execution fact chain recorder — see docs/execution-fact-chain-spec.md
     pub execution_recorder: ExecutionRecorder,
+    /// Learning governance service (Track 3 / T3-6..T3-11). See Issue #91.
+    pub learning_governance: Arc<LearningGovernanceService>,
 }
 
 impl AppState {

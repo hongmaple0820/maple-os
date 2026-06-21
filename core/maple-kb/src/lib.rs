@@ -6,6 +6,7 @@ pub mod prompt_version;
 pub mod bm25;
 pub mod vector_store;
 pub mod parser;
+pub mod learning_governance;
 
 pub use retriever::HybridRetriever;
 pub use evolver::{Evolver, EvolutionConfig, DistillationResult, EvolutionStats, KnowledgeLink};
@@ -15,3 +16,4 @@ pub use vector_store::{VectorSearch, InMemoryVectorStore, QdrantVectorStore, Chu
 pub use indexer::Indexer;
 pub use prompt_version::PromptVersionManager;
 pub use parser::{DocumentParserRegistry, DocumentParser, TextParser, PdfParser};
+pub use learning_governance::{LearningGovernanceService, LearningCandidate, CreateCandidateRequest, CandidateOutcome};

@@ -453,6 +453,8 @@ pub async fn run_migrations(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
     run_v3_migration_014(pool).await?;
     // --- 015: Tool invocations (structured per-call audit record) ---
     run_v3_migration_015(pool).await?;
+    // --- 016: Learning governance (candidates + blocklist) ---
+    run_v3_migration_016(pool).await?;
 
     tracing::info!("Database migrations completed (including v3)");
     Ok(())
@@ -1458,5 +1460,55 @@ async fn run_v3_migration_015(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
     let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_tool_inv_retry ON tool_invocations(retry_of) WHERE retry_of IS NOT NULL").execute(pool).await;
 
     tracing::info!("v3 migration 015 (tool_invocations) completed");
+    Ok(())
+}
+
+async fn run_v3_migration_016(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
+    // ============================================================
+    // Learning governance — candidates + blocklist (Track 3 / T3-6..T3-11).
+    // See migrations/016_learning_governance.sql and Issue #91.
+    // ============================================================
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS learning_candidates (
+            id TEXT PRIMARY KEY,
+            target_type TEXT NOT NULL
+                CHECK(target_type IN ('memory', 'kb_doc', 'prompt')),
+            target_key TEXT,
+            content TEXT NOT NULL,
+            score REAL NOT NULL,
+            evidence TEXT,
+            source_execution_id TEXT,
+            source_metadata TEXT,
+            persisted_target_id TEXT,
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK(status IN ('pending', 'approved', 'rejected', 'auto_approved', 'revoked', 'persisted')),
+            decided_by TEXT,
+            decided_at INTEGER,
+            rejection_reason TEXT,
+            approval_threshold REAL NOT NULL DEFAULT 0.7,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )"
+    ).execute(pool).await?;
+
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_lc_status ON learning_candidates(status, created_at DESC)").execute(pool).await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_lc_target ON learning_candidates(target_type, target_key)").execute(pool).await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_lc_source_exec ON learning_candidates(source_execution_id)").execute(pool).await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_lc_score ON learning_candidates(score DESC)").execute(pool).await;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS learning_blocklist (
+            id TEXT PRIMARY KEY,
+            content_hash TEXT NOT NULL UNIQUE,
+            source_candidate_id TEXT NOT NULL REFERENCES learning_candidates(id),
+            reason TEXT,
+            blocked_at INTEGER NOT NULL,
+            blocked_by TEXT
+        )"
+    ).execute(pool).await?;
+
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_lb_hash ON learning_blocklist(content_hash)").execute(pool).await;
+
+    tracing::info!("v3 migration 016 (learning_candidates + learning_blocklist) completed");
     Ok(())
 }

@@ -1071,3 +1071,215 @@ async fn test_approval_without_execution_id_does_not_record() {
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].event_type, "started");
 }
+
+// ============================================================
+// Learning governance API (Track 3 / T3-6..T3-11)
+// ============================================================
+
+#[tokio::test]
+async fn test_learning_create_via_evolver_and_list_pending() {
+    // Verify that the Evolver, when wired with LearningGovernanceService,
+    // produces candidates that surface through the HTTP API.
+    //
+    // We don't drive the full LLM scoring path here (would need a mock
+    // LLM); instead we drive the governance service directly to verify
+    // the HTTP surface works.
+    let (state, app) = setup_with_state().await;
+
+    // Create a low-score candidate (should stay pending)
+    let outcome = state
+        .learning_governance
+        .create_candidate(maple_kb::CreateCandidateRequest {
+            target_type: "memory".to_string(),
+            target_key: Some("episodic".to_string()),
+            content: "test fact for governance".to_string(),
+            score: 0.4,
+            evidence: Some("test evidence".to_string()),
+            source_execution_id: None,
+            source_metadata: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(outcome.status, "pending");
+
+    // GET /api/v3/learning/candidates/pending
+    let (status, body) = get_json(&app, "/api/v3/learning/candidates/pending").await;
+    assert_eq!(status, StatusCode::OK);
+    let candidates = body["candidates"].as_array().unwrap();
+    assert!(candidates.iter().any(|c| c["id"] == outcome.candidate_id));
+
+    // GET /api/v3/learning/candidates/:id
+    let (status, body) = get_json(&app, &format!("/api/v3/learning/candidates/{}", outcome.candidate_id)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["id"], outcome.candidate_id);
+    assert_eq!(body["status"], "pending");
+    assert_eq!(body["score"], 0.4);
+    assert_eq!(body["target_type"], "memory");
+    assert_eq!(body["target_key"], "episodic");
+}
+
+#[tokio::test]
+async fn test_learning_approve_moves_to_persisted() {
+    let (state, app) = setup_with_state().await;
+
+    let outcome = state
+        .learning_governance
+        .create_candidate(maple_kb::CreateCandidateRequest {
+            target_type: "memory".to_string(),
+            target_key: None,
+            content: "approve me".to_string(),
+            score: 0.4, // pending
+            evidence: Some("e".to_string()),
+            source_execution_id: None,
+            source_metadata: None,
+        })
+        .await
+        .unwrap();
+
+    // POST /api/v3/learning/candidates/:id/approve
+    let (status, body) = send_json(&app, "POST",
+        &format!("/api/v3/learning/candidates/{}/approve", outcome.candidate_id),
+        serde_json::json!({ "decided_by": "user_1", "reason": "looks good" }),
+    ).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "persisted");
+    assert_eq!(body["decided_by"], "user_1");
+    assert!(body["persisted_target_id"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn test_learning_reject_blocks_future_candidates() {
+    let (state, app) = setup_with_state().await;
+
+    // First create + reject
+    let outcome = state
+        .learning_governance
+        .create_candidate(maple_kb::CreateCandidateRequest {
+            target_type: "memory".to_string(),
+            target_key: None,
+            content: "bad fact to reject".to_string(),
+            score: 0.4,
+            evidence: Some("e".to_string()),
+            source_execution_id: None,
+            source_metadata: None,
+        })
+        .await
+        .unwrap();
+
+    let (status, body) = send_json(&app, "POST",
+        &format!("/api/v3/learning/candidates/{}/reject", outcome.candidate_id),
+        serde_json::json!({ "decided_by": "user_1", "reason": "low quality" }),
+    ).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "rejected");
+    assert_eq!(body["rejection_reason"], "low quality");
+
+    // Now try to create the same content via governance service — should be blocked
+    let outcome2 = state
+        .learning_governance
+        .create_candidate(maple_kb::CreateCandidateRequest {
+            target_type: "memory".to_string(),
+            target_key: None,
+            content: "bad fact to reject".to_string(), // same content
+            score: 0.9,
+            evidence: Some("e".to_string()),
+            source_execution_id: None,
+            source_metadata: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(outcome2.status, "rejected");
+    assert!(outcome2.reason.contains("blocked"));
+
+    // GET /api/v3/learning/blocked?content=bad fact to reject
+    let (status, body) = get_json(&app, "/api/v3/learning/blocked?content=bad%20fact%20to%20reject").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["blocked"], true);
+}
+
+#[tokio::test]
+async fn test_learning_revoke_blocks_future_candidates() {
+    let (state, app) = setup_with_state().await;
+
+    // Create + auto-approve (high score with evidence)
+    let outcome = state
+        .learning_governance
+        .create_candidate(maple_kb::CreateCandidateRequest {
+            target_type: "memory".to_string(),
+            target_key: None,
+            content: "temporarily good fact".to_string(),
+            score: 0.9,
+            evidence: Some("strong evidence".to_string()),
+            source_execution_id: None,
+            source_metadata: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(outcome.status, "auto_approved");
+
+    // Persist it via approve endpoint
+    let (status, _body) = send_json(&app, "POST",
+        &format!("/api/v3/learning/candidates/{}/approve", outcome.candidate_id),
+        serde_json::json!({ "decided_by": "user_1" }),
+    ).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Now revoke
+    let (status, body) = send_json(&app, "POST",
+        &format!("/api/v3/learning/candidates/{}/revoke", outcome.candidate_id),
+        serde_json::json!({ "decided_by": "user_1", "reason": "no longer relevant" }),
+    ).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "revoked");
+
+    // Future attempts to create same content should be blocked
+    let outcome2 = state
+        .learning_governance
+        .create_candidate(maple_kb::CreateCandidateRequest {
+            target_type: "memory".to_string(),
+            target_key: None,
+            content: "temporarily good fact".to_string(),
+            score: 0.9,
+            evidence: Some("e".to_string()),
+            source_execution_id: None,
+            source_metadata: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(outcome2.status, "rejected");
+    assert!(outcome2.reason.contains("blocked"));
+}
+
+#[tokio::test]
+async fn test_learning_high_score_without_evidence_stays_pending() {
+    // T3-7 quality gate: high score is not enough; evidence must be present
+    let (state, app) = setup_with_state().await;
+
+    let outcome = state
+        .learning_governance
+        .create_candidate(maple_kb::CreateCandidateRequest {
+            target_type: "memory".to_string(),
+            target_key: None,
+            content: "high score no evidence".to_string(),
+            score: 0.95,
+            evidence: None, // missing!
+            source_execution_id: None,
+            source_metadata: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(outcome.status, "pending");
+
+    // Verify it shows up in pending list
+    let (status, body) = get_json(&app, "/api/v3/learning/candidates/pending").await;
+    assert_eq!(status, StatusCode::OK);
+    let candidates = body["candidates"].as_array().unwrap();
+    assert!(candidates.iter().any(|c| c["id"] == outcome.candidate_id));
+}
+
+#[tokio::test]
+async fn test_learning_get_unknown_candidate_returns_404() {
+    let (_state, app) = setup_with_state().await;
+    let (status, _) = get_json(&app, "/api/v3/learning/candidates/nonexistent").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}

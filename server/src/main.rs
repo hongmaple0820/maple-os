@@ -4847,8 +4847,11 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let memory_store = Arc::new(tokio::sync::Mutex::new(MemoryStore::new(pool.clone())));
+    let learning_governance = Arc::new(maple_kb::LearningGovernanceService::new(pool.clone()));
     let evolver = Arc::new(
-        maple_kb::evolver::Evolver::new(llm_router.clone()).with_memory_store(memory_store.clone()),
+        maple_kb::evolver::Evolver::new(llm_router.clone())
+            .with_memory_store(memory_store.clone())
+            .with_governance(learning_governance.clone()),
     );
     let prompt_version_mgr = Arc::new(PromptVersionManager::new(pool.clone()));
     let task_queue = Arc::new(TaskQueueService::new(pool.clone()));
@@ -5045,6 +5048,7 @@ async fn main() -> anyhow::Result<()> {
         cache: cache::AppCache::new(),
         metrics: metrics::AppMetrics::new(),
         execution_recorder: maple_engine::ExecutionRecorder::new(pool.clone()),
+        learning_governance: learning_governance.clone(),
     });
 
     // Initialize group cron service
@@ -5280,6 +5284,14 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v3/executions/:id", get(mapleos_server::execution_handlers::get_execution_handler))
         .route("/api/v3/executions/:id/events", get(mapleos_server::execution_handlers::list_events_handler))
         .route("/api/v3/executions/:id/events/stream", get(mapleos_server::execution_handlers::sse_events_handler))
+        // Learning governance (Track 3 / T3-6..T3-11)
+        .route("/api/v3/learning/candidates", get(mapleos_server::learning_handlers::list_candidates_handler))
+        .route("/api/v3/learning/candidates/pending", get(mapleos_server::learning_handlers::list_pending_handler))
+        .route("/api/v3/learning/candidates/:id", get(mapleos_server::learning_handlers::get_candidate_handler))
+        .route("/api/v3/learning/candidates/:id/approve", post(mapleos_server::learning_handlers::approve_handler))
+        .route("/api/v3/learning/candidates/:id/reject", post(mapleos_server::learning_handlers::reject_handler))
+        .route("/api/v3/learning/candidates/:id/revoke", post(mapleos_server::learning_handlers::revoke_handler))
+        .route("/api/v3/learning/blocked", get(mapleos_server::learning_handlers::is_blocked_handler))
         .with_state(state.clone());
 
     let cors = if config.require_auth {

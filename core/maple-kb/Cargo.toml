@@ -19,6 +19,8 @@ maple-engine = { workspace = true }
 async-trait = { workspace = true }
 qdrant-client = "1.13"
 pdf-extract = { workspace = true }
+sha2 = { workspace = true }
+futures = { workspace = true }
 
 [features]
 default = []
