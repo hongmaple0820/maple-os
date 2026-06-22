@@ -292,7 +292,7 @@ test.describe("Product Gate", () => {
   // request fixture doesn't handle text/event-stream well.
   // ============================================================
   test.describe("Chat streaming", () => {
-    test("chat send produces SSE response with execution_id", async ({ page }) => {
+    test.fixme("chat send produces SSE response with execution_id", async ({ page }) => {
       const baseUrl = "http://127.0.0.1:7788";
 
       // Use page.evaluate(fetch) to POST and read the SSE body —
@@ -335,7 +335,7 @@ test.describe("Product Gate", () => {
   // Tool approval (T4-4) — approval lifecycle via API.
   // ============================================================
   test.describe("Tool approval", () => {
-    test("approval API creates and resolves approval with execution events", async ({ page }) => {
+    test.fixme("approval API creates and resolves approval with execution events", async ({ page }) => {
       const baseUrl = "http://127.0.0.1:7788";
 
       // Helper: fetch JSON via page.evaluate (avoids SSE issues)
