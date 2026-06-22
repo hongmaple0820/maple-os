@@ -92,6 +92,22 @@ pub fn build_llm_router(config: &ServerConfig) -> Arc<LlmRouter> {
     let usage_tracker = Arc::new(UsageTracker::new(config.usage_limit_usd));
     let mut router = LlmRouter::new(usage_tracker);
 
+    // E2E / CI: register MockLlmAdapter when MAPLEOS_MOCK_LLM=true
+    // This enables Chat streaming + Tool approval E2E tests without
+    // a real LLM provider.
+    if std::env::var("MAPLEOS_MOCK_LLM").map(|v| v == "true" || v == "1").unwrap_or(false) {
+        tracing::info!("MAPLEOS_MOCK_LLM=true — registering MockLlmAdapter for E2E testing");
+        let mock = maple_llm::MockLlmAdapter::new("mock/e2e-model")
+            .with_default_response(maple_llm::MockResponse {
+                content: "Hello from MapleOS! This is a mock response for E2E testing.".to_string(),
+                tool_calls: Vec::new(),
+                latency_ms: 10,
+                error: None,
+            });
+        router.register_adapter(Box::new(mock));
+        return Arc::new(router);
+    }
+
     // 加载配置文件
     let llm_config = load_llm_config();
 
