@@ -32,7 +32,9 @@ fn strip_html_tags(html: &str) -> String {
                 if remaining.starts_with("</script>") || remaining.starts_with("</style>") {
                     in_script = false;
                     // Skip the closing tag
-                    while i < chars.len() && chars[i] != '>' { i += 1; }
+                    while i < chars.len() && chars[i] != '>' {
+                        i += 1;
+                    }
                     i += 1;
                     continue;
                 }
@@ -134,6 +136,162 @@ fn check_private_host(host: &str) -> Option<String> {
     }
 
     None
+}
+
+struct ExpressionParser<'a> {
+    chars: Vec<char>,
+    pos: usize,
+    source: &'a str,
+}
+
+impl<'a> ExpressionParser<'a> {
+    fn new(source: &'a str) -> Self {
+        Self {
+            chars: source.chars().collect(),
+            pos: 0,
+            source,
+        }
+    }
+
+    fn parse(mut self) -> anyhow::Result<f64> {
+        let value = self.parse_expression()?;
+        self.skip_whitespace();
+
+        if self.pos != self.chars.len() {
+            anyhow::bail!(
+                "unexpected character '{}' at position {}",
+                self.chars[self.pos],
+                self.pos
+            );
+        }
+
+        if !value.is_finite() {
+            anyhow::bail!("expression result is not finite");
+        }
+
+        Ok(value)
+    }
+
+    fn parse_expression(&mut self) -> anyhow::Result<f64> {
+        let mut value = self.parse_term()?;
+
+        loop {
+            self.skip_whitespace();
+            match self.peek() {
+                Some('+') => {
+                    self.advance();
+                    value += self.parse_term()?;
+                }
+                Some('-') => {
+                    self.advance();
+                    value -= self.parse_term()?;
+                }
+                _ => return Ok(value),
+            }
+        }
+    }
+
+    fn parse_term(&mut self) -> anyhow::Result<f64> {
+        let mut value = self.parse_factor()?;
+
+        loop {
+            self.skip_whitespace();
+            match self.peek() {
+                Some('*') => {
+                    self.advance();
+                    value *= self.parse_factor()?;
+                }
+                Some('/') => {
+                    self.advance();
+                    let divisor = self.parse_factor()?;
+                    if divisor == 0.0 {
+                        anyhow::bail!("division by zero");
+                    }
+                    value /= divisor;
+                }
+                _ => return Ok(value),
+            }
+        }
+    }
+
+    fn parse_factor(&mut self) -> anyhow::Result<f64> {
+        self.skip_whitespace();
+
+        match self.peek() {
+            Some('+') => {
+                self.advance();
+                self.parse_factor()
+            }
+            Some('-') => {
+                self.advance();
+                Ok(-self.parse_factor()?)
+            }
+            Some('(') => {
+                self.advance();
+                let value = self.parse_expression()?;
+                self.skip_whitespace();
+
+                if self.peek() != Some(')') {
+                    anyhow::bail!("missing closing ')' at position {}", self.pos);
+                }
+
+                self.advance();
+                Ok(value)
+            }
+            Some(c) if c.is_ascii_digit() || c == '.' => self.parse_number(),
+            Some(c) => anyhow::bail!("unexpected character '{}' at position {}", c, self.pos),
+            None => anyhow::bail!("unexpected end of expression"),
+        }
+    }
+
+    fn parse_number(&mut self) -> anyhow::Result<f64> {
+        let start = self.pos;
+        let mut seen_dot = false;
+        let mut seen_digit = false;
+
+        while let Some(c) = self.peek() {
+            if c.is_ascii_digit() {
+                seen_digit = true;
+                self.advance();
+            } else if c == '.' && !seen_dot {
+                seen_dot = true;
+                self.advance();
+            } else {
+                break;
+            }
+        }
+
+        if !seen_digit {
+            anyhow::bail!("expected number at position {}", start);
+        }
+
+        let number: String = self.chars[start..self.pos].iter().collect();
+        number
+            .parse::<f64>()
+            .map_err(|e| anyhow::anyhow!("invalid number '{}' in '{}': {}", number, self.source, e))
+    }
+
+    fn skip_whitespace(&mut self) {
+        while matches!(self.peek(), Some(c) if c.is_whitespace()) {
+            self.advance();
+        }
+    }
+
+    fn peek(&self) -> Option<char> {
+        self.chars.get(self.pos).copied()
+    }
+
+    fn advance(&mut self) {
+        self.pos += 1;
+    }
+}
+
+fn evaluate_arithmetic_expression(expression: &str) -> anyhow::Result<f64> {
+    if expression.trim().is_empty() {
+        anyhow::bail!("expression is required");
+    }
+
+    ExpressionParser::new(expression).parse()
 }
 
 pub async fn register_builtin_skills(skill_registry: &SkillRegistry) {
@@ -356,6 +514,42 @@ pub async fn register_builtin_skills(skill_registry: &SkillRegistry) {
         }
     }
 
+    struct CalculatorSkill;
+    impl Skill for CalculatorSkill {
+        fn id(&self) -> &str {
+            "calculator"
+        }
+        fn description(&self) -> &str {
+            "Evaluate arithmetic expressions safely"
+        }
+        fn parameters_schema(&self) -> Option<Value> {
+            Some(serde_json::json!({
+                "type": "object",
+                "required": ["expression"],
+                "properties": {
+                    "expression": {
+                        "type": "string",
+                        "description": "Arithmetic expression using numbers, +, -, *, /, and parentheses"
+                    }
+                }
+            }))
+        }
+        fn execute(&self, config: &Value) -> anyhow::Result<Value> {
+            let expression = config["expression"].as_str().unwrap_or("");
+
+            match evaluate_arithmetic_expression(expression) {
+                Ok(result) => Ok(serde_json::json!({
+                    "expression": expression,
+                    "result": result,
+                })),
+                Err(e) => Ok(serde_json::json!({
+                    "expression": expression,
+                    "error": e.to_string(),
+                })),
+            }
+        }
+    }
+
     struct FileOpsSkill;
     impl Skill for FileOpsSkill {
         fn id(&self) -> &str {
@@ -539,9 +733,9 @@ pub async fn register_builtin_skills(skill_registry: &SkillRegistry) {
 
             if !allow_domains.is_empty() {
                 let host_lower = host.to_lowercase();
-                let allowed = allow_domains.iter().any(|d| {
-                    host_lower == d.as_str() || host_lower.ends_with(&format!(".{d}"))
-                });
+                let allowed = allow_domains
+                    .iter()
+                    .any(|d| host_lower == d.as_str() || host_lower.ends_with(&format!(".{d}")));
                 if !allowed {
                     return Ok(serde_json::json!({
                         "url": url,
@@ -638,8 +832,12 @@ pub async fn register_builtin_skills(skill_registry: &SkillRegistry) {
     // page fetch when no browser is available (disabled by default).
     struct BrowserSkill;
     impl Skill for BrowserSkill {
-        fn id(&self) -> &str { "browser" }
-        fn description(&self) -> &str { "Browser automation: navigate, click, extract text, take screenshots" }
+        fn id(&self) -> &str {
+            "browser"
+        }
+        fn description(&self) -> &str {
+            "Browser automation: navigate, click, extract text, take screenshots"
+        }
         fn parameters_schema(&self) -> Option<Value> {
             Some(serde_json::json!({
                 "type": "object",
@@ -680,9 +878,11 @@ pub async fn register_builtin_skills(skill_registry: &SkillRegistry) {
                         .build()?;
                     let resp = tokio::task::block_in_place(|| {
                         rt.block_on(async {
-                            client.get(url)
+                            client
+                                .get(url)
                                 .header("User-Agent", "Mozilla/5.0 (compatible; MapleOS/1.0)")
-                                .send().await
+                                .send()
+                                .await
                         })
                     });
                     return match resp {
@@ -695,9 +895,13 @@ pub async fn register_builtin_skills(skill_registry: &SkillRegistry) {
                             let text = strip_html_tags(&html);
                             let snippet = if text.len() > 2000 {
                                 let mut end = 2000;
-                                while end > 0 && !text.is_char_boundary(end) { end -= 1; }
+                                while end > 0 && !text.is_char_boundary(end) {
+                                    end -= 1;
+                                }
                                 text[..end].to_string() + "...[truncated]"
-                            } else { text };
+                            } else {
+                                text
+                            };
                             Ok(serde_json::json!({
                                 "action": "navigate",
                                 "url": url,
@@ -741,10 +945,14 @@ pub async fn register_builtin_skills(skill_registry: &SkillRegistry) {
                 rt.block_on(async {
                     tokio::process::Command::new("node")
                         .arg(&script_path)
-                        .arg("--action").arg(action)
-                        .arg("--url").arg(url)
-                        .arg("--selector").arg(selector)
-                        .arg("--wait-ms").arg(wait_ms.to_string())
+                        .arg("--action")
+                        .arg(action)
+                        .arg("--url")
+                        .arg(url)
+                        .arg("--selector")
+                        .arg(selector)
+                        .arg("--wait-ms")
+                        .arg(wait_ms.to_string())
                         .stdout(std::process::Stdio::piped())
                         .stderr(std::process::Stdio::piped())
                         .output()
@@ -790,12 +998,13 @@ pub async fn register_builtin_skills(skill_registry: &SkillRegistry) {
     skill_registry.register(Box::new(EchoSkill)).await;
     skill_registry.register(Box::new(WebSearchSkill)).await;
     skill_registry.register(Box::new(CodeExecSkill)).await;
+    skill_registry.register(Box::new(CalculatorSkill)).await;
     skill_registry.register(Box::new(FileOpsSkill)).await;
     skill_registry.register(Box::new(HttpRequestSkill)).await;
     skill_registry.register(Box::new(BrowserSkill)).await;
 
     tracing::info!(
-        "Built-in skills registered: echo, web_search, code_execute, file_ops, http_request, browser"
+        "Built-in skills registered: echo, web_search, code_execute, calculator, file_ops, http_request, browser"
     );
 }
 
@@ -848,6 +1057,55 @@ mod tests {
     fn test_check_private_host_allows_public_ipv4() {
         assert!(check_private_host("8.8.8.8").is_none());
         assert!(check_private_host("1.1.1.1").is_none());
+    }
+
+    #[test]
+    fn test_calculator_evaluates_basic_arithmetic() {
+        assert_eq!(evaluate_arithmetic_expression("1 + 2 * 3").unwrap(), 7.0);
+        assert_eq!(evaluate_arithmetic_expression("(1 + 2) * 3").unwrap(), 9.0);
+    }
+
+    #[test]
+    fn test_calculator_handles_decimals_and_unary_signs() {
+        assert_eq!(
+            evaluate_arithmetic_expression("-1.5 + +2.25").unwrap(),
+            0.75
+        );
+        assert_eq!(
+            evaluate_arithmetic_expression("-(2 + 3) * 4").unwrap(),
+            -20.0
+        );
+    }
+
+    #[test]
+    fn test_calculator_rejects_invalid_expressions() {
+        assert!(evaluate_arithmetic_expression("").is_err());
+        assert!(evaluate_arithmetic_expression("1 +").is_err());
+        assert!(evaluate_arithmetic_expression("2 / 0").is_err());
+        assert!(evaluate_arithmetic_expression("2 ** 3").is_err());
+        assert!(evaluate_arithmetic_expression("alert(1)").is_err());
+    }
+
+    #[tokio::test]
+    async fn test_register_builtin_skills_includes_calculator_schema() {
+        let registry = SkillRegistry::new();
+        register_builtin_skills(&registry).await;
+
+        let skills = registry.list_with_schemas().await;
+        let calculator = skills
+            .iter()
+            .find(|(id, _, _, _)| id == "calculator")
+            .expect("calculator skill should be registered");
+
+        assert!(calculator.2.is_some());
+        let result = registry
+            .execute(
+                "calculator",
+                &serde_json::json!({"expression": "10 / (2 + 3)"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result["result"].as_f64().unwrap(), 2.0);
     }
 
     // ── #10: strip_html_tags tests ──
