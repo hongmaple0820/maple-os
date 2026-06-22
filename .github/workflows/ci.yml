@@ -121,13 +121,24 @@ jobs:
   docker-build:
     name: Docker Build Test
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Build Docker image
-        run: docker build -f infra/docker/Dockerfile -t mapleos-server:ci .
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image (with cache)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/Dockerfile
+          tags: mapleos-server:ci
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Verify image runs
         run: docker run --rm -e RUST_LOG=info mapleos-server:ci --help || true
