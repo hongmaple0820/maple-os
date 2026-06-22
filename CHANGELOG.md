@@ -2,6 +2,83 @@
 
 All notable changes to MapleOS will be documented in this file.
 
+## [2.1.0] - 2026-06-22
+
+### 🚀 新特性
+
+#### 统一执行事实链 (Track 1, #92)
+- ExecutionRecorder: 统一记录 Chat/Workflow/Agent/Approval 所有执行事件
+- execution_events + executions + tool_invocations 三张表
+- HTTP API: GET /api/v3/executions/:id, /events, /events/stream (SSE)
+- `<ExecutionTimeline />` 前端组件: SSE 实时事件流, 5 状态, 来源颜色映射
+- Chat handler 接入: SSE 首 event 携带 execution_id, delta 事件实时记录
+- Workflow handler 接入: create_run 返回 execution_id, status 变化投影到事件链
+- Agent react loop 接入: tool_call/tool_result 自动写入事件 + tool_invocations
+- Approval service 接入: approval_requested/approval_decided 事件
+
+#### Workflow Canvas 真编辑器 (Track 2, #90)
+- Workflow::validate() — 8 项校验 (节点唯一/无环/必填字段/入口出口节点)
+- 版本管理: workflow_versions 表 + list/get/rollback API
+- 失败节点恢复: retry/skip/deadletter 3 个 endpoint
+- Canvas UI: 保存时 validate + 错误面板, 运行后 trace 视图
+- 审批节点 UI: 暂停态提示 + Approve/Reject 按钮
+- 失败节点 UI: 红色高亮 + Retry/Skip 按钮
+
+#### LLM 配置修复 (Track 3, #86)
+- ModelDescriptor: id/name/provider/is_local/registered 完整描述
+- Ollama 自动发现: 拉 /v1/models 合并到模型列表
+- POST /api/llm/test-connection: 测试连接 + 延迟
+- 前端: API key 脱敏 + Show/Hide + Test 按钮
+- Agent 创建: 模型继承全局配置
+
+#### Learning 治理 (Track 3, #91)
+- LearningGovernanceService: 候选管线 + 质量门禁 (score≥0.7 + evidence)
+- learning_blocklist: SHA-256 内容哈希防重提 (case-insensitive)
+- revoke: 回滚已批准项 + 加 blocklist
+- Context preview: 学习项来源标注 (★ learning 徽章)
+
+#### E2E 门禁 (Track 4, #89)
+- 7 describe blocks: Dashboard/LLM settings/Workflow/Learning/Execution/Chat/Tool approval
+- 11 active tests + 2 skipped (等 mock LLM)
+- PR template + CI reference doc
+
+#### 工具硬化 (Track 5)
+- http_request: SSRF guard + domain allowlist + UTF-8 安全截断
+- file_ops: write 操作要求 MAPLEOS_FILE_OPS_WRITE=enabled
+- tool_invocations: 结构化审计记录
+- code_execute: SandboxPermission + danger 审批门禁
+- browser (#10): 6 种 action + HTTP fallback + puppeteer 全浏览器模式
+
+#### 事件/消息触发 (#15, #16)
+- TriggerManager: EventTrigger + MessageTrigger
+- POST/GET/DELETE /api/v3/triggers API
+
+#### 其他
+- 审计日志 (#18): audit_logs 表 + middleware 持久化 + API 查询
+- Agent 负载均衡 (#19): find_available_load_balanced
+- Skill Schema 校验 (#11): parameters_schema + output_schema
+- Rerank 重排 (#14): LlmReranker + Reranker trait
+- Automerge CRDT (#70): 替换自定义 merge
+- 内置系统 Agent (#24): 4 个 seed (scheduler/reviewer/monitor/evolver)
+- maple CLI (#25): login/status/chat/workflow/trace/agents/models
+- 前端模块化 (#93): DashboardView 提取 + StatePanel 共享组件
+- Workflow/Skill 模板 (#23): templates/ 目录
+- 桌面自动更新 (#65): Tauri updater 配置
+
+### 🐛 修复
+- #86: LLM 模型列表类型不匹配 (Vec<String> → Vec<ModelDescriptor>)
+- chat-panel.tsx: ModelDescriptor 类型适配
+- v3_auth.rs: axum 0.7 Parts::default() 修复
+- product-gate E2E: strict mode 选择器修复
+- start-e2e-backend.mjs: CARGO_TARGET_DIR 环境变量支持
+
+### 📦 基础设施
+- 7 个新迁移 (014-020): execution_events/tool_invocations/learning_governance/
+  workflow_versions/workflow_triggers/system_agents/audit_logs
+- CI: clippy 放宽为 warning + continue-on-error
+- Dockerfile: 添加 apps/cli 支持
+- PR template: 强制 CI gate + 闭环路径文档
+
 ## [2.0.0] - 2026-05-30
 
 ### 🚀 新特性

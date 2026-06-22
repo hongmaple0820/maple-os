@@ -94,6 +94,32 @@ impl CrdtManager {
         self.doc.load_incremental(remote).ok();
     }
 
+    /// #70: Read a value back from the Automerge doc as JSON.
+    pub fn get_json_from_doc(&mut self, key: &str) -> Value {
+        // AutoCommit implements ReadDoc which has get()
+        use automerge::ReadDoc;
+        match self.doc.get(automerge::ROOT, key) {
+            Ok(Some((automerge::Value::Scalar(scalar), _))) => {
+                Self::automerge_value_to_json(&scalar)
+            }
+            _ => Value::Null,
+        }
+    }
+
+    fn automerge_value_to_json(scalar: &automerge::ScalarValue) -> Value {
+        match scalar {
+            automerge::ScalarValue::Str(s) => Value::String(s.to_string()),
+            automerge::ScalarValue::Int(i) => Value::Number((*i).into()),
+            automerge::ScalarValue::Uint(u) => Value::Number((*u).into()),
+            automerge::ScalarValue::F64(f) => {
+                serde_json::Number::from_f64(*f).map(Value::Number).unwrap_or(Value::Null)
+            }
+            automerge::ScalarValue::Boolean(b) => Value::Bool(*b),
+            automerge::ScalarValue::Null => Value::Null,
+            _ => Value::Null,
+        }
+    }
+
     fn json_to_automerge_value(v: &Value) -> automerge::ScalarValue {
         match v {
             Value::String(s) => automerge::ScalarValue::Str(s.clone().into()),

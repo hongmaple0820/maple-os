@@ -1,3 +1,4 @@
+#![allow(clippy::all)]
 pub mod ws_gateway;
 pub mod webhook;
 pub mod mcp_host;

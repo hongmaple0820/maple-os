@@ -10,6 +10,7 @@ members = [
     "core/maple-collab",
     "core/maple-rpc",
     "core/maple-macro",
+    "apps/cli",
     "server",
 ]
 
@@ -18,7 +19,7 @@ exclude = [
 ]
 
 [workspace.package]
-version = "2.0.0"
+version = "2.1.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/hongmaple0820/maple-os"
@@ -69,3 +70,4 @@ maple-gateway = { path = "core/maple-gateway" }
 maple-collab = { path = "core/maple-collab" }
 maple-rpc = { path = "core/maple-rpc" }
 maple-macro = { path = "core/maple-macro" }
+

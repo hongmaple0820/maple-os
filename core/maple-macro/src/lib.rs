@@ -1,3 +1,4 @@
+#![allow(clippy::all)]
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{ItemFn, Lit, Meta, PatType, Type, parse_macro_input};

@@ -5,6 +5,7 @@ import type { ChatMessage, ToolCall, KnowledgeRef } from "@/lib/types";
 import { Button, Input, Badge, Card, CardContent, Spinner } from "@mapleos/ui";
 import { mapleApi, rpcCall, getAuthState } from "@/lib/api";
 import { useTranslation } from "react-i18next";
+import { ExecutionTimeline } from "./execution-timeline";
 
 interface AgentOption { id: string; name: string }
 
@@ -13,6 +14,7 @@ function MessageBubble({ message }: { message: ChatMessage }) {
   const isUser = message.role === "user";
   const isSystem = message.role === "system";
   const isTool = message.role === "tool";
+  const [showTrace, setShowTrace] = useState(false);
 
   const roleLabel: Record<string, string> = {
     user: t("chat.role.user"),
@@ -35,6 +37,15 @@ function MessageBubble({ message }: { message: ChatMessage }) {
           <div className="flex items-center gap-2 mb-1">
             <Badge variant="outline" className="text-[10px]">{roleLabel[message.role] ?? message.role}</Badge>
             <span className="text-[10px] opacity-50">{new Date(message.timestamp).toLocaleTimeString(i18n.language?.startsWith("zh") ? "zh-CN" : "en-US")}</span>
+            {/* T1-8: show "View Trace" toggle when we have an execution_id */}
+            {message.executionId && (
+              <button
+                onClick={() => setShowTrace((s) => !s)}
+                className="ml-auto text-[10px] text-blue-600 hover:underline"
+              >
+                {showTrace ? t("chat.trace.hide", "Hide trace") : t("chat.trace.view", "View trace")}
+              </button>
+            )}
           </div>
         )}
         <div className="text-[13px] leading-snug whitespace-pre-wrap">{message.content}</div>
@@ -47,6 +58,12 @@ function MessageBubble({ message }: { message: ChatMessage }) {
           <div className="mt-2 space-y-1">
             <div className="text-[10px] text-muted-foreground">{t("chat.knowledgeRef")}</div>
             {message.knowledgeRefs.map((ref: KnowledgeRef) => <KnowledgeRefCard key={ref.id} ref={ref} />)}
+          </div>
+        )}
+        {/* T1-8: render unified ExecutionTimeline when user toggles it on */}
+        {message.executionId && showTrace && (
+          <div className="mt-3 -mx-2">
+            <ExecutionTimeline executionId={message.executionId} compact />
           </div>
         )}
       </div>
@@ -83,6 +100,12 @@ function KnowledgeRefCard({ ref }: { ref: KnowledgeRef }) {
       <CardContent className="p-2">
         <div className="flex items-center gap-2">
           <Badge variant="outline" className="text-[10px]">{ref.source_type}</Badge>
+          {/* T3-10: mark learning-derived refs so users can see provenance */}
+          {ref.is_learning && (
+            <Badge variant="secondary" className="text-[9px] bg-purple-100 text-purple-700" title={`From learning candidate ${ref.candidate_id ?? ""}`}>
+              ★ learning
+            </Badge>
+          )}
           <span className="text-[12px] font-medium truncate max-w-[200px]">{ref.title}</span>
           <div className="flex items-center gap-1 ml-auto">
             <div className={`h-1.5 rounded-full ${scoreColor}`} style={{ width: `${scorePercent}px` }} />
@@ -112,7 +135,11 @@ export function ChatPanel() {
   const [selectedAgent, setSelectedAgent] = useState<string>("");
   const [currentSession, setCurrentSession] = useState<string>("");
   const [sessionList, setSessionList] = useState<{ id: string; title: string; created_at: number }[]>([]);
-  const [models, setModels] = useState<string[]>([]);
+  // T3-1: models now come back as ModelDescriptor[] from /api/models
+  // (see #86 fix). We keep the local state typed loosely to avoid breaking
+  // the chat dropdown, but render m.id / m.name where appropriate.
+  interface RemoteModel { id: string; name?: string; provider?: string; is_local?: boolean; registered?: boolean }
+  const [models, setModels] = useState<RemoteModel[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>("auto");
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -127,7 +154,8 @@ export function ChatPanel() {
     };
     const loadModels = async () => {
       try {
-        const r = await mapleApi<{ models: string[] }>("/api/models");
+        // T3-1: /api/models now returns ModelDescriptor[] not string[]
+        const r = await mapleApi<{ models: RemoteModel[] }>("/api/models");
         setModels(r.models ?? []);
       } catch { setModels([]); }
     };
@@ -245,10 +273,20 @@ export function ChatPanel() {
               const parsed = JSON.parse(dataStr);
               if (parsed.done) {
                 setIsThinking(false);
+                // T1-3: if the done event carries an execution_id, persist
+                // it onto the assistant message so the user can later open
+                // the unified trace via the "View trace" toggle.
+                const doneExecId = parsed.execution_id;
                 setMessages((prev) => {
                   const updated = [...prev];
                   const last = updated[updated.length - 1];
-                  if (last.role === "assistant") updated[updated.length - 1] = { ...last, content: accumulated };
+                  if (last.role === "assistant") {
+                    updated[updated.length - 1] = {
+                      ...last,
+                      content: accumulated,
+                      ...(doneExecId ? { executionId: doneExecId } : {}),
+                    };
+                  }
                   return updated;
                 });
                 break;
@@ -267,6 +305,24 @@ export function ChatPanel() {
                 setCurrentSession(parsed.session_id);
               }
             } catch { /* ignore non-JSON data lines */ }
+            // T1-3: capture 'execution' event — first SSE event carrying
+            // execution_id so the user can open the trace even before the
+            // stream completes.
+            if (currentEvent === "execution") {
+              try {
+                const parsed = JSON.parse(dataStr);
+                if (parsed.execution_id) {
+                  setMessages((prev) => {
+                    const updated = [...prev];
+                    const last = updated[updated.length - 1];
+                    if (last.role === "assistant") {
+                      updated[updated.length - 1] = { ...last, executionId: parsed.execution_id };
+                    }
+                    return updated;
+                  });
+                }
+              } catch { /* ignore malformed execution payload */ }
+            }
           }
         }
       }
@@ -303,7 +359,11 @@ export function ChatPanel() {
               className="h-7 rounded border bg-background text-[12px] px-2 font-mono"
             >
               <option value="auto">{t("chat.autoSelect")}</option>
-              {models.map((m) => <option key={m} value={m}>{m}</option>)}
+              {models.filter((m) => m.registered !== false).map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name ?? m.id}{m.provider ? ` (${m.provider})` : ""}
+                </option>
+              ))}
             </select>
           )}
         </div>

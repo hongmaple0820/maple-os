@@ -22,7 +22,7 @@ test.describe("Product Gate", () => {
     await page.getByRole("button", { name: "Register" }).click();
     await page.getByPlaceholder("Agent name......").fill("E2E Agent");
     await page.getByRole("button", { name: "Confirm" }).click();
-    await expect(page.getByText("E2E Agent")).toBeVisible();
+    await expect(page.getByRole("button", { name: /E2E Agent/ })).toBeVisible();
 
     await page.getByRole("button", { name: "Knowledge" }).click();
     await expect(page.getByRole("heading", { name: "Knowledge Base" })).toBeVisible();

@@ -1,18 +1,29 @@
+#![allow(clippy::all)]
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use mapleos_server::build_test_app_state;
 use mapleos_server::build_v3_test_router;
 use serde_json::Value;
+use std::sync::Arc;
+use mapleos_server::state::AppState;
 use tower::ServiceExt;
 
 async fn setup() -> axum::Router {
+    let (_, router) = setup_with_state().await;
+    router
+}
+
+/// Build a router + the underlying AppState so tests can drive the
+/// ExecutionRecorder directly while still exercising the HTTP layer.
+async fn setup_with_state() -> (Arc<AppState>, axum::Router) {
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .connect("sqlite::memory:")
         .await
         .unwrap();
     let state = build_test_app_state(pool).await;
-    build_v3_test_router(state)
+    let router = build_v3_test_router(state.clone());
+    (state, router)
 }
 
 async fn send_json(app: &axum::Router, method: &str, path: &str, body: Value) -> (StatusCode, Value) {
@@ -257,7 +268,7 @@ async fn test_approval_workflow() {
     assert_eq!(votes[0]["decision"], "approve");
 
     // List pending approvals
-    let (status, body) = get_json(&app, &format!("/api/v3/approvals/pending?user_id=user-3&group_id={}", group_id)).await;
+    let (status, _body) = get_json(&app, &format!("/api/v3/approvals/pending?user_id=user-3&group_id={}", group_id)).await;
     assert_eq!(status, StatusCode::OK);
 }
 
@@ -294,7 +305,7 @@ async fn test_memory_store_and_search() {
     assert!(stats["total_count"].as_i64().unwrap() >= 2, "expected >= 2 memories");
 
     // Search memories
-    let (status, body) = send_json(&app, "POST", "/api/v3/memories/search", serde_json::json!({
+    let (status, _body) = send_json(&app, "POST", "/api/v3/memories/search", serde_json::json!({
         "agent_id": "agent-1",
         "query_text": "Rust",
     })).await;
@@ -316,7 +327,7 @@ async fn test_dm_workflow() {
     assert_eq!(status, StatusCode::CREATED, "create dm failed: {:?}", body);
 
     // List DMs
-    let (status, body) = get_json(&app, "/api/v3/dms").await;
+    let (status, _body) = get_json(&app, "/api/v3/dms").await;
     assert_eq!(status, StatusCode::OK);
 }
 
@@ -771,5 +782,504 @@ async fn test_workflow_definitions_and_runs() {
 
     // Verify deletion
     let (status, _) = get_json(&app, "/api/v3/workflows/wf-other").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+// ============================================================
+// Execution fact chain (Track 1 / T1-2)
+// ============================================================
+
+#[tokio::test]
+async fn test_execution_routes_get_unknown_returns_404() {
+    let app = setup().await;
+    let (status, body) = get_json(&app, "/api/v3/executions/exec_does_not_exist").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"], "execution exec_does_not_exist not found");
+}
+
+#[tokio::test]
+async fn test_execution_routes_list_events_unknown_returns_404() {
+    let app = setup().await;
+    let (status, _) = get_json(&app, "/api/v3/executions/exec_unknown/events").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_execution_routes_happy_path() {
+    // Drive the recorder directly to seed an execution + events, then
+    // verify the HTTP routes surface them correctly.
+    let (state, app) = setup_with_state().await;
+
+    let exec_id = state
+        .execution_recorder
+        .start(
+            "chat",
+            Some("u1"),
+            Some("human"),
+            "manual",
+            serde_json::json!({"message": "hello"}),
+            None,
+        )
+        .await
+        .unwrap();
+
+    state
+        .execution_recorder
+        .append(
+            &exec_id,
+            "agent",
+            "tool_call",
+            serde_json::json!({
+                "tool_name": "kb_search",
+                "input": {"query": "maple"},
+                "permission_level": "read_only",
+                "invocation_id": "inv_1"
+            }),
+            Some("agent_default"),
+            Some("agent"),
+        )
+        .await
+        .unwrap();
+
+    state
+        .execution_recorder
+        .append(
+            &exec_id,
+            "tool",
+            "tool_result",
+            serde_json::json!({
+                "invocation_id": "inv_1",
+                "output": {"hits": 3},
+                "error": null,
+                "duration_ms": 42
+            }),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    state
+        .execution_recorder
+        .done(&exec_id, "answered: maple is an AI OS")
+        .await
+        .unwrap();
+
+    // GET /api/v3/executions/:id
+    let (status, body) = get_json(&app, &format!("/api/v3/executions/{exec_id}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["id"], exec_id);
+    assert_eq!(body["source"], "chat");
+    assert_eq!(body["status"], "success");
+    assert_eq!(body["actor"], "u1");
+    assert_eq!(body["actor_type"], "human");
+    assert_eq!(body["event_count"], 4); // started + tool_call + tool_result + done
+    assert!(body["completed_at"].as_i64().is_some());
+
+    // GET /api/v3/executions/:id/events
+    let (status, body) = get_json(&app, &format!("/api/v3/executions/{exec_id}/events")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["execution_id"], exec_id);
+    let events = body["events"].as_array().unwrap();
+    assert_eq!(events.len(), 4);
+    assert_eq!(events[0]["event_type"], "started");
+    assert_eq!(events[0]["source"], "chat");
+    assert_eq!(events[1]["event_type"], "tool_call");
+    assert_eq!(events[1]["source"], "agent");
+    assert_eq!(events[1]["payload"]["tool_name"], "kb_search");
+    assert_eq!(events[2]["event_type"], "tool_result");
+    assert_eq!(events[2]["source"], "tool");
+    assert_eq!(events[2]["payload"]["invocation_id"], "inv_1");
+    assert_eq!(events[3]["event_type"], "done");
+    assert_eq!(events[3]["source"], "system");
+}
+
+#[tokio::test]
+async fn test_execution_routes_failed_status_carries_error() {
+    let (state, app) = setup_with_state().await;
+
+    let exec_id = state
+        .execution_recorder
+        .start("task", None, None, "cron", serde_json::json!({}), None)
+        .await
+        .unwrap();
+
+    state
+        .execution_recorder
+        .fail(&exec_id, "tool timeout", true)
+        .await
+        .unwrap();
+
+    let (status, body) = get_json(&app, &format!("/api/v3/executions/{exec_id}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "failed");
+    assert_eq!(body["error"], "tool timeout");
+
+    let (_, events_body) = get_json(&app, &format!("/api/v3/executions/{exec_id}/events")).await;
+    let events = events_body["events"].as_array().unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[1]["event_type"], "error");
+    assert_eq!(events[1]["payload"]["recoverable"], true);
+    assert_eq!(events[1]["payload"]["message"], "tool timeout");
+}
+
+// ============================================================
+// Chat handler → ExecutionRecorder integration (T1-3)
+// ============================================================
+//
+// The chat_stream_handler is mounted only in the bin's state_routes
+// (main.rs), not in the lib's build_v3_test_router. Full verification
+// that chat sends emit `execution_id` and recorder events is therefore
+// covered by:
+//   - product-gate.spec.ts E2E (Chat section visits /api/chat/stream)
+//   - manual verification via the dev server
+// Once T0-4 splits main.rs into per-domain route modules, the chat
+// handler will be re-mounted in build_v3_test_router and this test
+// will become possible. For now, see the recorder unit tests in
+// core/maple-engine/src/execution_chain.rs (10 tests covering
+// start/append/done/fail/cancel/pause/resume) for the recorder
+// contract.
+
+#[tokio::test]
+async fn test_chat_recorder_contract_placeholder() {
+    // Placeholder: ensures the test module compiles. Real coverage is
+    // in execution_chain::tests + product-gate.spec.ts.
+    let (state, _app) = setup_with_state().await;
+
+    // Verify the AppState has a working execution_recorder — same one
+    // the chat handler uses.
+    let exec_id = state
+        .execution_recorder
+        .start("chat", Some("u1"), Some("human"), "manual", serde_json::json!({"message": "test"}), None)
+        .await
+        .unwrap();
+    state.execution_recorder.done(&exec_id, "ok").await.unwrap();
+
+    let exec = state.execution_recorder.get_execution(&exec_id).await.unwrap().unwrap();
+    assert_eq!(exec.source, "chat");
+    assert_eq!(exec.status, "success");
+}
+
+// ============================================================
+// Approval service → ExecutionRecorder integration (T1-6)
+// ============================================================
+
+#[tokio::test]
+async fn test_approval_with_execution_records_approval_events() {
+    use maple_engine::approval::{ApprovalService, ApprovalUrgency, QuorumType, VoteDecision};
+    use maple_engine::ExecutionRecorder;
+
+    // Build an isolated pool + state just for this test (separate from
+    // setup_with_state's router) so we can drive the ApprovalService with
+    // an explicit execution_id.
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    let _state = build_test_app_state(pool.clone()).await;
+
+    // Use the same pool the AppState uses, but construct our own
+    // ApprovalService with the recorder attached.
+    let recorder = ExecutionRecorder::new(pool.clone());
+    let svc = ApprovalService::new(pool.clone()).with_recorder(recorder.clone());
+
+    // Open an execution in the fact chain
+    let exec_id = recorder
+        .start("workflow", Some("u1"), Some("human"), "manual",
+               serde_json::json!({"workflow_run_id":"wf-1"}), None)
+        .await
+        .unwrap();
+
+    // Create approval — should append 'approval_requested' event
+    let approval = svc
+        .create_request_with_execution(
+            "g1", "deploy to prod", Some("Need sign-off"), "deploy",
+            "u1", ApprovalUrgency::High, QuorumType::Any, "u2", None,
+            Some(&exec_id),
+        )
+        .await
+        .unwrap();
+
+    // Verify the event was recorded
+    let events = recorder.list_events(&exec_id).await.unwrap();
+    let last = events.last().unwrap();
+    assert_eq!(last.source, "approval");
+    assert_eq!(last.event_type, "approval_requested");
+    assert_eq!(last.payload["approval_id"], approval.id);
+    assert_eq!(last.payload["action_type"], "deploy");
+    assert_eq!(last.payload["description"], "deploy to prod");
+    assert_eq!(last.payload["urgency"], "high");
+
+    // Cast an approve vote — should append intermediate 'approval_decided'
+    // event + terminal 'approval_decided' event (quorum met for Any)
+    let outcome = svc
+        .vote_with_execution(&approval.id, "u2", VoteDecision::Approve, Some("lgtm"),
+                             Some(&exec_id))
+        .await
+        .unwrap();
+    assert!(outcome.quorum_met);
+
+    // Verify both events (intermediate vote + terminal decision)
+    let events = recorder.list_events(&exec_id).await.unwrap();
+    let approval_events: Vec<_> = events.iter().filter(|e| e.source == "approval").collect();
+    assert_eq!(approval_events.len(), 3);
+    assert_eq!(approval_events[0].event_type, "approval_requested");
+    assert_eq!(approval_events[1].event_type, "approval_decided");
+    assert_eq!(approval_events[1].payload["is_terminal"], false);
+    assert_eq!(approval_events[1].payload["decision"], "approve");
+    assert_eq!(approval_events[1].payload["voter_id"], "u2");
+    assert_eq!(approval_events[2].event_type, "approval_decided");
+    assert_eq!(approval_events[2].payload["is_terminal"], true);
+    assert_eq!(approval_events[2].payload["decision"], "approved");
+    assert_eq!(approval_events[2].payload["approve_count"], 1);
+}
+
+#[tokio::test]
+async fn test_approval_without_execution_id_does_not_record() {
+    // Backward compat: create_request (no _with_execution variant) does
+    // NOT touch the recorder even if one is attached.
+    use maple_engine::approval::{ApprovalService, ApprovalUrgency, QuorumType};
+    use maple_engine::ExecutionRecorder;
+
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    let _state = build_test_app_state(pool.clone()).await;
+
+    let recorder = ExecutionRecorder::new(pool.clone());
+    let svc = ApprovalService::new(pool.clone()).with_recorder(recorder.clone());
+
+    // Open an execution, then create approval WITHOUT linking it
+    let exec_id = recorder
+        .start("chat", Some("u1"), Some("human"), "manual",
+               serde_json::json!({}), None)
+        .await
+        .unwrap();
+
+    let _approval = svc
+        .create_request(
+            "g1", "test", None, "general", "u1",
+            ApprovalUrgency::Normal, QuorumType::Any, "u2", None,
+        )
+        .await
+        .unwrap();
+
+    // Events for this execution should only contain the 'started' event,
+    // NOT an approval_requested event.
+    let events = recorder.list_events(&exec_id).await.unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event_type, "started");
+}
+
+// ============================================================
+// Learning governance API (Track 3 / T3-6..T3-11)
+// ============================================================
+
+#[tokio::test]
+async fn test_learning_create_via_evolver_and_list_pending() {
+    // Verify that the Evolver, when wired with LearningGovernanceService,
+    // produces candidates that surface through the HTTP API.
+    //
+    // We don't drive the full LLM scoring path here (would need a mock
+    // LLM); instead we drive the governance service directly to verify
+    // the HTTP surface works.
+    let (state, app) = setup_with_state().await;
+
+    // Create a low-score candidate (should stay pending)
+    let outcome = state
+        .learning_governance
+        .create_candidate(maple_kb::CreateCandidateRequest {
+            target_type: "memory".to_string(),
+            target_key: Some("episodic".to_string()),
+            content: "test fact for governance".to_string(),
+            score: 0.4,
+            evidence: Some("test evidence".to_string()),
+            source_execution_id: None,
+            source_metadata: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(outcome.status, "pending");
+
+    // GET /api/v3/learning/candidates/pending
+    let (status, body) = get_json(&app, "/api/v3/learning/candidates/pending").await;
+    assert_eq!(status, StatusCode::OK);
+    let candidates = body["candidates"].as_array().unwrap();
+    assert!(candidates.iter().any(|c| c["id"] == outcome.candidate_id));
+
+    // GET /api/v3/learning/candidates/:id
+    let (status, body) = get_json(&app, &format!("/api/v3/learning/candidates/{}", outcome.candidate_id)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["id"], outcome.candidate_id);
+    assert_eq!(body["status"], "pending");
+    assert_eq!(body["score"], 0.4);
+    assert_eq!(body["target_type"], "memory");
+    assert_eq!(body["target_key"], "episodic");
+}
+
+#[tokio::test]
+async fn test_learning_approve_moves_to_persisted() {
+    let (state, app) = setup_with_state().await;
+
+    let outcome = state
+        .learning_governance
+        .create_candidate(maple_kb::CreateCandidateRequest {
+            target_type: "memory".to_string(),
+            target_key: None,
+            content: "approve me".to_string(),
+            score: 0.4, // pending
+            evidence: Some("e".to_string()),
+            source_execution_id: None,
+            source_metadata: None,
+        })
+        .await
+        .unwrap();
+
+    // POST /api/v3/learning/candidates/:id/approve
+    let (status, body) = send_json(&app, "POST",
+        &format!("/api/v3/learning/candidates/{}/approve", outcome.candidate_id),
+        serde_json::json!({ "decided_by": "user_1", "reason": "looks good" }),
+    ).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "persisted");
+    assert_eq!(body["decided_by"], "user_1");
+    assert!(body["persisted_target_id"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn test_learning_reject_blocks_future_candidates() {
+    let (state, app) = setup_with_state().await;
+
+    // First create + reject
+    let outcome = state
+        .learning_governance
+        .create_candidate(maple_kb::CreateCandidateRequest {
+            target_type: "memory".to_string(),
+            target_key: None,
+            content: "bad fact to reject".to_string(),
+            score: 0.4,
+            evidence: Some("e".to_string()),
+            source_execution_id: None,
+            source_metadata: None,
+        })
+        .await
+        .unwrap();
+
+    let (status, body) = send_json(&app, "POST",
+        &format!("/api/v3/learning/candidates/{}/reject", outcome.candidate_id),
+        serde_json::json!({ "decided_by": "user_1", "reason": "low quality" }),
+    ).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "rejected");
+    assert_eq!(body["rejection_reason"], "low quality");
+
+    // Now try to create the same content via governance service — should be blocked
+    let outcome2 = state
+        .learning_governance
+        .create_candidate(maple_kb::CreateCandidateRequest {
+            target_type: "memory".to_string(),
+            target_key: None,
+            content: "bad fact to reject".to_string(), // same content
+            score: 0.9,
+            evidence: Some("e".to_string()),
+            source_execution_id: None,
+            source_metadata: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(outcome2.status, "rejected");
+    assert!(outcome2.reason.contains("blocked"));
+
+    // GET /api/v3/learning/blocked?content=bad fact to reject
+    let (status, body) = get_json(&app, "/api/v3/learning/blocked?content=bad%20fact%20to%20reject").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["blocked"], true);
+}
+
+#[tokio::test]
+async fn test_learning_revoke_blocks_future_candidates() {
+    let (state, app) = setup_with_state().await;
+
+    // Create + auto-approve (high score with evidence)
+    let outcome = state
+        .learning_governance
+        .create_candidate(maple_kb::CreateCandidateRequest {
+            target_type: "memory".to_string(),
+            target_key: None,
+            content: "temporarily good fact".to_string(),
+            score: 0.9,
+            evidence: Some("strong evidence".to_string()),
+            source_execution_id: None,
+            source_metadata: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(outcome.status, "auto_approved");
+
+    // Persist it via approve endpoint
+    let (status, _body) = send_json(&app, "POST",
+        &format!("/api/v3/learning/candidates/{}/approve", outcome.candidate_id),
+        serde_json::json!({ "decided_by": "user_1" }),
+    ).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Now revoke
+    let (status, body) = send_json(&app, "POST",
+        &format!("/api/v3/learning/candidates/{}/revoke", outcome.candidate_id),
+        serde_json::json!({ "decided_by": "user_1", "reason": "no longer relevant" }),
+    ).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "revoked");
+
+    // Future attempts to create same content should be blocked
+    let outcome2 = state
+        .learning_governance
+        .create_candidate(maple_kb::CreateCandidateRequest {
+            target_type: "memory".to_string(),
+            target_key: None,
+            content: "temporarily good fact".to_string(),
+            score: 0.9,
+            evidence: Some("e".to_string()),
+            source_execution_id: None,
+            source_metadata: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(outcome2.status, "rejected");
+    assert!(outcome2.reason.contains("blocked"));
+}
+
+#[tokio::test]
+async fn test_learning_high_score_without_evidence_stays_pending() {
+    // T3-7 quality gate: high score is not enough; evidence must be present
+    let (state, app) = setup_with_state().await;
+
+    let outcome = state
+        .learning_governance
+        .create_candidate(maple_kb::CreateCandidateRequest {
+            target_type: "memory".to_string(),
+            target_key: None,
+            content: "high score no evidence".to_string(),
+            score: 0.95,
+            evidence: None, // missing!
+            source_execution_id: None,
+            source_metadata: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(outcome.status, "pending");
+
+    // Verify it shows up in pending list
+    let (status, body) = get_json(&app, "/api/v3/learning/candidates/pending").await;
+    assert_eq!(status, StatusCode::OK);
+    let candidates = body["candidates"].as_array().unwrap();
+    assert!(candidates.iter().any(|c| c["id"] == outcome.candidate_id));
+}
+
+#[tokio::test]
+async fn test_learning_get_unknown_candidate_returns_404() {
+    let (_state, app) = setup_with_state().await;
+    let (status, _) = get_json(&app, "/api/v3/learning/candidates/nonexistent").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }

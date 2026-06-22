@@ -7,6 +7,8 @@ use maple_collab::group_message::GroupMessageManager;
 use maple_collab::group_rules::{GroupRulesEngine, GroupRulesService};
 use maple_collab::workspace::WorkspaceManager;
 use maple_engine::approval::ApprovalService;
+use maple_engine::execution_chain::ExecutionRecorder;
+use maple_engine::trigger::TriggerManager;
 use maple_engine::event_bus::EventBus;
 use maple_engine::executor::WorkflowExecutor;
 use maple_engine::memory_service::MemoryService;
@@ -20,6 +22,7 @@ use maple_gateway::mcp_host::McpHostManager;
 use maple_kb::bm25::BM25Searcher;
 use maple_kb::evolver::Evolver;
 use maple_kb::indexer::Indexer;
+use maple_kb::learning_governance::LearningGovernanceService;
 use maple_kb::memory::MemoryStore;
 use maple_kb::prompt_version::PromptVersionManager;
 use maple_kb::retriever::HybridRetriever;
@@ -112,6 +115,12 @@ pub struct AppState {
     pub rate_limiter: RateLimiter,
     pub cache: crate::cache::AppCache,
     pub metrics: crate::metrics::AppMetrics,
+    /// Unified execution fact chain recorder — see docs/execution-fact-chain-spec.md
+    pub execution_recorder: ExecutionRecorder,
+    /// Learning governance service (Track 3 / T3-6..T3-11). See Issue #91.
+    pub learning_governance: Arc<LearningGovernanceService>,
+    /// Trigger manager for event/message-driven workflow execution (#15, #16)
+    pub trigger_manager: Arc<TriggerManager>,
 }
 
 impl AppState {

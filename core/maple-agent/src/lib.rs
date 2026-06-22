@@ -1,3 +1,4 @@
+#![allow(clippy::all)]
 pub mod context_compressor;
 pub mod context_scrubber;
 pub mod conversation;

@@ -5,6 +5,7 @@ use maple_gateway::auth::Permission;
 use std::sync::Arc;
 
 pub async fn audit_log_middleware(
+    State(state): State<Arc<AppState>>,
     req: axum::http::Request<axum::body::Body>,
     next: Next,
 ) -> axum::response::Response {
@@ -39,6 +40,24 @@ pub async fn audit_log_middleware(
         client_ip = %client_ip,
         "API request"
     );
+
+    // #18: persist to audit_logs table (best-effort, don't block response)
+    let duration_ms = duration.as_millis() as i64;
+    let now = chrono::Utc::now().timestamp();
+    let _ = sqlx::query(
+        "INSERT INTO audit_logs (method, path, query, status, duration_ms, user_agent, client_ip, actor, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)"
+    )
+    .bind(method.as_str())
+    .bind(&path)
+    .bind(&query)
+    .bind(status)
+    .bind(duration_ms)
+    .bind(&user_agent)
+    .bind(&client_ip)
+    .bind(now)
+    .execute(&state.db)
+    .await;
 
     response
 }

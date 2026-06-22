@@ -1,8 +1,15 @@
+#![allow(clippy::all)]
 pub mod cache;
 pub mod config;
 pub mod db;
+pub mod execution_handlers;
+pub mod learning_handlers;
 pub mod metrics;
+pub mod middleware;
+pub mod sandbox;
+pub mod skills;
 pub mod state;
+pub mod v3_auth;
 
 use axum::Router;
 use axum::routing::{delete, get, post, put};
@@ -117,7 +124,9 @@ pub async fn build_test_app_state(pool: sqlx::SqlitePool) -> Arc<AppState> {
         group_manager,
         group_message_manager: Arc::new(GroupMessageManager::new(pool.clone())),
         task_service: Arc::new(TaskService::new(pool.clone())),
-        approval_service: Arc::new(ApprovalService::new(pool.clone())),
+        approval_service: Arc::new(ApprovalService::new(pool.clone()).with_recorder(
+            maple_engine::ExecutionRecorder::new(pool.clone()),
+        )),
         memory_service: Arc::new(MemoryService::new(pool.clone())),
         dm_service: Arc::new(DmService::new(pool.clone(), GroupManager::new(pool.clone()))),
         group_cron_service,
@@ -127,6 +136,9 @@ pub async fn build_test_app_state(pool: sqlx::SqlitePool) -> Arc<AppState> {
         rate_limiter: state::RateLimiter::new(1000, 60),
         cache: cache::AppCache::new(),
         metrics: metrics::AppMetrics::new(),
+        execution_recorder: maple_engine::ExecutionRecorder::new(pool.clone()),
+        learning_governance: Arc::new(maple_kb::LearningGovernanceService::new(pool.clone())),
+        trigger_manager: Arc::new(maple_engine::TriggerManager::new(pool.clone())),
     })
 }
 
@@ -188,16 +200,45 @@ pub fn build_v3_test_router(state: Arc<AppState>) -> Router {
         // Workflow definitions
         .route("/api/v3/workflows", get(v3_list_workflows).post(v3_create_workflow))
         .route("/api/v3/workflows/:wid", get(v3_get_workflow).put(v3_update_workflow).delete(v3_delete_workflow))
+        // T2-1: workflow validate endpoint
+        .route("/api/v3/workflows/:wid/validate", post(v3_validate_workflow))
         // Workflow runs
         .route("/api/v3/workflow-runs", get(v3_list_workflow_runs).post(v3_create_workflow_run))
         .route("/api/v3/workflow-runs/:rid", get(v3_get_workflow_run))
         .route("/api/v3/workflow-runs/:rid/status", put(v3_update_workflow_run_status))
         .route("/api/v3/workflow-runs/:rid/checkpoints", get(v3_list_checkpoints).post(v3_record_checkpoint))
+        // Unified execution fact chain (Track 1 / T1-2)
+        // NOTE: legacy /api/executions/:id (workflow_executions) is mounted
+        // in main.rs; the new unified chain lives under /api/v3/executions/*.
+        .route("/api/v3/executions/:id", get(execution_handlers::get_execution_handler))
+        .route("/api/v3/executions/:id/events", get(execution_handlers::list_events_handler))
+        .route("/api/v3/executions/:id/tool-invocations", get(execution_handlers::list_tool_invocations_handler))
+        .route("/api/v3/executions/:id/events/stream", get(execution_handlers::sse_events_handler))
+        // Learning governance (Track 3 / T3-6..T3-11)
+        .route("/api/v3/learning/candidates", get(learning_handlers::list_candidates_handler))
+        .route("/api/v3/learning/candidates/pending", get(learning_handlers::list_pending_handler))
+        .route("/api/v3/learning/candidates/:id", get(learning_handlers::get_candidate_handler))
+        .route("/api/v3/learning/candidates/:id/approve", post(learning_handlers::approve_handler))
+        .route("/api/v3/learning/candidates/:id/reject", post(learning_handlers::reject_handler))
+        .route("/api/v3/learning/candidates/:id/revoke", post(learning_handlers::revoke_handler))
+        .route("/api/v3/learning/blocked", get(learning_handlers::is_blocked_handler))
+        // Triggers (#15, #16)
+        .route("/api/v3/triggers", get(trigger_handlers::v3_list_triggers).post(trigger_handlers::v3_create_trigger))
+        .route("/api/v3/triggers/:id", delete(trigger_handlers::v3_delete_trigger))
+        // Audit logs (#18)
+        .route("/api/v3/audit-logs", get(audit_handlers::v3_list_audit_logs))
         .with_state(state)
 }
 
 /// Thin v3 handler wrappers used by `build_v3_test_router`.
+/// Unified execution fact chain handlers live in `crate::execution_handlers`
+/// (declared at the top of this file). See `docs/execution-fact-chain-spec.md`
+/// §6 for the API contract. Routes are mounted in `build_v3_test_router`
+/// (lib) and in `main.rs::build_app` (bin) via
+/// `mapleos_server::execution_handlers::*`.
+
 mod v3_handlers {
+    #![allow(unused_variables)]
     use axum::extract::{Path, Query, State};
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
@@ -343,6 +384,7 @@ mod v3_handlers {
     }
 
     #[derive(Debug, Deserialize)]
+    #[allow(dead_code)]
     pub struct InterveneReq {
         pub action: String,
         pub reason: Option<String>,
@@ -476,7 +518,7 @@ mod v3_handlers {
         Path(id): Path<String>,
         Json(req): Json<SendMessageReq>,
     ) -> impl IntoResponse {
-        let msg_type = maple_collab::group_message::MessageType::from_str(
+        let msg_type = maple_collab::group_message::MessageType::parse_str(
             req.message_type.as_deref().unwrap_or("text"),
         );
         match state.group_message_manager.send_message(
@@ -607,7 +649,7 @@ mod v3_handlers {
         State(state): State<Arc<AppState>>,
         Json(req): Json<CreateTaskReq>,
     ) -> impl IntoResponse {
-        let priority = maple_engine::task_service::TaskPriority::from_str(
+        let priority = maple_engine::task_service::TaskPriority::parse_str(
             req.priority.as_deref().unwrap_or("medium"),
         );
         match state.task_service.create_task(
@@ -647,7 +689,7 @@ mod v3_handlers {
         Path(id): Path<String>,
         Json(req): Json<TransitionReq>,
     ) -> impl IntoResponse {
-        let new_status = maple_engine::task_service::TaskV3Status::from_str(&req.status);
+        let new_status = maple_engine::task_service::TaskV3Status::parse_str(&req.status);
         match state.task_service.transition_task(&id, new_status, &req.changed_by, req.reason.as_deref()).await {
             Ok(task) => Json(serde_json::json!({ "task": task })),
             Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
@@ -756,7 +798,7 @@ mod v3_handlers {
         State(state): State<Arc<AppState>>,
         Json(req): Json<MemoryStoreReq>,
     ) -> impl IntoResponse {
-        let memory_type = maple_engine::memory_service::MemoryLayer::from_str(
+        let memory_type = maple_engine::memory_service::MemoryLayer::parse_str(
             req.memory_type.as_deref().unwrap_or("episodic"),
         );
         match state.memory_service.store(
@@ -774,7 +816,7 @@ mod v3_handlers {
         State(state): State<Arc<AppState>>,
         Json(req): Json<MemorySearchReq>,
     ) -> impl IntoResponse {
-        let memory_type = req.memory_type.as_deref().map(|s| maple_engine::memory_service::MemoryLayer::from_str(s));
+        let memory_type = req.memory_type.as_deref().map(|s| maple_engine::memory_service::MemoryLayer::parse_str(s));
         let query = maple_engine::memory_service::MemoryQuery {
             agent_id: req.agent_id,
             query_text: req.query_text,
@@ -1238,6 +1280,51 @@ mod v3_handlers {
         }
     }
 
+    /// T2-1: Validate a workflow definition.
+    /// POST /api/v3/workflows/:wid/validate
+    /// Returns { valid: bool, errors: [...] } with all validation violations.
+    pub async fn v3_validate_workflow(
+        State(state): State<Arc<AppState>>,
+        Path(wid): Path<String>,
+    ) -> Json<serde_json::Value> {
+        match state.workflow_service.get_definition(&wid).await {
+            Ok(Some(def)) => {
+                match maple_engine::Workflow::parse_definition(&def.yaml_content) {
+                    Ok(wf) => match wf.validate() {
+                        Ok(()) => Json(serde_json::json!({
+                            "valid": true,
+                            "errors": [],
+                            "workflow_id": wid,
+                            "version": def.version,
+                        })),
+                        Err(errors) => Json(serde_json::json!({
+                            "valid": false,
+                            "errors": errors,
+                            "workflow_id": wid,
+                            "version": def.version,
+                        })),
+                    },
+                    Err(e) => Json(serde_json::json!({
+                        "valid": false,
+                        "errors": [format!("parse error: {e}")],
+                        "workflow_id": wid,
+                        "version": def.version,
+                    })),
+                }
+            }
+            Ok(None) => Json(serde_json::json!({
+                "valid": false,
+                "errors": ["workflow not found"],
+                "workflow_id": wid,
+            })),
+            Err(e) => Json(serde_json::json!({
+                "valid": false,
+                "errors": [format!("fetch error: {e}")],
+                "workflow_id": wid,
+            })),
+        }
+    }
+
     // ── Workflow Runs ──
 
     #[derive(Debug, Deserialize)]
@@ -1329,6 +1416,122 @@ mod v3_handlers {
         match state.workflow_service.record_checkpoint(&rid, &req.node_id, &req.output, &req.context_snapshot).await {
             Ok(id) => (StatusCode::CREATED, Json(serde_json::json!({ "id": id }))),
             Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))),
+        }
+    }
+}
+
+// ============================================================
+// Trigger handlers (#15, #16)
+// ============================================================
+
+pub mod trigger_handlers {
+    use super::*;
+    use axum::extract::{Path, State};
+    use axum::Json;
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize)]
+    pub struct CreateTriggerReq {
+        pub id: String,
+        pub workflow_id: String,
+        pub trigger_type: maple_engine::TriggerType,
+        pub enabled: Option<bool>,
+    }
+
+    pub async fn v3_create_trigger(
+        State(state): State<Arc<state::AppState>>,
+        Json(req): Json<CreateTriggerReq>,
+    ) -> Json<serde_json::Value> {
+        let now = chrono::Utc::now().timestamp();
+        let rule = maple_engine::TriggerRule {
+            id: req.id,
+            workflow_id: req.workflow_id,
+            trigger_type: req.trigger_type,
+            enabled: req.enabled.unwrap_or(true),
+            created_at: now,
+        };
+        match state.trigger_manager.add_rule(rule).await {
+            Ok(()) => Json(serde_json::json!({ "created": true })),
+            Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
+        }
+    }
+
+    pub async fn v3_list_triggers(
+        State(state): State<Arc<state::AppState>>,
+    ) -> Json<serde_json::Value> {
+        let rules = state.trigger_manager.list_rules().await;
+        Json(serde_json::json!({ "triggers": rules, "count": rules.len() }))
+    }
+
+    pub async fn v3_delete_trigger(
+        State(state): State<Arc<state::AppState>>,
+        Path(id): Path<String>,
+    ) -> Json<serde_json::Value> {
+        match state.trigger_manager.remove_rule(&id).await {
+            Ok(()) => Json(serde_json::json!({ "deleted": true })),
+            Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
+        }
+    }
+}
+
+// ============================================================
+// Audit log handlers (#18)
+// ============================================================
+
+pub mod audit_handlers {
+    use super::*;
+    use axum::extract::{Query, State};
+    use axum::Json;
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize)]
+    pub struct AuditQuery {
+        pub limit: Option<i64>,
+        pub path: Option<String>,
+    }
+
+    /// GET /api/v3/audit-logs — list recent audit log entries (#18)
+    pub async fn v3_list_audit_logs(
+        State(state): State<Arc<state::AppState>>,
+        Query(q): Query<AuditQuery>,
+    ) -> Json<serde_json::Value> {
+        let limit = q.limit.unwrap_or(100).clamp(1, 1000);
+        let rows: Result<Vec<(i64, String, String, Option<String>, i64, i64, Option<String>, Option<String>, Option<String>, i64)>, _> = if let Some(path) = q.path {
+            sqlx::query_as(
+                "SELECT id, method, path, query, status, duration_ms, user_agent, client_ip, actor, created_at
+                   FROM audit_logs WHERE path = ? ORDER BY created_at DESC LIMIT ?"
+            )
+            .bind(path)
+            .bind(limit)
+            .fetch_all(&state.db)
+            .await
+        } else {
+            sqlx::query_as(
+                "SELECT id, method, path, query, status, duration_ms, user_agent, client_ip, actor, created_at
+                   FROM audit_logs ORDER BY created_at DESC LIMIT ?"
+            )
+            .bind(limit)
+            .fetch_all(&state.db)
+            .await
+        };
+
+        match rows {
+            Ok(rows) => {
+                let logs: Vec<_> = rows.into_iter().map(|r| serde_json::json!({
+                    "id": r.0,
+                    "method": r.1,
+                    "path": r.2,
+                    "query": r.3,
+                    "status": r.4,
+                    "duration_ms": r.5,
+                    "user_agent": r.6,
+                    "client_ip": r.7,
+                    "actor": r.8,
+                    "created_at": r.9,
+                })).collect();
+                Json(serde_json::json!({ "audit_logs": logs, "count": logs.len() }))
+            }
+            Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
         }
     }
 }

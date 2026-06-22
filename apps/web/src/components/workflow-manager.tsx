@@ -19,8 +19,9 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Card, CardContent, Badge, Button, Input, Spinner } from "@mapleos/ui";
-import { rpcCall, mapleApi } from "@/lib/api";
+import { rpcCall, mapleApi, getAuthState } from "@/lib/api";
 import { useTranslation } from "react-i18next";
+import { ExecutionTimeline } from "./execution-timeline";
 
 /* ─── types ─── */
 
@@ -41,6 +42,7 @@ interface WFNodeData {
   skillId?: string;
   expression?: string;
   status?: "idle" | "running" | "completed" | "failed" | "waiting";
+  [key: string]: unknown;
 }
 
 type RFNode = Node<WFNodeData>;
@@ -112,6 +114,12 @@ function WFNodeComponent({ data, selected }: NodeProps<RFNode>) {
   const { t } = useTranslation();
   const colors = nodeTypeColor[data.nodeType];
 
+  // T2-9: approval node waiting badge
+  const isApprovalWaiting = data.nodeType === "human_approval" && data.status === "waiting";
+
+  // T2-10: failed node recovery buttons
+  const isFailed = data.status === "failed";
+
   return (
     <div
       className={`rounded-lg shadow-card transition-shadow hover:shadow-lg p-3 bg-card min-w-[160px] ${
@@ -148,6 +156,13 @@ function WFNodeComponent({ data, selected }: NodeProps<RFNode>) {
       {data.nodeType === "llm" && <div className="text-[11px] text-muted-foreground mt-1 font-mono">model: {data.model ?? "auto"}</div>}
       {data.nodeType === "tool" && <div className="text-[11px] text-muted-foreground mt-1 font-mono">skill: {data.skillId ?? "-"}</div>}
 
+      {/* T2-9: approval waiting hint */}
+      {isApprovalWaiting && (
+        <div className="mt-1 text-[10px] text-orange-600 bg-orange-50 rounded px-1.5 py-0.5">
+          {t("workflow.approval.waiting", "Waiting for approval")}
+        </div>
+      )}
+
       <Handle type="source" position={Position.Bottom} className="!w-3 !h-3 !bg-muted-foreground/30 !border-2 !border-card hover:!bg-primary hover:!border-primary" />
     </div>
   );
@@ -180,6 +195,11 @@ export function WorkflowManager() {
   const [execHistory, setExecHistory] = useState<{ id: string; status: string; started_at: number; completed_at: number | null }[]>([]);
   const [selectedWfName, setSelectedWfName] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  // T2-6: validation errors surfaced from backend validate API
+  const [validationErrors, setValidationErrors] = useState<string[]>([]);
+  // T2-8: execution_id from the last run, for trace view
+  const [lastRunExecId, setLastRunExecId] = useState<string | null>(null);
+  const [showTrace, setShowTrace] = useState(false);
   const [schedulerJobs, setSchedulerJobs] = useState<{ id: string; workflow_id: string; cron_expr: string; enabled: boolean; next_run_at: number; last_run_at: number | null }[]>([]);
   const [newJobCron, setNewJobCron] = useState("");
   const [showNewJob, setShowNewJob] = useState(false);
@@ -254,6 +274,7 @@ export function WorkflowManager() {
   const saveWorkflow = useCallback(async () => {
     if (!selectedWf) return;
     setSaving(true);
+    setValidationErrors([]);
     try {
       const yamlNodes = nodes.map((n) => ({
         id: n.id,
@@ -279,7 +300,31 @@ export function WorkflowManager() {
         method: "PUT",
         body: { yaml_content: definition },
       });
-      setConsoleLogs((prev) => [...prev, t("workflow.log.saved", { name: selectedWfName ?? selectedWf })]);
+
+      // T2-6: validate after save — surface errors to UI
+      try {
+        const { token } = getAuthState();
+        const validateResp = await fetch(`/api/maple/api/v3/workflows/${selectedWf}/validate`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+        });
+        if (validateResp.ok) {
+          const validateBody = await validateResp.json();
+          if (validateBody.valid) {
+            setConsoleLogs((prev) => [...prev, t("workflow.log.saved", { name: selectedWfName ?? selectedWf }) + " ✓ validate"]);
+          } else {
+            setValidationErrors(validateBody.errors ?? []);
+            setConsoleLogs((prev) => [...prev, `⚠ validate failed: ${(validateBody.errors ?? []).join("; ")}`]);
+          }
+        }
+      } catch (validateErr) {
+        // validate is best-effort; save succeeded
+        setConsoleLogs((prev) => [...prev, t("workflow.log.saved", { name: selectedWfName ?? selectedWf })]);
+      }
+
       await loadWorkflows();
     } catch (err) {
       setConsoleLogs((prev) => [...prev, t("workflow.log.saveError", { error: (err as Error).message })]);
@@ -403,6 +448,32 @@ export function WorkflowManager() {
         setConsoleLogs((prev) => [...prev, t("workflow.log.execFailed", { error: result.error })]);
       } else {
         setConsoleLogs((prev) => [...prev, t("workflow.log.execSubmit", { id: result.exec_id, status: result.status })]);
+      }
+
+      // T2-8: also call v3 create-run to get execution_id for unified trace
+      try {
+        const { token } = getAuthState();
+        const runResp = await fetch(`/api/maple/api/v3/workflow-runs`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({
+            workflow_id: workflowId,
+            workflow_version: 1,
+            input: "{}",
+          }),
+        });
+        if (runResp.ok) {
+          const runBody = await runResp.json();
+          if (runBody.execution_id) {
+            setLastRunExecId(runBody.execution_id);
+            setConsoleLogs((prev) => [...prev, `📋 execution_id: ${runBody.execution_id}`]);
+          }
+        }
+      } catch {
+        // v3 run is best-effort; legacy RPC already handled
       }
     } catch (err) {
       setConsoleLogs((prev) => [...prev, t("workflow.log.execError", { error: (err as Error).message })]);
@@ -631,9 +702,29 @@ export function WorkflowManager() {
               <Button size="sm" className="w-full" onClick={() => handleExecute(selectedWf)} disabled={executing === selectedWf}>
                 {executing === selectedWf ? t("workflow.executing") : t("workflow.runWorkflow")}
               </Button>
+              {/* T2-8: trace toggle — show ExecutionTimeline for the last run */}
+              {lastRunExecId && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="w-full"
+                  onClick={() => setShowTrace((s) => !s)}
+                >
+                  {showTrace ? t("workflow.trace.hide", "Hide trace") : t("workflow.trace.view", "View trace")}
+                </Button>
+              )}
               <Button size="sm" variant="outline" className="w-full" onClick={() => loadExecHistory(selectedWf)}>
                 {t("workflow.execHistory")}
               </Button>
+              {/* T2-6: validation errors panel */}
+              {validationErrors.length > 0 && (
+                <div className="text-[10px] text-red-600 bg-red-50 border border-red-200 rounded p-2 space-y-1">
+                  <div className="font-medium">⚠ {t("workflow.validation.failed", "Validation failed")}:</div>
+                  {validationErrors.map((err, i) => (
+                    <div key={i}>• {err}</div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -670,6 +761,12 @@ export function WorkflowManager() {
             />
             <Background gap={20} size={1} className="text-muted-foreground/20" />
           </ReactFlow>
+          {/* T2-8: trace panel below canvas when toggled */}
+          {showTrace && lastRunExecId && (
+            <div className="absolute bottom-0 left-0 right-0 max-h-[300px] overflow-y-auto bg-card border-t shadow-lg z-10">
+              <ExecutionTimeline executionId={lastRunExecId} compact />
+            </div>
+          )}
         </div>
 
         {/* ── right sidebar ── */}
@@ -749,6 +846,111 @@ export function WorkflowManager() {
                   )}
                 </div>
               </div>
+
+              {/* T2-10: failed node recovery — Retry / Skip buttons */}
+              {selectedData.status === "failed" && lastRunExecId && (
+                <div className="mt-3 space-y-1">
+                  <div className="text-[10px] text-red-600 font-medium">
+                    {t("workflow.nodeFailed", "Node failed — recovery:")}
+                  </div>
+                  <div className="flex gap-1">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-6 text-[10px] flex-1"
+                      onClick={async () => {
+                        try {
+                          const { token } = getAuthState();
+                          await fetch(`/api/maple/api/v3/workflow-runs/${lastRunExecId}/nodes/${selectedNode.id}/retry`, {
+                            method: "POST",
+                            headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+                          });
+                          setConsoleLogs((prev) => [...prev, `↻ retried node ${selectedNode.id}`]);
+                          updateNodeData(selectedNode.id, { status: "idle" as const });
+                        } catch (e) {
+                          setConsoleLogs((prev) => [...prev, `retry error: ${e}`]);
+                        }
+                      }}
+                    >
+                      ↻ {t("workflow.retry", "Retry")}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-6 text-[10px] flex-1"
+                      onClick={async () => {
+                        try {
+                          const { token } = getAuthState();
+                          await fetch(`/api/maple/api/v3/workflow-runs/${lastRunExecId}/nodes/${selectedNode.id}/skip`, {
+                            method: "POST",
+                            headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+                          });
+                          setConsoleLogs((prev) => [...prev, `⏭ skipped node ${selectedNode.id}`]);
+                          updateNodeData(selectedNode.id, { status: "completed" as const });
+                        } catch (e) {
+                          setConsoleLogs((prev) => [...prev, `skip error: ${e}`]);
+                        }
+                      }}
+                    >
+                      ⏭ {t("workflow.skip", "Skip")}
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {/* T2-9: approval node — Approve / Reject buttons */}
+              {selectedData.nodeType === "human_approval" && selectedData.status === "waiting" && (
+                <div className="mt-3 space-y-1">
+                  <div className="text-[10px] text-orange-600 font-medium">
+                    {t("workflow.approval.pending", "Approval pending:")}
+                  </div>
+                  <div className="flex gap-1">
+                    <Button
+                      size="sm"
+                      className="h-6 text-[10px] flex-1 bg-green-600 hover:bg-green-700"
+                      onClick={async () => {
+                        if (!lastRunExecId) return;
+                        try {
+                          const { token } = getAuthState();
+                          await fetch(`/api/maple/api/v3/workflow-runs/${lastRunExecId}/status`, {
+                            method: "PUT",
+                            headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+                            body: JSON.stringify({ status: "running" }),
+                          });
+                          setConsoleLogs((prev) => [...prev, `✓ approved node ${selectedNode.id}`]);
+                          updateNodeData(selectedNode.id, { status: "completed" as const });
+                        } catch (e) {
+                          setConsoleLogs((prev) => [...prev, `approve error: ${e}`]);
+                        }
+                      }}
+                    >
+                      ✓ {t("workflow.approval.approve", "Approve")}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      className="h-6 text-[10px] flex-1"
+                      onClick={async () => {
+                        if (!lastRunExecId) return;
+                        try {
+                          const { token } = getAuthState();
+                          await fetch(`/api/maple/api/v3/workflow-runs/${lastRunExecId}/status`, {
+                            method: "PUT",
+                            headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+                            body: JSON.stringify({ status: "failed", error: "rejected by user" }),
+                          });
+                          setConsoleLogs((prev) => [...prev, `✗ rejected node ${selectedNode.id}`]);
+                          updateNodeData(selectedNode.id, { status: "failed" as const });
+                        } catch (e) {
+                          setConsoleLogs((prev) => [...prev, `reject error: ${e}`]);
+                        }
+                      }}
+                    >
+                      ✗ {t("workflow.approval.reject", "Reject")}
+                    </Button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
           {!selectedNode && nodes.length > 0 && (

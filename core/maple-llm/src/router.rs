@@ -10,6 +10,83 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+/// Metadata describing a registered LLM model (Track 3 / T3-1).
+///
+/// The frontend settings-page expects this shape — see #86 where the
+/// backend returned `Vec<String>` but the frontend expected
+/// `{ id, name, provider }[]`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelDescriptor {
+    /// Unique id, same as the adapter name (e.g. "ollama/qwen2.5:7b")
+    pub id: String,
+    /// Human-readable name (last segment of id, e.g. "qwen2.5:7b")
+    pub name: String,
+    /// Provider inferred from id prefix (e.g. "ollama", "openai", "anthropic")
+    pub provider: String,
+    /// Adapter type — for now always "llm"; image adapters will use "image"
+    pub adapter_type: String,
+    /// Whether this is a local model (Ollama) vs cloud (OpenAI/Anthropic/etc.)
+    pub is_local: bool,
+    /// Max context length if known (0 if unknown)
+    pub context_length: usize,
+    /// Whether this model is registered with the LlmRouter (T3-2).
+    /// `None` (omitted from JSON) means "registered" (backward compat).
+    /// `Some(false)` means "discovered but not yet registered" — the
+    /// frontend should show it but mark it as needing registration.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub registered: Option<bool>,
+}
+
+impl ModelDescriptor {
+    /// Build a descriptor from a model id by splitting on `/`.
+    /// Examples:
+    ///   "ollama/qwen2.5:7b"    → provider="ollama", name="qwen2.5:7b", is_local=true
+    ///   "openai/gpt-4o"        → provider="openai", name="gpt-4o", is_local=false
+    ///   "deepseek-chat"        → provider="unknown", name="deepseek-chat", is_local=false
+    pub fn from_model_id(id: &str) -> Self {
+        let (provider, name, is_local) = if let Some((p, n)) = id.split_once('/') {
+            let is_local = p.eq_ignore_ascii_case("ollama")
+                || p.eq_ignore_ascii_case("llama_cpp")
+                || p.eq_ignore_ascii_case("local");
+            (p.to_string(), n.to_string(), is_local)
+        } else {
+            // No prefix — guess based on common model name patterns
+            let lower = id.to_ascii_lowercase();
+            let is_local = lower.starts_with("llama")
+                || lower.starts_with("qwen")
+                || lower.starts_with("mistral")
+                || lower.contains(":");
+            let provider = if lower.starts_with("gpt-")
+                || lower.starts_with("o1-")
+                || lower.starts_with("o3-")
+            {
+                "openai".to_string()
+            } else if lower.starts_with("claude-") {
+                "anthropic".to_string()
+            } else if lower.starts_with("deepseek") {
+                "deepseek".to_string()
+            } else if lower.starts_with("gemini") {
+                "google".to_string()
+            } else if is_local {
+                "local".to_string()
+            } else {
+                "unknown".to_string()
+            };
+            (provider, id.to_string(), is_local)
+        };
+
+        Self {
+            id: id.to_string(),
+            name,
+            provider,
+            adapter_type: "llm".to_string(),
+            is_local,
+            context_length: 0,
+            registered: None, // from_model_id is called for registered adapters
+        }
+    }
+}
+
 #[async_trait]
 pub trait LlmAdapter: Send + Sync {
     async fn complete(&self, req: LlmRequest) -> Result<LlmResponse>;
@@ -203,6 +280,82 @@ impl LlmRouter {
 
     pub async fn list_models(&self) -> Vec<String> {
         self.adapters.keys().cloned().collect()
+    }
+
+    /// List models with full descriptor metadata (Track 3 / T3-1).
+    ///
+    /// Returns one `ModelDescriptor` per registered adapter, with `provider`
+    /// inferred from the adapter name's prefix (`ollama/...`, `openai/...`,
+    /// `anthropic/...`) or falling back to "unknown". The frontend
+    /// settings-page expects this shape (see #86).
+    pub async fn list_models_detailed(&self) -> Vec<ModelDescriptor> {
+        self.adapters
+            .keys()
+            .map(|name| ModelDescriptor::from_model_id(name))
+            .collect()
+    }
+
+    /// Discover models available on a local Ollama instance (Track 3 / T3-2).
+    ///
+    /// Fetches `GET {ollama_url}/v1/models` and returns a list of
+    /// `ModelDescriptor` with `provider="ollama"` and `is_local=true`.
+    /// Failed requests (network error, non-200, parse error) return an
+    /// empty Vec — the caller should treat this as "Ollama not running
+    /// or unreachable", not a hard error.
+    ///
+    /// The returned descriptors are NOT registered with the router; the
+    /// caller decides whether to call `register_adapter` for each.
+    pub async fn discover_ollama_models(ollama_url: &str) -> Vec<ModelDescriptor> {
+        let client = match reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(3))
+            .build()
+        {
+            Ok(c) => c,
+            Err(_) => return Vec::new(),
+        };
+
+        let url = format!("{}/v1/models", ollama_url.trim_end_matches('/'));
+        let resp = match client.get(&url).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::debug!(error = %e, url = %url, "Ollama /v1/models unreachable");
+                return Vec::new();
+            }
+        };
+
+        if !resp.status().is_success() {
+            tracing::debug!(status = %resp.status(), url = %url, "Ollama /v1/models non-200");
+            return Vec::new();
+        }
+
+        let body: serde_json::Value = match resp.json().await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::debug!(error = %e, "Ollama /v1/models body parse failed");
+                return Vec::new();
+            }
+        };
+
+        let data = body["data"].as_array();
+        match data {
+            Some(arr) => arr
+                .iter()
+                .filter_map(|m| {
+                    let id = m["id"].as_str()?.to_string();
+                    let full_id = format!("ollama/{}", id);
+                    Some(ModelDescriptor {
+                        id: full_id.clone(),
+                        name: id,
+                        provider: "ollama".to_string(),
+                        adapter_type: "llm".to_string(),
+                        is_local: true,
+                        context_length: m["context_length"].as_u64().unwrap_or(0) as usize,
+                        registered: Some(false), // discovered, not yet registered
+                    })
+                })
+                .collect(),
+            None => Vec::new(),
+        }
     }
 
     /// Record an error for an adapter — used by error classifier
@@ -426,5 +579,54 @@ mod tests {
         router.register_adapter(Box::new(MockAdapter));
         assert_eq!(router.adapters.len(), 1);
         assert!(router.adapters.contains_key("mock-model"));
+    }
+
+    // ── T3-1: ModelDescriptor::from_model_id ──
+    #[test]
+    fn test_model_descriptor_from_prefixed_id() {
+        let d = ModelDescriptor::from_model_id("ollama/qwen2.5:7b");
+        assert_eq!(d.id, "ollama/qwen2.5:7b");
+        assert_eq!(d.name, "qwen2.5:7b");
+        assert_eq!(d.provider, "ollama");
+        assert!(d.is_local);
+        assert_eq!(d.adapter_type, "llm");
+    }
+
+    #[test]
+    fn test_model_descriptor_from_openai_prefixed() {
+        let d = ModelDescriptor::from_model_id("openai/gpt-4o");
+        assert_eq!(d.name, "gpt-4o");
+        assert_eq!(d.provider, "openai");
+        assert!(!d.is_local);
+    }
+
+    #[test]
+    fn test_model_descriptor_from_bare_openai_name() {
+        let d = ModelDescriptor::from_model_id("gpt-4o-mini");
+        assert_eq!(d.name, "gpt-4o-mini");
+        assert_eq!(d.provider, "openai");
+        assert!(!d.is_local);
+    }
+
+    #[test]
+    fn test_model_descriptor_from_bare_anthropic_name() {
+        let d = ModelDescriptor::from_model_id("claude-3-5-sonnet");
+        assert_eq!(d.provider, "anthropic");
+        assert!(!d.is_local);
+    }
+
+    #[test]
+    fn test_model_descriptor_from_bare_local_name() {
+        // Bare local model name with `:` (Ollama tag pattern)
+        let d = ModelDescriptor::from_model_id("qwen2.5:7b");
+        assert_eq!(d.provider, "local");
+        assert!(d.is_local);
+    }
+
+    #[test]
+    fn test_model_descriptor_from_unknown_name() {
+        let d = ModelDescriptor::from_model_id("some-custom-model");
+        assert_eq!(d.provider, "unknown");
+        assert!(!d.is_local);
     }
 }

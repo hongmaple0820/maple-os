@@ -1,0 +1,16 @@
+{
+  "id": "code-execute",
+  "name": "Code Execute",
+  "description": "Execute code in a sandboxed environment",
+  "version": "1.0.0",
+  "author": "MapleOS",
+  "parameters_schema": {
+    "type": "object",
+    "required": ["language", "code"],
+    "properties": {
+      "language": {"type": "string", "description": "javascript or python"},
+      "code": {"type": "string", "description": "Code to execute"},
+      "timeout": {"type": "number", "description": "Timeout in seconds (max 30)"}
+    }
+  }
+}

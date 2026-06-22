@@ -80,7 +80,7 @@ impl MessageType {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse_str(s: &str) -> Self {
         match s {
             "markdown" => Self::Markdown,
             "image" => Self::Image,
@@ -243,7 +243,7 @@ impl GroupMessageManager {
                 group_id: r.1,
                 sender_id: r.2,
                 sender_type: r.3,
-                message_type: MessageType::from_str(&r.4),
+                message_type: MessageType::parse_str(&r.4),
                 content: r.5,
                 reply_to_id: r.6,
                 thread_root_id: r.7,
@@ -281,7 +281,7 @@ impl GroupMessageManager {
             group_id: r.1,
             sender_id: r.2,
             sender_type: r.3,
-            message_type: MessageType::from_str(&r.4),
+            message_type: MessageType::parse_str(&r.4),
             content: r.5,
             reply_to_id: r.6,
             thread_root_id: r.7,
@@ -483,7 +483,7 @@ impl GroupMessageManager {
             group_id: r.1,
             sender_id: r.2,
             sender_type: r.3,
-            message_type: MessageType::from_str(&r.4),
+            message_type: MessageType::parse_str(&r.4),
             content: r.5,
             reply_to_id: r.6,
             thread_root_id: r.7,
@@ -516,7 +516,7 @@ impl GroupMessageManager {
             group_id: r.1,
             sender_id: r.2,
             sender_type: r.3,
-            message_type: MessageType::from_str(&r.4),
+            message_type: MessageType::parse_str(&r.4),
             content: r.5,
             reply_to_id: r.6,
             thread_root_id: r.7,

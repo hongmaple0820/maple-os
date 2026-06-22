@@ -21,7 +21,7 @@ impl DmType {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse_str(s: &str) -> Self {
         match s {
             "human_human" => Self::HumanHuman,
             "agent_agent" => Self::AgentAgent,
@@ -75,7 +75,7 @@ impl DelegationStatus {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse_str(s: &str) -> Self {
         match s {
             "running" => Self::Running,
             "completed" => Self::Completed,
@@ -182,7 +182,7 @@ impl DmService {
         .bind(group_id)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row.map(|s| DmType::from_str(&s)))
+        Ok(row.map(|s| DmType::parse_str(&s)))
     }
 
     /// List all DMs for a user, ordered by last message time
@@ -411,7 +411,7 @@ impl DmService {
                 executor_id: r.get(3),
                 task_id: r.get(4),
                 prompt: r.get(5),
-                status: DelegationStatus::from_str(r.get::<&str, _>(6)),
+                status: DelegationStatus::parse_str(r.get::<&str, _>(6)),
                 result: r.get(7),
                 visible_to,
                 created_at: r.get(9),
@@ -440,7 +440,7 @@ impl DmService {
                 executor_id: r.get(3),
                 task_id: r.get(4),
                 prompt: r.get(5),
-                status: DelegationStatus::from_str(r.get::<&str, _>(6)),
+                status: DelegationStatus::parse_str(r.get::<&str, _>(6)),
                 result: r.get(7),
                 visible_to,
                 created_at: r.get(9),

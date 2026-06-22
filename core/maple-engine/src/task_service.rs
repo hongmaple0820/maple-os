@@ -61,7 +61,7 @@ impl TaskV3Status {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse_str(s: &str) -> Self {
         match s {
             "todo" => Self::Todo,
             "in_progress" => Self::InProgress,
@@ -105,7 +105,7 @@ impl TaskPriority {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse_str(s: &str) -> Self {
         match s {
             "high" => Self::High,
             "urgent" => Self::Urgent,
@@ -136,8 +136,8 @@ fn row_to_task(row: &sqlx::sqlite::SqliteRow) -> TaskV3 {
         group_id: row.get(2),
         title: row.get(3),
         description: row.get(4),
-        status: TaskV3Status::from_str(row.get::<&str, _>(5)),
-        priority: TaskPriority::from_str(row.get::<&str, _>(6)),
+        status: TaskV3Status::parse_str(row.get::<&str, _>(5)),
+        priority: TaskPriority::parse_str(row.get::<&str, _>(6)),
         assignee_id: row.get(7),
         assignee_type: row.get(8),
         creator_id: row.get(9),

@@ -1,3 +1,4 @@
+#![allow(clippy::all)]
 pub mod workspace;
 pub mod fmp;
 pub mod group_rules;

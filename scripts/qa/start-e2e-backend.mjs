@@ -7,7 +7,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..", "..");
 const tmpDir = resolve(repoRoot, ".tmp");
 const dbBase = resolve(tmpDir, "mapleos-e2e");
-const cargoTargetDir = resolve(tmpDir, "cargo-target-e2e");
+// Allow overriding the cargo target dir via env (used in CI to share the
+// build cache across runs). Falls back to a per-repo isolated dir.
+const cargoTargetDir = process.env.CARGO_TARGET_DIR
+  ? resolve(process.env.CARGO_TARGET_DIR)
+  : resolve(tmpDir, "cargo-target-e2e");
 
 mkdirSync(tmpDir, { recursive: true });
 mkdirSync(cargoTargetDir, { recursive: true });

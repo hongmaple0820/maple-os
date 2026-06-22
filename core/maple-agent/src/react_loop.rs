@@ -151,6 +151,12 @@ pub struct ReactLoop {
     performance_monitor: Option<PerformanceMonitor>,
     tool_result_cache: Option<Arc<RwLock<ToolResultCache>>>,
     event_sender: Option<EventSender>,
+    /// Optional unified execution fact chain recorder (Track 1 / T1-5).
+    /// When set + `execution_id` provided at run_turn, each tool_call and
+    /// tool_result is appended to the fact chain so the agent's tool
+    /// usage appears in the same trace as the triggering chat / workflow.
+    /// See docs/execution-fact-chain-spec.md §7.3.
+    execution_recorder: Option<maple_engine::ExecutionRecorder>,
 }
 
 impl ReactLoop {
@@ -166,6 +172,7 @@ impl ReactLoop {
             performance_monitor: None,
             tool_result_cache: None,
             event_sender: None,
+            execution_recorder: None,
         }
     }
 
@@ -186,6 +193,15 @@ impl ReactLoop {
 
     pub fn with_tool_use_context(mut self, ctx: ToolUseContext) -> Self {
         self.tool_use_context = Some(ctx);
+        self
+    }
+
+    /// Attach an ExecutionRecorder so tool_call / tool_result events flow
+    /// into the unified execution fact chain (Track 1 / T1-5).
+    /// The execution_id itself is passed per-run via `run_turn_with_execution`
+    /// so a single ReactLoop can serve multiple executions.
+    pub fn with_execution_recorder(mut self, recorder: maple_engine::ExecutionRecorder) -> Self {
+        self.execution_recorder = Some(recorder);
         self
     }
 
@@ -297,6 +313,21 @@ impl ReactLoop {
         session: &mut Session,
         user_input: &str,
         tools: Vec<ToolDefinition>,
+    ) -> Result<TurnSummary> {
+        self.run_turn_with_execution(adapter, tool_executor, session, user_input, tools, None).await
+    }
+
+    /// Like `run_turn` but also appends `tool_call` + `tool_result` events
+    /// to the unified execution fact chain under `execution_id` (Track 1 / T1-5).
+    /// Pass `None` to skip fact chain recording (equivalent to run_turn).
+    pub async fn run_turn_with_execution(
+        &mut self,
+        adapter: &dyn LlmAdapter,
+        tool_executor: &dyn ToolExecutor,
+        session: &mut Session,
+        user_input: &str,
+        tools: Vec<ToolDefinition>,
+        execution_id: Option<&str>,
     ) -> Result<TurnSummary> {
         session.push_message(Message::user(user_input));
 
@@ -434,6 +465,32 @@ impl ReactLoop {
                 .await;
             }
 
+            // ── T1-5: append 'tool_call' events to the fact chain ──
+            // One event per tool invocation; payload carries the tool_name,
+            // input, permission_level, and a synthetic invocation_id that
+            // matches the tool_use.id so the matching 'tool_result' event
+            // can be correlated.
+            if let (Some(rec), Some(eid)) = (&self.execution_recorder, execution_id) {
+                for tool_use in tool_uses {
+                    let permission_level = self.tool_use_context.as_ref()
+                        .map(|ctx| format!("{:?}", ctx.permission_level).to_lowercase())
+                        .unwrap_or_else(|| "read_only".to_string());
+                    let _ = rec.append(
+                        eid,
+                        "agent",
+                        "tool_call",
+                        serde_json::json!({
+                            "tool_name": tool_use.name,
+                            "input": tool_use.input,
+                            "permission_level": permission_level,
+                            "invocation_id": tool_use.id,
+                        }),
+                        None, // agent_id — not directly available here; T1-5.1
+                        Some("agent"),
+                    ).await;
+                }
+            }
+
             // Tool execution — use StreamingToolExecutor if available, otherwise inline buffer_unordered
             let indexed_results: Vec<(usize, ToolResult)> =
                 if let Some(ref executor) = self.streaming_executor {
@@ -476,6 +533,9 @@ impl ReactLoop {
                 };
 
             // Post-tool-use hooks + performance recording + emit events
+            // ── T1-5: append 'tool_result' events to the fact chain ──
+            // One event per tool invocation result. Correlated to the
+            // earlier 'tool_call' event via the invocation_id field.
             for (_, result) in &indexed_results {
                 let _ = self.hook_runner
                     .run_post_tool_use(&result.tool_name, &result.output)
@@ -493,6 +553,57 @@ impl ReactLoop {
                     is_error: result.is_error,
                 })
                 .await;
+
+                if let (Some(rec), Some(eid)) = (&self.execution_recorder, execution_id) {
+                    let payload = if result.is_error {
+                        serde_json::json!({
+                            "invocation_id": result.tool_use_id,
+                            "output": null,
+                            "error": result.output,
+                            "duration_ms": null,
+                        })
+                    } else {
+                        serde_json::json!({
+                            "invocation_id": result.tool_use_id,
+                            "output": result.output,
+                            "error": null,
+                            "duration_ms": null,
+                        })
+                    };
+                    let _ = rec.append(
+                        eid,
+                        "tool",
+                        "tool_result",
+                        payload,
+                        None,
+                        None,
+                    ).await;
+
+                    // T5-5: also write a structured tool_invocations row
+                    // for audit. This complements the event stream with
+                    // a queryable per-call record (input/output/error/
+                    // duration/permission_level).
+                    let perm = self.tool_use_context.as_ref()
+                        .map(|ctx| format!("{:?}", ctx.permission_level).to_lowercase())
+                        .unwrap_or_else(|| "read_only".to_string());
+                    let (status, output_val, error_str) = if result.is_error {
+                        ("failed", None, Some(result.output.to_string()))
+                    } else {
+                        ("success", Some(&result.output), None)
+                    };
+                    let _ = rec.record_tool_invocation(
+                        eid,
+                        &result.tool_name,
+                        &serde_json::json!({"tool_use_id": &result.tool_use_id}),
+                        output_val,
+                        error_str.as_deref(),
+                        &perm,
+                        status,
+                        None, // duration_ms — T5-5.1 will wire actual timing
+                        None,
+                        Some("agent"),
+                    ).await;
+                }
             }
 
             for (_, result) in indexed_results {
@@ -522,5 +633,72 @@ impl ReactLoop {
                 .await;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use maple_llm::response::LlmResponse;
+    use super::*;
+
+    /// Verify the ExecutionRecorder field is None by default — smoke test
+    /// for T1-5 wiring. Full tool_call/tool_result event coverage lives in
+    /// maple-engine::execution_chain::tests + server/tests/v3_api_integration.rs.
+    #[test]
+    fn test_execution_recorder_field_is_none_by_default() {
+        let react = ReactLoop::new(5);
+        assert!(react.execution_recorder.is_none());
+    }
+
+    /// Verify run_turn_with_execution accepts None execution_id without
+    /// panicking — this is the backward-compat path.
+    #[tokio::test]
+    async fn test_run_turn_with_execution_none_smoke() {
+        // Mock LLM adapter that returns no tool calls so the loop exits.
+        struct NoopAdapter;
+        #[async_trait]
+        impl maple_llm::router::LlmAdapter for NoopAdapter {
+            async fn complete(&self, _req: LlmRequest) -> anyhow::Result<LlmResponse> {
+                Ok(LlmResponse::new("done".to_string(), 5, 1))
+            }
+            async fn stream(
+                &self,
+                _req: LlmRequest,
+            ) -> anyhow::Result<Box<dyn maple_llm::stream::LlmStream>> {
+                unimplemented!()
+            }
+            fn count_tokens(&self, text: &str) -> usize {
+                text.len() / 4
+            }
+            fn max_context_length(&self) -> usize {
+                4096
+            }
+            fn cost_per_1k_tokens(&self) -> (f64, f64) {
+                (0.0, 0.0)
+            }
+            fn name(&self) -> &str {
+                "noop"
+            }
+        }
+
+        struct NoopExecutor;
+        #[async_trait]
+        impl ToolExecutor for NoopExecutor {
+            async fn execute(&self, _tu: &ToolUse) -> anyhow::Result<ToolResult> {
+                unreachable!()
+            }
+        }
+
+        let mut react = ReactLoop::new(1);
+        let mut session = Session::new("test");
+        let adapter = NoopAdapter;
+        let exec = NoopExecutor;
+        let summary = react
+            .run_turn_with_execution(
+                &adapter, &exec, &mut session, "hi", vec![], None,
+            )
+            .await
+            .unwrap();
+        assert!(summary.completed);
     }
 }

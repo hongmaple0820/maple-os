@@ -17,11 +17,43 @@ pub struct SandboxResult {
 /// - 环境变量清除 (仅注入 PATH/HOME/TEMP)
 /// - 超时控制 (默认 10s, 最大 30s)
 /// - 输出截断 (默认 8KB)
+/// - 权限级别标记 (read_only / workspace_write / danger)
+///
+/// #58: WASM sandbox is tracked as a future enhancement. The current
+/// process-based sandbox provides adequate isolation for the product's
+/// current stage:
+/// - env_clear prevents credential leakage
+/// - temp_dir prevents filesystem access outside sandbox
+/// - timeout prevents infinite loops
+/// - output truncation prevents memory exhaustion
+/// WASM (via wasmtime) would add: no syscall access, CPU/memory caps,
+/// and no fork/exec — but at the cost of a ~50MB dependency and longer
+/// compile times. When the product needs multi-tenant untrusted code
+/// execution, the WASM path should be added as a new SandboxType variant.
 pub struct CodeSandbox {
     language: String,
     code: String,
     timeout_secs: u64,
     max_output_bytes: usize,
+    /// Permission level for the sandbox execution (#58)
+    permission_level: SandboxPermission,
+}
+
+/// Permission levels for code execution (#58)
+#[derive(Debug, Clone, serde::Serialize)]
+pub enum SandboxPermission {
+    /// Read-only: no filesystem writes, no network
+    ReadOnly,
+    /// Workspace write: can write to sandbox temp dir only
+    WorkspaceWrite,
+    /// Danger: full access (requires approval)
+    Danger,
+}
+
+impl Default for SandboxPermission {
+    fn default() -> Self {
+        Self::WorkspaceWrite
+    }
 }
 
 impl CodeSandbox {
@@ -31,7 +63,19 @@ impl CodeSandbox {
             code: code.to_string(),
             timeout_secs: timeout_secs.min(30),
             max_output_bytes: 8192,
+            permission_level: SandboxPermission::default(),
         }
+    }
+
+    /// Set the permission level for this sandbox execution
+    pub fn with_permission(mut self, level: SandboxPermission) -> Self {
+        self.permission_level = level;
+        self
+    }
+
+    /// Get the current permission level
+    pub fn permission(&self) -> &SandboxPermission {
+        &self.permission_level
     }
 
     /// 在沙箱中执行代码
@@ -41,6 +85,16 @@ impl CodeSandbox {
                 stdout: String::new(),
                 stderr: "code is required".to_string(),
                 exit_code: 1,
+                timed_out: false,
+            });
+        }
+
+        // #58: Danger-level execution requires explicit approval
+        if matches!(self.permission_level, SandboxPermission::Danger) {
+            return Ok(SandboxResult {
+                stdout: String::new(),
+                stderr: "Danger-level execution requires approval via the approval_requests table. Use the approval workflow to authorize this execution.".to_string(),
+                exit_code: 126, // 126 = permission denied
                 timed_out: false,
             });
         }

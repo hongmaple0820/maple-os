@@ -449,6 +449,20 @@ pub async fn run_migrations(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
     run_v3_migration_012(pool).await?;
     // --- 013: Workflow runs group_id ---
     run_v3_migration_013(pool).await?;
+    // --- 014: Execution events (unified execution fact chain) ---
+    run_v3_migration_014(pool).await?;
+    // --- 015: Tool invocations (structured per-call audit record) ---
+    run_v3_migration_015(pool).await?;
+    // --- 016: Learning governance (candidates + blocklist) ---
+    run_v3_migration_016(pool).await?;
+    // --- 017: Workflow version history ---
+    run_v3_migration_017(pool).await?;
+    // --- 018: Workflow triggers (event + message) ---
+    run_v3_migration_018(pool).await?;
+    // --- 019: System agents (#24) ---
+    run_v3_migration_019(pool).await?;
+    // --- 020: Audit logs (#18) ---
+    run_v3_migration_020(pool).await?;
 
     tracing::info!("Database migrations completed (including v3)");
     Ok(())
@@ -1350,5 +1364,239 @@ async fn run_v3_migration_013(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
         .execute(pool).await;
 
     tracing::info!("v3 migration 013 (workflow runs group_id) completed");
+    Ok(())
+}
+
+async fn run_v3_migration_014(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
+    // ============================================================
+    // Execution events — unified execution fact chain.
+    // See docs/execution-fact-chain-spec.md and migrations/014_execution_events.sql
+    // ============================================================
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS execution_events (
+            id TEXT PRIMARY KEY,
+            execution_id TEXT NOT NULL,
+            parent_execution_id TEXT,
+            source TEXT NOT NULL
+                CHECK(source IN ('chat', 'workflow', 'task', 'approval', 'agent', 'tool', 'scheduler', 'system')),
+            event_type TEXT NOT NULL
+                CHECK(event_type IN (
+                    'started', 'delta', 'tool_call', 'tool_result',
+                    'node_started', 'node_finished', 'artifact', 'usage',
+                    'approval_requested', 'approval_decided',
+                    'retry', 'cancelled', 'resumed', 'paused',
+                    'done', 'error'
+                )),
+            payload TEXT NOT NULL,
+            actor TEXT,
+            actor_type TEXT
+                CHECK(actor_type IN ('human', 'agent', 'system') OR actor_type IS NULL),
+            created_at INTEGER NOT NULL
+        )"
+    ).execute(pool).await?;
+
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_exec_events_id ON execution_events(execution_id, created_at)").execute(pool).await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_exec_events_parent ON execution_events(parent_execution_id, created_at)").execute(pool).await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_exec_events_source ON execution_events(source, created_at DESC)").execute(pool).await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_exec_events_type ON execution_events(event_type, created_at DESC)").execute(pool).await;
+
+    // Aggregate view — one row per execution_id
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS executions (
+            id TEXT PRIMARY KEY,
+            parent_execution_id TEXT,
+            source TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'running'
+                CHECK(status IN ('pending', 'running', 'paused', 'success', 'failed', 'cancelled')),
+            actor TEXT,
+            actor_type TEXT
+                CHECK(actor_type IN ('human', 'agent', 'system') OR actor_type IS NULL),
+            trigger_type TEXT,
+            trigger_payload TEXT,
+            started_at INTEGER NOT NULL,
+            completed_at INTEGER,
+            error TEXT,
+            event_count INTEGER NOT NULL DEFAULT 0,
+            updated_at INTEGER NOT NULL
+        )"
+    ).execute(pool).await?;
+
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_exec_status ON executions(status, started_at DESC)").execute(pool).await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_exec_parent ON executions(parent_execution_id)").execute(pool).await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_exec_actor ON executions(actor, started_at DESC)").execute(pool).await;
+
+    tracing::info!("v3 migration 014 (execution_events + executions) completed");
+    Ok(())
+}
+
+async fn run_v3_migration_015(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
+    // ============================================================
+    // Tool invocations — structured per-call audit record.
+    // See docs/execution-fact-chain-spec.md and migrations/015_tool_invocations.sql
+    // ============================================================
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS tool_invocations (
+            id TEXT PRIMARY KEY,
+            execution_id TEXT NOT NULL,
+            tool_name TEXT NOT NULL,
+            input TEXT,
+            output TEXT,
+            error TEXT,
+            permission_level TEXT NOT NULL
+                CHECK(permission_level IN ('read_only', 'workspace_write', 'prompt', 'allow', 'danger')),
+            approval_id TEXT,
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK(status IN (
+                    'pending', 'running', 'approved', 'rejected',
+                    'success', 'failed', 'cancelled', 'timeout'
+                )),
+            started_at INTEGER,
+            completed_at INTEGER,
+            duration_ms INTEGER,
+            invoked_by TEXT,
+            invoked_by_type TEXT
+                CHECK(invoked_by_type IN ('agent', 'workflow_node', 'system') OR invoked_by_type IS NULL),
+            retry_of TEXT,
+            created_at INTEGER NOT NULL
+        )"
+    ).execute(pool).await?;
+
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_tool_inv_exec ON tool_invocations(execution_id, started_at)").execute(pool).await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_tool_inv_status ON tool_invocations(status, created_at DESC)").execute(pool).await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_tool_inv_tool ON tool_invocations(tool_name, created_at DESC)").execute(pool).await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_tool_inv_approval ON tool_invocations(approval_id) WHERE approval_id IS NOT NULL").execute(pool).await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_tool_inv_retry ON tool_invocations(retry_of) WHERE retry_of IS NOT NULL").execute(pool).await;
+
+    tracing::info!("v3 migration 015 (tool_invocations) completed");
+    Ok(())
+}
+
+async fn run_v3_migration_016(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
+    // ============================================================
+    // Learning governance — candidates + blocklist (Track 3 / T3-6..T3-11).
+    // See migrations/016_learning_governance.sql and Issue #91.
+    // ============================================================
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS learning_candidates (
+            id TEXT PRIMARY KEY,
+            target_type TEXT NOT NULL
+                CHECK(target_type IN ('memory', 'kb_doc', 'prompt')),
+            target_key TEXT,
+            content TEXT NOT NULL,
+            score REAL NOT NULL,
+            evidence TEXT,
+            source_execution_id TEXT,
+            source_metadata TEXT,
+            persisted_target_id TEXT,
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK(status IN ('pending', 'approved', 'rejected', 'auto_approved', 'revoked', 'persisted')),
+            decided_by TEXT,
+            decided_at INTEGER,
+            rejection_reason TEXT,
+            approval_threshold REAL NOT NULL DEFAULT 0.7,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )"
+    ).execute(pool).await?;
+
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_lc_status ON learning_candidates(status, created_at DESC)").execute(pool).await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_lc_target ON learning_candidates(target_type, target_key)").execute(pool).await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_lc_source_exec ON learning_candidates(source_execution_id)").execute(pool).await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_lc_score ON learning_candidates(score DESC)").execute(pool).await;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS learning_blocklist (
+            id TEXT PRIMARY KEY,
+            content_hash TEXT NOT NULL UNIQUE,
+            source_candidate_id TEXT NOT NULL REFERENCES learning_candidates(id),
+            reason TEXT,
+            blocked_at INTEGER NOT NULL,
+            blocked_by TEXT
+        )"
+    ).execute(pool).await?;
+
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_lb_hash ON learning_blocklist(content_hash)").execute(pool).await;
+
+    tracing::info!("v3 migration 016 (learning_candidates + learning_blocklist) completed");
+    Ok(())
+}
+
+async fn run_v3_migration_017(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
+    // ============================================================
+    // Workflow version history (Track 2 / T2-2).
+    // See migrations/017_workflow_versions.sql and Issue #90, #17.
+    // ============================================================
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS workflow_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            workflow_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            yaml_content TEXT NOT NULL,
+            saved_by TEXT,
+            change_summary TEXT,
+            created_at INTEGER NOT NULL,
+            UNIQUE(workflow_id, version)
+        )"
+    ).execute(pool).await?;
+
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_wv_workflow ON workflow_versions(workflow_id, version DESC)").execute(pool).await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_wv_created ON workflow_versions(created_at DESC)").execute(pool).await;
+
+    tracing::info!("v3 migration 017 (workflow_versions) completed");
+    Ok(())
+}
+
+async fn run_v3_migration_018(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS workflow_triggers (
+            id TEXT PRIMARY KEY,
+            workflow_id TEXT NOT NULL,
+            trigger_config TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at INTEGER NOT NULL
+        )"
+    ).execute(pool).await?;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_wt_workflow ON workflow_triggers(workflow_id)").execute(pool).await;
+    tracing::info!("v3 migration 018 (workflow_triggers) completed");
+    Ok(())
+}
+
+async fn run_v3_migration_019(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
+    // #24: Seed 4 built-in system agents
+    let _now = chrono::Utc::now().timestamp();
+    let agents = vec![
+        ("agent-scheduler", "Scheduler", "Automatically receives tasks, decomposes them, and dispatches to specialized agents", "[\"system\",\"scheduler\"]"),
+        ("agent-reviewer", "Reviewer", "Reviews agent outputs and workflow results for quality and compliance", "[\"system\",\"reviewer\"]"),
+        ("agent-monitor", "Monitor", "Monitors system health, agent uptime, and task queue depth; alerts on anomalies", "[\"system\",\"monitor\"]"),
+        ("agent-evolver", "Evolver", "Extracts learnings from completed executions and proposes knowledge updates", "[\"system\",\"evolver\"]"),
+    ];
+    for (id, name, desc, tags) in agents {
+        let _ = sqlx::query(
+            "INSERT OR IGNORE INTO agents (id, name, status, description, tags) VALUES (?, ?, 'offline', ?, ?)"
+        ).bind(id).bind(name).bind(desc).bind(tags).execute(pool).await;
+    }
+    tracing::info!("v3 migration 019 (system agents seeded) completed");
+    Ok(())
+}
+
+async fn run_v3_migration_020(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
+    // #18: Audit logs — persistent record of all API requests
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS audit_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            method TEXT NOT NULL,
+            path TEXT NOT NULL,
+            query TEXT,
+            status INTEGER NOT NULL,
+            duration_ms INTEGER NOT NULL,
+            user_agent TEXT,
+            client_ip TEXT,
+            actor TEXT,
+            created_at INTEGER NOT NULL
+        )"
+    ).execute(pool).await?;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at DESC)").execute(pool).await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_audit_path ON audit_logs(path, created_at DESC)").execute(pool).await;
+    tracing::info!("v3 migration 020 (audit_logs) completed");
     Ok(())
 }

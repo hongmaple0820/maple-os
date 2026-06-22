@@ -42,7 +42,7 @@ impl ApprovalUrgency {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse_str(s: &str) -> Self {
         match s {
             "low" => Self::Low,
             "high" => Self::High,
@@ -80,7 +80,7 @@ impl QuorumType {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse_str(s: &str) -> Self {
         match s {
             "any" => Self::Any,
             "all" => Self::All,
@@ -145,7 +145,7 @@ impl VoteDecision {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse_str(s: &str) -> Self {
         match s {
             "reject" => Self::Reject,
             "abstain" => Self::Abstain,
@@ -174,8 +174,8 @@ fn row_to_approval(row: &sqlx::sqlite::SqliteRow) -> ApprovalRequest {
         description: row.get(3),
         request_type: row.get(4),
         requester_id: row.get(5),
-        urgency: ApprovalUrgency::from_str(row.get::<&str, _>(6)),
-        quorum_type: QuorumType::from_str(row.get::<&str, _>(7)),
+        urgency: ApprovalUrgency::parse_str(row.get::<&str, _>(6)),
+        quorum_type: QuorumType::parse_str(row.get::<&str, _>(7)),
         required_count: row.get(8),
         approver_spec: row.get(9),
         context: row.get(10),
@@ -190,11 +190,24 @@ fn row_to_approval(row: &sqlx::sqlite::SqliteRow) -> ApprovalRequest {
 
 pub struct ApprovalService {
     pool: SqlitePool,
+    /// Optional unified execution fact chain recorder (Track 1 / T1-6).
+    /// When set, create_request / vote / check_quorum append events to the
+    /// provided execution_id so the approval lifecycle is visible in the
+    /// same timeline as chat / workflow / agent traces.
+    /// See docs/execution-fact-chain-spec.md §7.3.
+    recorder: Option<crate::execution_chain::ExecutionRecorder>,
 }
 
 impl ApprovalService {
     pub fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+        Self { pool, recorder: None }
+    }
+
+    /// Attach an ExecutionRecorder so approval events flow into the unified
+    /// execution fact chain. Idempotent — calling twice replaces the recorder.
+    pub fn with_recorder(mut self, recorder: crate::execution_chain::ExecutionRecorder) -> Self {
+        self.recorder = Some(recorder);
+        self
     }
 
     pub async fn create_request(
@@ -208,6 +221,28 @@ impl ApprovalService {
         quorum_type: QuorumType,
         approver_spec: &str,
         context: Option<&str>,
+    ) -> Result<ApprovalRequest> {
+        self.create_request_with_execution(group_id, title, description, request_type,
+            requester_id, urgency, quorum_type, approver_spec, context, None).await
+    }
+
+    /// Like `create_request` but also records an `approval_requested` event
+    /// into the unified execution fact chain under `execution_id`.
+    /// `execution_id` may be `None` (no fact chain link) — use this when the
+    /// approval is triggered from a chat / workflow / agent context that
+    /// already opened an execution.
+    pub async fn create_request_with_execution(
+        &self,
+        group_id: &str,
+        title: &str,
+        description: Option<&str>,
+        request_type: &str,
+        requester_id: &str,
+        urgency: ApprovalUrgency,
+        quorum_type: QuorumType,
+        approver_spec: &str,
+        context: Option<&str>,
+        execution_id: Option<&str>,
     ) -> Result<ApprovalRequest> {
         let id = uuid::Uuid::new_v4().to_string();
         let now = chrono::Utc::now().timestamp();
@@ -248,6 +283,26 @@ impl ApprovalService {
         .bind(now)
         .execute(&self.pool)
         .await?;
+
+        // ── T1-6: append 'approval_requested' event to the fact chain ──
+        if let (Some(rec), Some(eid)) = (&self.recorder, execution_id) {
+            let _ = rec.append(
+                eid,
+                "approval",
+                "approval_requested",
+                serde_json::json!({
+                    "approval_id": id,
+                    "action_type": request_type,
+                    "description": title,
+                    "urgency": urgency.as_str(),
+                    "expires_at": timeout_at,
+                    "group_id": group_id,
+                    "requester_id": requester_id,
+                }),
+                Some(requester_id),
+                Some("human"),
+            ).await;
+        }
 
         Ok(ApprovalRequest {
             id,
@@ -290,6 +345,19 @@ impl ApprovalService {
         decision: VoteDecision,
         comment: Option<&str>,
     ) -> Result<ApprovalOutcome> {
+        self.vote_with_execution(approval_id, voter_id, decision, comment, None).await
+    }
+
+    /// Like `vote` but also records an `approval_decided` event into the
+    /// unified execution fact chain under `execution_id`.
+    pub async fn vote_with_execution(
+        &self,
+        approval_id: &str,
+        voter_id: &str,
+        decision: VoteDecision,
+        comment: Option<&str>,
+        execution_id: Option<&str>,
+    ) -> Result<ApprovalOutcome> {
         let now = chrono::Utc::now().timestamp();
         let vote_id = uuid::Uuid::new_v4().to_string();
 
@@ -310,10 +378,40 @@ impl ApprovalService {
             anyhow::bail!("Voter has already voted on this approval");
         }
 
-        self.check_quorum(approval_id).await
+        // ── T1-6: append 'approval_decided' event ──
+        // We append the vote itself; check_quorum will append the terminal
+        // 'approval_decided' event with the final outcome (approved/rejected).
+        if let (Some(rec), Some(eid)) = (&self.recorder, execution_id) {
+            let _ = rec.append(
+                eid,
+                "approval",
+                "approval_decided",
+                serde_json::json!({
+                    "approval_id": approval_id,
+                    "decision": decision.as_str(),
+                    "voter_id": voter_id,
+                    "comment": comment,
+                    "is_terminal": false, // intermediate vote, not final outcome
+                }),
+                Some(voter_id),
+                Some("human"),
+            ).await;
+        }
+
+        self.check_quorum_with_execution(approval_id, execution_id).await
     }
 
     pub async fn check_quorum(&self, approval_id: &str) -> Result<ApprovalOutcome> {
+        self.check_quorum_with_execution(approval_id, None).await
+    }
+
+    /// Like `check_quorum` but appends a terminal `approval_decided` event
+    /// (with `is_terminal: true` and the final outcome) when quorum is reached.
+    pub async fn check_quorum_with_execution(
+        &self,
+        approval_id: &str,
+        execution_id: Option<&str>,
+    ) -> Result<ApprovalOutcome> {
         let request = self.get_request(approval_id).await?
             .ok_or_else(|| anyhow::anyhow!("Approval not found: {}", approval_id))?;
 
@@ -341,6 +439,29 @@ impl ApprovalService {
             )
             .bind(now).bind(now).bind(approval_id)
             .execute(&self.pool).await?;
+        }
+
+        // ── T1-6: append terminal approval_decided event if resolved ──
+        if let (Some(rec), Some(eid)) = (&self.recorder, execution_id) {
+            if quorum_met || is_impossible {
+                let final_decision = if quorum_met { "approved" } else { "rejected" };
+                let _ = rec.append(
+                    eid,
+                    "approval",
+                    "approval_decided",
+                    serde_json::json!({
+                        "approval_id": approval_id,
+                        "decision": final_decision,
+                        "is_terminal": true,
+                        "approve_count": approve_count,
+                        "reject_count": reject_count,
+                        "abstain_count": abstain_count,
+                        "total_approvers": total_approvers,
+                    }),
+                    None,
+                    Some("system"),
+                ).await;
+            }
         }
 
         Ok(ApprovalOutcome {
@@ -391,7 +512,7 @@ impl ApprovalService {
             id: r.get(0),
             approval_id: r.get(1),
             voter_id: r.get(2),
-            decision: VoteDecision::from_str(r.get::<&str, _>(3)),
+            decision: VoteDecision::parse_str(r.get::<&str, _>(3)),
             comment: r.get(4),
             voted_at: r.get(5),
         }).collect())

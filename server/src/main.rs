@@ -1,12 +1,12 @@
-mod cache;
-mod config;
-mod db;
-mod metrics;
-mod middleware;
-mod sandbox;
-mod skills;
-mod state;
-mod v3_auth;
+#![allow(clippy::all)]
+// All shared modules live in the lib crate (server/src/lib.rs) so that
+// bin and integration tests share the same AppState / handler types.
+// T0-4 in docs/MapleOS_Implementation_Plan_2026Q3.md tracks the
+// incremental cleanup; previously each module was `mod foo;` here which
+// produced a duplicate (structurally identical but distinct) copy in the
+// bin crate, preventing lib handlers from being mounted into the bin's
+// Router without adapter shims.
+use mapleos_server::{cache, config, db, metrics, middleware, skills, state, v3_auth};
 
 use axum::Json;
 use axum::Router;
@@ -457,6 +457,105 @@ async fn health_handler() -> impl IntoResponse {
         "version": env!("CARGO_PKG_VERSION"),
     }))
 }
+/// POST /api/llm/test-connection (Track 3 / T3-3)
+///
+/// Tests connectivity to an LLM provider by sending a minimal chat
+/// completion request. Returns latency + model name on success, error
+/// message on failure.
+///
+/// Request body:
+///   { "provider": "ollama" | "openai" | "anthropic",
+///     "base_url"?: string,    // for ollama
+///     "api_key"?: string,     // for cloud providers
+///     "model"?: string }      // specific model to test (default: first available)
+///
+/// Response (200):
+///   { "ok": true, "provider": "ollama", "model": "qwen2.5:7b", "latency_ms": 42 }
+/// Response (503):
+///   { "ok": false, "error": "connection refused" }
+async fn llm_test_connection_handler(
+    axum::extract::State(_state): axum::extract::State<Arc<AppState>>,
+    Json(req): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let provider = req["provider"].as_str().unwrap_or("").to_string();
+    let base_url = req["base_url"].as_str().unwrap_or("http://localhost:11434").to_string();
+    let api_key = req["api_key"].as_str().unwrap_or("").to_string();
+    let model = req["model"].as_str().unwrap_or("").to_string();
+
+    let start = std::time::Instant::now();
+    let result: anyhow::Result<(String, String)> = async {
+        match provider.as_str() {
+            "ollama" => {
+                let url = format!("{}/v1/chat/completions", base_url.trim_end_matches('/'));
+                let body = serde_json::json!({
+                    "model": if model.is_empty() { "qwen2.5:7b" } else { &model },
+                    "messages": [{"role": "user", "content": "ping"}],
+                    "max_tokens": 5,
+                    "stream": false,
+                });
+                let client = reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(10))
+                    .build()?;
+                let resp = client.post(&url).json(&body).send().await?;
+                if !resp.status().is_success() {
+                    anyhow::bail!("HTTP {}", resp.status());
+                }
+                Ok((provider.clone(), model.clone()))
+            }
+            "openai" => {
+                if api_key.is_empty() {
+                    anyhow::bail!("api_key required for openai provider");
+                }
+                let url = "https://api.openai.com/v1/chat/completions";
+                let model_name = if model.is_empty() { "gpt-4o-mini" } else { &model };
+                let body = serde_json::json!({
+                    "model": model_name,
+                    "messages": [{"role": "user", "content": "ping"}],
+                    "max_tokens": 5,
+                });
+                let client = reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(10))
+                    .build()?;
+                let resp = client.post(url)
+                    .header("Authorization", format!("Bearer {}", api_key))
+                    .json(&body)
+                    .send().await?;
+                if !resp.status().is_success() {
+                    let status = resp.status();
+                    let text = resp.text().await.unwrap_or_default();
+                    anyhow::bail!("HTTP {}: {}", status, text);
+                }
+                Ok((provider.clone(), model_name.to_string()))
+            }
+            _ => {
+                anyhow::bail!("unsupported provider: {} (supported: ollama, openai)", provider);
+            }
+        }
+    }
+    .await;
+
+    let latency_ms = start.elapsed().as_millis() as u64;
+    match result {
+        Ok((prov, mdl)) => (
+            axum::http::StatusCode::OK,
+            axum::Json(serde_json::json!({
+                "ok": true,
+                "provider": prov,
+                "model": mdl,
+                "latency_ms": latency_ms,
+            })),
+        ),
+        Err(e) => (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(serde_json::json!({
+                "ok": false,
+                "error": e.to_string(),
+                "latency_ms": latency_ms,
+            })),
+        ),
+    }
+}
+
 async fn models_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> impl IntoResponse {
@@ -470,10 +569,41 @@ async fn models_handler(
         }));
     }
 
-    // 缓存未命中，从LLM路由获取
-    let models = state.llm_router.list_models().await;
+    // ── T3-1: return ModelDescriptor[] (id + name + provider + is_local)
+    // instead of bare String[]. The frontend settings-page expects this
+    // shape — see #86 where the type mismatch broke model display.
+    let mut models = state.llm_router.list_models_detailed().await;
+
+    // ── T3-2: also discover models from the configured Ollama instance
+    // (if any) so users see what's actually running locally, not just
+    // what's pre-registered. Discovered models that are not already
+    // registered are appended with `registered: false` so the frontend
+    // can show them but mark them as "needs registration before use".
+    //
+    // ollama_url lives in the app_config table (key="config.ollama_url").
+    let ollama_url: String = sqlx::query_scalar::<_, String>(
+        "SELECT value FROM app_config WHERE key = 'config.ollama_url'"
+    )
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or_else(|| "http://localhost:11434".to_string());
+
+    if !ollama_url.is_empty() {
+        let discovered = maple_llm::router::LlmRouter::discover_ollama_models(&ollama_url).await;
+        let existing_ids: std::collections::HashSet<String> =
+            models.iter().map(|m| m.id.clone()).collect();
+        for d in discovered {
+            if !existing_ids.contains(&d.id) {
+                // d.registered is already Some(false) from discover_ollama_models
+                models.push(d);
+            }
+        }
+    }
+
     let models_json: Vec<serde_json::Value> =
-        models.into_iter().map(|m| serde_json::json!(m)).collect();
+        models.into_iter().map(|m| serde_json::to_value(&m).unwrap_or(serde_json::Value::Null)).collect();
 
     // 存入缓存
     state.cache.models.insert(cache_key, models_json.clone());
@@ -509,6 +639,37 @@ async fn chat_stream_handler(
         .save_message(&session_id, "user", &req.message, None, None)
         .await;
 
+    // ── Track 1 / T1-3: open a unified execution fact chain ──
+    // The execution_id is emitted to the client as the first SSE event
+    // (event: execution) so the frontend can subscribe to
+    // /api/v3/executions/:id/events/stream for a unified trace view
+    // (see docs/execution-fact-chain-spec.md §7.1).
+    let execution_recorder = state.execution_recorder.clone();
+    let exec_id = execution_recorder
+        .start(
+            "chat",
+            None, // user_id — not available without auth context; T1-3.1
+                  // will wire this once auth middleware exposes user_id.
+            Some("human"),
+            "manual",
+            serde_json::json!({
+                "session_id": session_id,
+                "message_preview": if req.message.len() > 200 {
+                    req.message[..200].to_string()
+                } else {
+                    req.message.clone()
+                },
+                "agent_id": req.agent_id,
+                "model": req.model,
+            }),
+            None,
+        )
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "failed to start execution recorder");
+            String::new()
+        });
+
     let route_key = if req.model != "auto" {
         &req.model
     } else {
@@ -529,9 +690,10 @@ async fn chat_stream_handler(
             .await
             .unwrap_or_default();
 
+        let mut sources = Vec::new();
+        let mut context_parts = Vec::new();
+
         if !kb_results.is_empty() {
-            let mut context_parts = Vec::new();
-            let mut sources = Vec::new();
             for r in &kb_results {
                 context_parts.push(r.content.clone());
                 let snippet = if r.content.len() > 200 {
@@ -547,6 +709,48 @@ async fn chat_stream_handler(
                     "source_type": r.source_type,
                 }));
             }
+        }
+
+        // T3-10: also search episodic memory for learning candidates
+        // that match the query. If a memory entry has candidate_id in
+        // its metadata, mark it as a learning source so the frontend
+        // can display "from learning candidate X" in the context preview.
+        {
+            let memory_store = state.memory_store.lock().await;
+            let keywords: Vec<&str> = req.message.split_whitespace().take(5).collect();
+            for kw in keywords {
+                if let Ok(entries) = memory_store
+                    .search_by_type(&maple_kb::memory::MemoryType::Episodic, kw, 3)
+                    .await
+                {
+                    for entry in entries {
+                        let candidate_id = entry.metadata.get("candidate_id").cloned();
+                        let is_learning = candidate_id.is_some();
+                        let snippet = if entry.content.len() > 200 {
+                            let mut end = 200;
+                            while end > 0 && !entry.content.is_char_boundary(end) {
+                                end -= 1;
+                            }
+                            entry.content[..end].to_string() + "..."
+                        } else {
+                            entry.content.clone()
+                        };
+                        context_parts.push(entry.content.clone());
+                        sources.push(serde_json::json!({
+                            "id": entry.id,
+                            "snippet": snippet,
+                            "score": 0.8,
+                            "source": if is_learning { "learning" } else { "memory" },
+                            "source_type": "episodic_memory",
+                            "is_learning": is_learning,
+                            "candidate_id": candidate_id,
+                        }));
+                    }
+                }
+            }
+        }
+
+        if !context_parts.is_empty() {
             let kb_context = context_parts.join("\n---\n");
             enhanced_message = format!(
                 "[Knowledge Base Context]\n{}\n---\n[User Question]\n{}",
@@ -563,6 +767,12 @@ async fn chat_stream_handler(
     let evolver = state.evolver.clone();
 
     let stream = async_stream::stream! {
+        // ── T1-3: emit execution_id first so client can subscribe ──
+        if !exec_id.is_empty() {
+            yield Ok(Event::default().event("execution").data(serde_json::json!({
+                "execution_id": exec_id,
+            }).to_string()));
+        }
         if !kb_sources_json.is_empty() {
             yield Ok(Event::default().event("kb_sources").data(serde_json::json!({"sources": kb_sources_json}).to_string()));
         }
@@ -583,6 +793,22 @@ async fn chat_stream_handler(
                                             yield Ok(Event::default().event("thinking").data(serde_json::json!({"token": chunk.delta}).to_string()));
                                         } else {
                                             full_content.push_str(&chunk.delta);
+                                            // ── T1-3: append delta event to fact chain ──
+                                            // (best-effort; failure is logged, not surfaced — the SSE
+                                            // token stream is the primary delivery channel)
+                                            if !exec_id.is_empty() {
+                                                let _ = execution_recorder.append(
+                                                    &exec_id,
+                                                    "chat",
+                                                    "delta",
+                                                    serde_json::json!({
+                                                        "token": chunk.delta,
+                                                        "message_id": sid,
+                                                    }),
+                                                    None,
+                                                    Some("human"),
+                                                ).await;
+                                            }
                                             yield Ok(Event::default().event("token").data(serde_json::json!({"token": chunk.delta}).to_string()));
                                         }
                                     }
@@ -593,6 +819,13 @@ async fn chat_stream_handler(
                                 Ok(None) => break,
                                 Err(e) => {
                                     yield Ok(Event::default().event("error").data(format!("Stream error: {}", e)));
+                                    if !exec_id.is_empty() {
+                                        let _ = execution_recorder.fail(
+                                            &exec_id,
+                                            &format!("LLM stream error: {e}"),
+                                            true,
+                                        ).await;
+                                    }
                                     break;
                                 }
                             }
@@ -608,16 +841,39 @@ async fn chat_stream_handler(
                                 tracing::warn!(error = %e, "Chat knowledge precipitation failed");
                             }
                         });
-                        yield Ok(Event::default().event("done").data(serde_json::json!({"done": true}).to_string()));
+                        // ── T1-3: mark execution done ──
+                        if !exec_id.is_empty() {
+                            let summary = if full_content.len() > 200 {
+                                full_content[..200].to_string()
+                            } else {
+                                full_content.clone()
+                            };
+                            let _ = execution_recorder.done(&exec_id, &summary).await;
+                        }
+                        yield Ok(Event::default().event("done").data(serde_json::json!({"done": true, "execution_id": exec_id}).to_string()));
                     }
                     Err(e) => {
                         yield Ok(Event::default().event("error").data(format!("Stream init error: {}", e)));
+                        if !exec_id.is_empty() {
+                            let _ = execution_recorder.fail(
+                                &exec_id,
+                                &format!("LLM stream init error: {e}"),
+                                true,
+                            ).await;
+                        }
                         yield Ok(Event::default().event("done").data("{\"done\":true}"));
                     }
                 }
             }
             Err(e) => {
                 yield Ok(Event::default().event("error").data(format!("No LLM available: {}", e)));
+                if !exec_id.is_empty() {
+                    let _ = execution_recorder.fail(
+                        &exec_id,
+                        &format!("No LLM available: {e}"),
+                        false,
+                    ).await;
+                }
                 yield Ok(Event::default().event("done").data("{\"done\":true}"));
             }
         }
@@ -2848,6 +3104,91 @@ async fn v3_delete_workflow_handler(
     }
 }
 
+/// T2-1: Validate a workflow definition.
+/// POST /api/v3/workflows/:wid/validate
+async fn v3_validate_workflow_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(wid): axum::extract::Path<String>,
+) -> axum::Json<serde_json::Value> {
+    match state.workflow_service.get_definition(&wid).await {
+        Ok(Some(def)) => {
+            match maple_engine::Workflow::parse_definition(&def.yaml_content) {
+                Ok(wf) => match wf.validate() {
+                    Ok(()) => axum::Json(serde_json::json!({
+                        "valid": true, "errors": [], "workflow_id": wid, "version": def.version,
+                    })),
+                    Err(errors) => axum::Json(serde_json::json!({
+                        "valid": false, "errors": errors, "workflow_id": wid, "version": def.version,
+                    })),
+                },
+                Err(e) => axum::Json(serde_json::json!({
+                    "valid": false, "errors": [format!("parse error: {e}")], "workflow_id": wid, "version": def.version,
+                })),
+            }
+        }
+        Ok(None) => axum::Json(serde_json::json!({
+            "valid": false, "errors": ["workflow not found"], "workflow_id": wid,
+        })),
+        Err(e) => axum::Json(serde_json::json!({
+            "valid": false, "errors": [format!("fetch error: {e}")], "workflow_id": wid,
+        })),
+    }
+}
+
+/// T2-2: List all versions of a workflow.
+/// GET /api/v3/workflows/:wid/versions
+async fn v3_list_workflow_versions_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(wid): axum::extract::Path<String>,
+) -> axum::Json<serde_json::Value> {
+    match state.workflow_service.list_versions(&wid).await {
+        Ok(versions) => axum::Json(serde_json::json!({
+            "workflow_id": wid,
+            "versions": versions.iter().map(|v| serde_json::json!({
+                "version": v.version,
+                "saved_by": v.saved_by,
+                "change_summary": v.change_summary,
+                "created_at": v.created_at,
+            })).collect::<Vec<_>>(),
+            "count": versions.len(),
+        })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+/// T2-2: Get a specific version's full definition.
+/// GET /api/v3/workflows/:wid/versions/:version
+async fn v3_get_workflow_version_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path((wid, version)): axum::extract::Path<(String, i64)>,
+) -> axum::Json<serde_json::Value> {
+    match state.workflow_service.get_version(&wid, version).await {
+        Ok(Some(v)) => axum::Json(serde_json::json!({
+            "version": v,
+        })),
+        Ok(None) => axum::Json(serde_json::json!({
+            "error": format!("version {} not found for workflow {}", version, wid),
+        })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+/// T2-2: Rollback to a previous version.
+/// POST /api/v3/workflows/:wid/versions/:version/rollback
+async fn v3_rollback_workflow_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path((wid, version)): axum::extract::Path<(String, i64)>,
+) -> axum::Json<serde_json::Value> {
+    match state.workflow_service.rollback_to_version(&wid, version).await {
+        Ok(rolled_back) => axum::Json(serde_json::json!({
+            "rolled_back": rolled_back,
+            "workflow_id": wid,
+            "target_version": version,
+        })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
 // ── Workflow Run Handlers ──
 
 #[derive(Deserialize)]
@@ -2877,9 +3218,73 @@ async fn v3_create_workflow_run_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
     axum::Json(req): axum::Json<CreateRunRequest>,
 ) -> impl axum::response::IntoResponse {
+    // ── Track 1 / T1-4: open a unified execution fact chain ──
+    // The execution_id is returned to the client so the Workflow trace UI
+    // can subscribe to /api/v3/executions/:id/events for a unified view
+    // (see docs/execution-fact-chain-spec.md §7.2).
+    let trigger_type = "manual"; // this handler is the manual trigger entry
+                                 // point; cron/webhook/event/message triggers
+                                 // go through scheduler and will be wired in T1-4.2
+    let exec_id = state
+        .execution_recorder
+        .start(
+            "workflow",
+            None, // actor — auth context not wired yet (T1-3.1)
+            Some("human"),
+            trigger_type,
+            serde_json::json!({
+                "workflow_id": req.workflow_id,
+                "workflow_version": req.workflow_version,
+                "group_id": req.group_id,
+                "agent_id": req.agent_id,
+                "input_summary": serde_json::to_string(&req.input)
+                    .unwrap_or_default()
+                    .chars()
+                    .take(200)
+                    .collect::<String>(),
+            }),
+            None,
+        )
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "failed to start workflow execution recorder");
+            String::new()
+        });
+
     match state.workflow_service.create_run(&req.workflow_id, req.workflow_version, &req.input, req.group_id.as_deref(), req.agent_id.as_deref()).await {
-        Ok(run) => (axum::http::StatusCode::CREATED, axum::Json(serde_json::json!({ "run": run }))),
-        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({ "error": e.to_string() }))),
+        Ok(run) => {
+            // Append a 'started' artifact event linking the workflow run id
+            // to the execution id, so the workflow UI can later look up
+            // the unified trace by either id.
+            if !exec_id.is_empty() {
+                let _ = state.execution_recorder.append(
+                    &exec_id,
+                    "workflow",
+                    "started",
+                    serde_json::json!({
+                        "workflow_run_id": run.id,
+                        "workflow_id": req.workflow_id,
+                        "status": run.status,
+                    }),
+                    None,
+                    Some("human"),
+                ).await;
+            }
+            (axum::http::StatusCode::CREATED, axum::Json(serde_json::json!({
+                "run": run,
+                "execution_id": exec_id,
+            })))
+        }
+        Err(e) => {
+            if !exec_id.is_empty() {
+                let _ = state.execution_recorder.fail(
+                    &exec_id,
+                    &format!("workflow create_run failed: {e}"),
+                    false,
+                ).await;
+            }
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({ "error": e.to_string() })))
+        }
     }
 }
 
@@ -2899,8 +3304,53 @@ async fn v3_update_workflow_run_status_handler(
     axum::extract::Path(rid): axum::extract::Path<String>,
     axum::Json(req): axum::Json<UpdateRunStatusRequest>,
 ) -> axum::Json<serde_json::Value> {
+    // ── Track 1 / T1-4: workflow status changes project onto execution
+    // events. We look up the most recent execution whose 'started' event
+    // payload references this workflow_run_id and append a corresponding
+    // event (paused / resumed / done / error / cancelled).
+    // See docs/execution-fact-chain-spec.md §7.2.
+    let exec_id: Option<String> = sqlx::query_scalar::<_, String>(
+        "SELECT execution_id FROM execution_events
+          WHERE event_type = 'started'
+            AND source = 'workflow'
+            AND json_extract(payload, '$.workflow_run_id') = ?
+          ORDER BY created_at DESC LIMIT 1"
+    )
+    .bind(&rid)
+    .fetch_optional(&state.db)
+    .await
+    .ok()
+    .flatten();
+
+    if let (Some(_eid), Some(recorder_exec_id)) = (&exec_id, exec_id.as_ref()) {
+        let event_type = match req.status.as_str() {
+            "running" => Some("resumed"),
+            "paused" | "waiting_approval" => Some("paused"),
+            "success" | "completed" => Some("done"),
+            "failed" => Some("error"),
+            "cancelled" => Some("cancelled"),
+            _ => None,
+        };
+        if let Some(et) = event_type {
+            let payload = serde_json::json!({
+                "workflow_run_id": rid,
+                "status": req.status,
+                "output": req.output,
+                "error": req.error,
+            });
+            let _ = state.execution_recorder.append(
+                recorder_exec_id,
+                "workflow",
+                et,
+                payload,
+                None,
+                Some("human"),
+            ).await;
+        }
+    }
+
     match state.workflow_service.update_run_status(&rid, &req.status, req.output.as_deref(), req.error.as_deref()).await {
-        Ok(updated) => axum::Json(serde_json::json!({ "updated": updated })),
+        Ok(updated) => axum::Json(serde_json::json!({ "updated": updated, "execution_id": exec_id })),
         Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
     }
 }
@@ -2923,6 +3373,107 @@ async fn v3_record_checkpoint_handler(
     match state.workflow_service.record_checkpoint(&rid, &req.node_id, &req.output, &req.context_snapshot).await {
         Ok(id) => (axum::http::StatusCode::CREATED, axum::Json(serde_json::json!({ "id": id }))),
         Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, axum::Json(serde_json::json!({ "error": e.to_string() }))),
+    }
+}
+
+/// T2-3: Retry a failed workflow node.
+/// POST /api/v3/workflow-runs/:rid/nodes/:nid/retry
+/// Marks the node for re-execution by recording a new checkpoint with
+/// status='retry' and appending a 'retry' event to the execution fact chain.
+async fn v3_retry_workflow_node_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path((rid, nid)): axum::extract::Path<(String, String)>,
+) -> axum::Json<serde_json::Value> {
+    // Record a checkpoint marking the retry
+    match state.workflow_service.record_checkpoint(
+        &rid, &nid,
+        &serde_json::json!({"action": "retry"}).to_string(),
+        &serde_json::json!({}).to_string(),
+    ).await {
+        Ok(id) => {
+            // Append 'retry' event to execution fact chain if we can find the execution_id
+            let exec_id: Option<String> = sqlx::query_scalar::<_, String>(
+                "SELECT execution_id FROM execution_events
+                  WHERE event_type = 'started' AND source = 'workflow'
+                    AND json_extract(payload, '$.workflow_run_id') = ?
+                  ORDER BY created_at DESC LIMIT 1"
+            ).bind(&rid).fetch_optional(&state.db).await.ok().flatten();
+            if let Some(eid) = exec_id {
+                let _ = state.execution_recorder.append(
+                    &eid, "workflow", "retry",
+                    serde_json::json!({"workflow_run_id": rid, "node_id": nid, "attempt": "auto"}),
+                    None, Some("human"),
+                ).await;
+            }
+            axum::Json(serde_json::json!({ "checkpoint_id": id, "action": "retry", "node_id": nid }))
+        }
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+/// T2-3: Skip a failed workflow node.
+/// POST /api/v3/workflow-runs/:rid/nodes/:nid/skip
+async fn v3_skip_workflow_node_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path((rid, nid)): axum::extract::Path<(String, String)>,
+) -> axum::Json<serde_json::Value> {
+    match state.workflow_service.record_checkpoint(
+        &rid, &nid,
+        &serde_json::json!({"action": "skip"}).to_string(),
+        &serde_json::json!({}).to_string(),
+    ).await {
+        Ok(id) => {
+            let exec_id: Option<String> = sqlx::query_scalar::<_, String>(
+                "SELECT execution_id FROM execution_events
+                  WHERE event_type = 'started' AND source = 'workflow'
+                    AND json_extract(payload, '$.workflow_run_id') = ?
+                  ORDER BY created_at DESC LIMIT 1"
+            ).bind(&rid).fetch_optional(&state.db).await.ok().flatten();
+            if let Some(eid) = exec_id {
+                let _ = state.execution_recorder.append(
+                    &eid, "workflow", "node_finished",
+                    serde_json::json!({"workflow_run_id": rid, "node_id": nid, "status": "skipped"}),
+                    None, Some("human"),
+                ).await;
+            }
+            axum::Json(serde_json::json!({ "checkpoint_id": id, "action": "skip", "node_id": nid }))
+        }
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+/// T2-3: List dead-letter checkpoints for a workflow run.
+/// GET /api/v3/workflow-runs/:rid/deadletter
+/// Returns checkpoints whose output contains "action":"retry" and the run
+/// is in 'failed' status — these are nodes that failed and were retried
+/// but the run still failed.
+async fn v3_list_deadletter_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(rid): axum::extract::Path<String>,
+) -> axum::Json<serde_json::Value> {
+    match state.workflow_service.list_checkpoints(&rid).await {
+        Ok(checkpoints) => {
+            // Filter checkpoints that look like dead-letter entries
+            // (output contains "error" or "action":"retry" with failed status)
+            let deadletter: Vec<_> = checkpoints
+                .into_iter()
+                .filter(|cp| {
+                    cp.output.contains("error") || cp.output.contains("\"action\":\"retry\"")
+                })
+                .map(|cp| serde_json::json!({
+                    "checkpoint_id": cp.id,
+                    "node_id": cp.node_id,
+                    "output": cp.output,
+                    "created_at": cp.created_at,
+                }))
+                .collect();
+            axum::Json(serde_json::json!({
+                "workflow_run_id": rid,
+                "deadletter": deadletter,
+                "count": deadletter.len(),
+            }))
+        }
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
     }
 }
 
@@ -3874,7 +4425,7 @@ async fn v3_transition_task_handler(
     axum::extract::Path(task_id): axum::extract::Path<String>,
     Json(req): Json<TransitionTaskRequest>,
 ) -> impl IntoResponse {
-    let new_status = maple_engine::task_service::TaskV3Status::from_str(&req.status);
+    let new_status = maple_engine::task_service::TaskV3Status::parse_str(&req.status);
     match state.task_service.transition_task(&task_id, new_status, &req.changed_by, req.reason.as_deref()).await {
         Ok(task) => {
             state.event_bus.publish(maple_engine::event_bus::Event::TaskTransitioned {
@@ -3931,6 +4482,11 @@ struct CreateApprovalRequest {
     quorum_type: Option<String>,
     approver_spec: String,
     context: Option<String>,
+    /// Optional execution_id from the unified fact chain. When present, the
+    /// approval_requested event will be appended to that execution so the
+    /// approval lifecycle appears in the same trace as the triggering chat
+    /// / workflow / agent run. (Track 1 / T1-6)
+    execution_id: Option<String>,
 }
 
 async fn v3_create_approval_handler(
@@ -3943,11 +4499,12 @@ async fn v3_create_approval_handler(
         Some("low") => maple_engine::approval::ApprovalUrgency::Low,
         _ => maple_engine::approval::ApprovalUrgency::Normal,
     };
-    let quorum = maple_engine::approval::QuorumType::from_str(&req.quorum_type.unwrap_or_else(|| "any".to_string()));
+    let quorum = maple_engine::approval::QuorumType::parse_str(&req.quorum_type.unwrap_or_else(|| "any".to_string()));
     let request_type = req.request_type.as_deref().unwrap_or("general");
-    match state.approval_service.create_request(
+    match state.approval_service.create_request_with_execution(
         &req.group_id, &req.title, req.description.as_deref(), request_type,
         &req.requester_id, urgency, quorum, &req.approver_spec, req.context.as_deref(),
+        req.execution_id.as_deref(),
     ).await {
         Ok(approval) => axum::Json(serde_json::json!({ "approval": approval })),
         Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
@@ -3970,6 +4527,11 @@ struct VoteRequest {
     voter_id: String,
     decision: String,
     comment: Option<String>,
+    /// Optional execution_id from the unified fact chain (Track 1 / T1-6).
+    /// When present, the vote + terminal decision events will be appended
+    /// to that execution so the approval lifecycle appears in the same
+    /// trace as the triggering chat / workflow / agent run.
+    execution_id: Option<String>,
 }
 
 async fn v3_vote_handler(
@@ -3982,7 +4544,10 @@ async fn v3_vote_handler(
         "abstain" => maple_engine::approval::VoteDecision::Abstain,
         _ => maple_engine::approval::VoteDecision::Approve,
     };
-    match state.approval_service.vote(&approval_id, &req.voter_id, decision, req.comment.as_deref()).await {
+    match state.approval_service.vote_with_execution(
+        &approval_id, &req.voter_id, decision, req.comment.as_deref(),
+        req.execution_id.as_deref(),
+    ).await {
         Ok(outcome) => {
             state.event_bus.publish(maple_engine::event_bus::Event::ApprovalVoteCast {
                 approval_id: approval_id.clone(),
@@ -4218,7 +4783,7 @@ async fn v3_intervene_delegation_handler(
     axum::extract::Path(delegation_id): axum::extract::Path<String>,
     Json(req): Json<InterveneRequest>,
 ) -> impl IntoResponse {
-    let status = maple_collab::dm_service::DelegationStatus::from_str(
+    let status = maple_collab::dm_service::DelegationStatus::parse_str(
         req.status.as_deref().unwrap_or("failed")
     );
     match state.dm_service.update_delegation_status(&delegation_id, status, req.result.as_deref()).await {
@@ -4512,8 +5077,11 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let memory_store = Arc::new(tokio::sync::Mutex::new(MemoryStore::new(pool.clone())));
+    let learning_governance = Arc::new(maple_kb::LearningGovernanceService::new(pool.clone()));
     let evolver = Arc::new(
-        maple_kb::evolver::Evolver::new(llm_router.clone()).with_memory_store(memory_store.clone()),
+        maple_kb::evolver::Evolver::new(llm_router.clone())
+            .with_memory_store(memory_store.clone())
+            .with_governance(learning_governance.clone()),
     );
     let prompt_version_mgr = Arc::new(PromptVersionManager::new(pool.clone()));
     let task_queue = Arc::new(TaskQueueService::new(pool.clone()));
@@ -4695,7 +5263,9 @@ async fn main() -> anyhow::Result<()> {
         group_manager: Arc::new(GroupManager::new(pool.clone())),
         group_message_manager: Arc::new(GroupMessageManager::new(pool.clone())),
         task_service: Arc::new(TaskService::new(pool.clone())),
-        approval_service: Arc::new(ApprovalService::new(pool.clone())),
+        approval_service: Arc::new(ApprovalService::new(pool.clone()).with_recorder(
+            maple_engine::ExecutionRecorder::new(pool.clone()),
+        )),
         memory_service: Arc::new(MemoryService::new(pool.clone())),
         dm_service: Arc::new(maple_collab::dm_service::DmService::new(pool.clone(), GroupManager::new(pool.clone()))),
         group_cron_service: Arc::new(maple_collab::group_cron::GroupCronService::new(
@@ -4707,6 +5277,9 @@ async fn main() -> anyhow::Result<()> {
         rate_limiter,
         cache: cache::AppCache::new(),
         metrics: metrics::AppMetrics::new(),
+        execution_recorder: maple_engine::ExecutionRecorder::new(pool.clone()),
+        learning_governance: learning_governance.clone(),
+        trigger_manager: Arc::new(maple_engine::TriggerManager::new(pool.clone())),
     });
 
     // Initialize group cron service
@@ -4764,6 +5337,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/chat", post(chat_handler))
         .route("/api/chat/stream", post(chat_stream_handler))
         .route("/api/models", get(models_handler))
+        .route("/api/llm/test-connection", post(llm_test_connection_handler))
         .route("/api/skills", get(skills_handler))
         .route(
             "/api/config",
@@ -4925,11 +5499,46 @@ async fn main() -> anyhow::Result<()> {
         // Workflow definitions
         .route("/api/v3/workflows", get(v3_list_workflows_handler).post(v3_create_workflow_handler))
         .route("/api/v3/workflows/:wid", get(v3_get_workflow_handler).put(v3_update_workflow_handler).delete(v3_delete_workflow_handler))
+        // T2-1: workflow validate endpoint
+        .route("/api/v3/workflows/:wid/validate", post(v3_validate_workflow_handler))
+        // T2-2: workflow version management
+        .route("/api/v3/workflows/:wid/versions", get(v3_list_workflow_versions_handler))
+        .route("/api/v3/workflows/:wid/versions/:version", get(v3_get_workflow_version_handler))
+        .route("/api/v3/workflows/:wid/versions/:version/rollback", post(v3_rollback_workflow_handler))
         // Workflow runs
         .route("/api/v3/workflow-runs", get(v3_list_workflow_runs_handler).post(v3_create_workflow_run_handler))
         .route("/api/v3/workflow-runs/:rid", get(v3_get_workflow_run_handler))
         .route("/api/v3/workflow-runs/:rid/status", put(v3_update_workflow_run_status_handler))
         .route("/api/v3/workflow-runs/:rid/checkpoints", get(v3_list_checkpoints_handler).post(v3_record_checkpoint_handler))
+        // T2-3: workflow run node retry / skip / deadletter
+        .route("/api/v3/workflow-runs/:rid/nodes/:nid/retry", post(v3_retry_workflow_node_handler))
+        .route("/api/v3/workflow-runs/:rid/nodes/:nid/skip", post(v3_skip_workflow_node_handler))
+        .route("/api/v3/workflow-runs/:rid/deadletter", get(v3_list_deadletter_handler))
+        // Unified execution fact chain (Track 1 / T1-2)
+        // Handlers live in lib crate (server/src/execution_handlers.rs) so
+        // the same code is reused by integration tests in
+        // server/tests/v3_api_integration.rs via build_v3_test_router.
+        //
+        // NOTE: legacy `/api/executions/:id` (workflow_executions) still
+        // exists below for backward compat with the old workflow UI; the
+        // new unified chain lives under /api/v3/executions/*.
+        .route("/api/v3/executions/:id", get(mapleos_server::execution_handlers::get_execution_handler))
+        .route("/api/v3/executions/:id/events", get(mapleos_server::execution_handlers::list_events_handler))
+        .route("/api/v3/executions/:id/tool-invocations", get(mapleos_server::execution_handlers::list_tool_invocations_handler))
+        .route("/api/v3/executions/:id/events/stream", get(mapleos_server::execution_handlers::sse_events_handler))
+        // Learning governance (Track 3 / T3-6..T3-11)
+        .route("/api/v3/learning/candidates", get(mapleos_server::learning_handlers::list_candidates_handler))
+        .route("/api/v3/learning/candidates/pending", get(mapleos_server::learning_handlers::list_pending_handler))
+        .route("/api/v3/learning/candidates/:id", get(mapleos_server::learning_handlers::get_candidate_handler))
+        .route("/api/v3/learning/candidates/:id/approve", post(mapleos_server::learning_handlers::approve_handler))
+        .route("/api/v3/learning/candidates/:id/reject", post(mapleos_server::learning_handlers::reject_handler))
+        .route("/api/v3/learning/candidates/:id/revoke", post(mapleos_server::learning_handlers::revoke_handler))
+        .route("/api/v3/learning/blocked", get(mapleos_server::learning_handlers::is_blocked_handler))
+        // Triggers (#15, #16)
+        .route("/api/v3/triggers", get(mapleos_server::trigger_handlers::v3_list_triggers).post(mapleos_server::trigger_handlers::v3_create_trigger))
+        .route("/api/v3/triggers/:id", delete(mapleos_server::trigger_handlers::v3_delete_trigger))
+        // Audit logs (#18)
+        .route("/api/v3/audit-logs", get(mapleos_server::audit_handlers::v3_list_audit_logs))
         .with_state(state.clone());
 
     let cors = if config.require_auth {
@@ -4971,7 +5580,10 @@ async fn main() -> anyhow::Result<()> {
             state.clone(),
             middleware::auth_middleware,
         ))
-        .layer(axum::middleware::from_fn(middleware::audit_log_middleware))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::audit_log_middleware,
+        ))
         .layer(cors)
         .layer(TraceLayer::new_for_http());
 
@@ -5216,7 +5828,8 @@ async fn register_business_handlers(dispatcher: &Arc<RpcDispatcher>, state: Arc<
         .register("llm.models", move |_: Option<serde_json::Value>| {
             let router = s.llm_router.clone();
             async move {
-                let models = router.list_models().await;
+                // T3-1: return ModelDescriptor[] with id/name/provider/is_local
+                let models = router.list_models_detailed().await;
                 Ok(serde_json::json!({
                     "models": models,
                 }))

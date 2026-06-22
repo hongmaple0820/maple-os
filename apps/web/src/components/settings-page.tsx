@@ -2,10 +2,18 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { Card, CardContent, Badge, Button, Input, Spinner } from "@mapleos/ui";
-import { rpcCall, mapleApi } from "@/lib/api";
+import { rpcCall, mapleApi, getAuthState } from "@/lib/api";
 import { useTranslation } from "react-i18next";
 
-interface ModelInfo { id: string; name: string; provider: string }
+interface ModelInfo { id: string; name: string; provider: string; is_local?: boolean; registered?: boolean; context_length?: number }
+
+// Mask an API key for display, keeping the first 4 and last 4 chars visible.
+// Returns "" for empty input. Returns the original if too short to mask.
+function maskApiKey(key: string): string {
+  if (!key) return "";
+  if (key.length <= 8) return "•".repeat(key.length);
+  return `${key.slice(0, 4)}${"•".repeat(Math.min(key.length - 8, 20))}${key.slice(-4)}`;
+}
 interface AppConfig {
   ollama_url: string;
   openai_api_key: string;
@@ -44,6 +52,36 @@ export function SettingsPage() {
   const [config, setConfig] = useState<AppConfig>(defaultConfig);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  // T3-3: LLM provider test connection state
+  const [testingConn, setTestingConn] = useState<null | { provider: string; status: "loading" | "ok" | "fail"; latency_ms?: number; error?: string }>(null);
+  const [showApiKey, setShowApiKey] = useState(false);
+
+  const testConnection = useCallback(async (provider: "ollama" | "openai") => {
+    setTestingConn({ provider, status: "loading" });
+    try {
+      const { token } = getAuthState();
+      const res = await fetch("/api/maple/api/llm/test-connection", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          provider,
+          base_url: config.ollama_url,
+          api_key: config.openai_api_key,
+        }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setTestingConn({ provider, status: "ok", latency_ms: data.latency_ms });
+      } else {
+        setTestingConn({ provider, status: "fail", error: data.error ?? "Unknown error" });
+      }
+    } catch (e) {
+      setTestingConn({ provider, status: "fail", error: e instanceof Error ? e.message : String(e) });
+    }
+  }, [config.ollama_url, config.openai_api_key]);
   const [activeSection, setActiveSection] = useState("models");
 
   // Group rules state
@@ -166,22 +204,89 @@ export function SettingsPage() {
                   <div className="text-[15px] font-medium">{t("settings.models.llmTitle")}</div>
                   <div className="space-y-2">
                     <label className="text-[11px] text-muted-foreground">{t("settings.models.ollamaUrl")}</label>
-                    <Input value={config.ollama_url} onChange={(e) => setConfig({ ...config, ollama_url: e.target.value })} placeholder="http://localhost:11434" className="h-7 text-xs" />
+                    <div className="flex gap-2">
+                      <Input value={config.ollama_url} onChange={(e) => setConfig({ ...config, ollama_url: e.target.value })} placeholder="http://localhost:11434" className="h-7 text-xs" />
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-xs whitespace-nowrap"
+                        disabled={testingConn?.status === "loading" && testingConn?.provider === "ollama"}
+                        onClick={() => testConnection("ollama")}
+                      >
+                        {testingConn?.status === "loading" && testingConn?.provider === "ollama"
+                          ? t("settings.models.testing", "Testing...")
+                          : t("settings.models.testConn", "Test")}
+                      </Button>
+                    </div>
+                    {testingConn?.provider === "ollama" && testingConn.status !== "loading" && (
+                      <div className={`text-[11px] ${testingConn.status === "ok" ? "text-green-600" : "text-red-600"}`}>
+                        {testingConn.status === "ok"
+                          ? `✓ ${t("settings.models.connOk", "Connected")} (${testingConn.latency_ms}ms)`
+                          : `✗ ${testingConn.error}`}
+                      </div>
+                    )}
                   </div>
                   <div className="space-y-2">
                     <label className="text-[11px] text-muted-foreground">{t("settings.models.openaiKey")}</label>
-                    <Input value={config.openai_api_key} onChange={(e) => setConfig({ ...config, openai_api_key: e.target.value })} placeholder="sk-..." type="password" className="h-7 text-xs" />
+                    <div className="flex gap-2">
+                      <Input
+                        value={showApiKey ? config.openai_api_key : maskApiKey(config.openai_api_key)}
+                        onChange={(e) => setConfig({ ...config, openai_api_key: e.target.value })}
+                        placeholder="sk-..."
+                        type={showApiKey ? "text" : "password"}
+                        className="h-7 text-xs"
+                      />
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-xs"
+                        onClick={() => setShowApiKey((s) => !s)}
+                      >
+                        {showApiKey ? t("settings.models.hide", "Hide") : t("settings.models.show", "Show")}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-xs whitespace-nowrap"
+                        disabled={!config.openai_api_key || (testingConn?.status === "loading" && testingConn?.provider === "openai")}
+                        onClick={() => testConnection("openai")}
+                      >
+                        {testingConn?.status === "loading" && testingConn?.provider === "openai"
+                          ? t("settings.models.testing", "Testing...")
+                          : t("settings.models.testConn", "Test")}
+                      </Button>
+                    </div>
+                    {testingConn?.provider === "openai" && testingConn.status !== "loading" && (
+                      <div className={`text-[11px] ${testingConn.status === "ok" ? "text-green-600" : "text-red-600"}`}>
+                        {testingConn.status === "ok"
+                          ? `✓ ${t("settings.models.connOk", "Connected")} (${testingConn.latency_ms}ms)`
+                          : `✗ ${testingConn.error}`}
+                      </div>
+                    )}
                   </div>
                   <div className="space-y-2">
                     <label className="text-[11px] text-muted-foreground">{t("settings.models.defaultModel")}</label>
                     <select value={config.default_model} onChange={(e) => setConfig({ ...config, default_model: e.target.value })} className="h-7 rounded border bg-background text-xs px-2 w-full">
                       <option value="auto">{t("settings.models.autoSelect")}</option>
-                      {models.map((m) => <option key={m.id} value={m.id}>{m.name ?? m.id} ({m.provider})</option>)}
+                      {models.filter((m) => m.registered !== false).map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.name ?? m.id} ({m.provider}){m.is_local ? " · local" : ""}
+                        </option>
+                      ))}
                     </select>
                   </div>
                   <div className="text-[11px] text-muted-foreground">{t("settings.models.registeredModels")}</div>
                   <div className="flex flex-wrap gap-1.5">
-                    {models.map((m) => <Badge key={m.id} variant="secondary" className="text-[11px]">{m.name ?? m.id} ({m.provider})</Badge>)}
+                    {models.map((m) => (
+                      <Badge
+                        key={m.id}
+                        variant={m.registered === false ? "outline" : "secondary"}
+                        className={`text-[11px] ${m.registered === false ? "opacity-60" : ""}`}
+                        title={m.registered === false ? t("settings.models.notRegisteredHint", "Discovered but not registered — restart server or save config to register") : undefined}
+                      >
+                        {m.name ?? m.id} ({m.provider}){m.is_local ? " · local" : ""}{m.registered === false ? " · unreg" : ""}
+                      </Badge>
+                    ))}
                     {models.length === 0 && <span className="text-xs text-muted-foreground">{t("settings.models.noModels")}</span>}
                   </div>
                 </CardContent>
