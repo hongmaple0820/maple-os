@@ -2,7 +2,7 @@ openapi: 3.0.3
 info:
   title: MapleOS API
   description: AI Native 多 Agent 协作工作站操作系统 API
-  version: 0.1.0
+  version: 2.1.0
   contact:
     name: MapleOS Team
     url: https://github.com/hongmaple0820/maple-os
@@ -35,6 +35,16 @@ tags:
     description: 同步引擎
   - name: scale
     description: SCALE 引擎
+  - name: execution
+    description: 执行事实链 (Execution Fact Chain)
+  - name: learning
+    description: 学习治理 (Learning Governance)
+  - name: trigger
+    description: 事件/消息触发 (Triggers)
+  - name: audit
+    description: 审计日志 (Audit Logs)
+  - name: system
+    description: 系统管理
 
 paths:
   /health:
@@ -654,3 +664,569 @@ components:
           type: number
         log_level:
           type: string
+  # ============================================================
+  # v2.1.0 — Execution Fact Chain (Track 1)
+  # ============================================================
+  /api/v3/executions/{id}:
+    get:
+      tags: [execution]
+      summary: Get execution by ID
+      operationId: getExecution
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Execution details
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Execution' }
+        '404':
+          description: Not found
+
+  /api/v3/executions/{id}/events:
+    get:
+      tags: [execution]
+      summary: List execution events
+      operationId: listExecutionEvents
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Event list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  execution_id: { type: string }
+                  events:
+                    type: array
+                    items: { $ref: '#/components/schemas/ExecutionEvent' }
+        '404':
+          description: Not found
+
+  /api/v3/executions/{id}/events/stream:
+    get:
+      tags: [execution]
+      summary: SSE stream of execution events
+      operationId: streamExecutionEvents
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Server-Sent Events stream
+        '404':
+          description: Not found
+
+  /api/v3/executions/{id}/tool-invocations:
+    get:
+      tags: [execution]
+      summary: List tool invocations for an execution
+      operationId: listToolInvocations
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Tool invocation list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  execution_id: { type: string }
+                  tool_invocations:
+                    type: array
+                    items: { $ref: '#/components/schemas/ToolInvocation' }
+
+  # ============================================================
+  # v2.1.0 — LLM Settings (Track 3)
+  # ============================================================
+  /api/llm/test-connection:
+    post:
+      tags: [config]
+      summary: Test LLM provider connection
+      operationId: testLlmConnection
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                provider: { type: string, enum: [ollama, openai] }
+                base_url: { type: string }
+                api_key: { type: string }
+                model: { type: string }
+      responses:
+        '200':
+          description: Connection successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  provider: { type: string }
+                  model: { type: string }
+                  latency_ms: { type: integer }
+        '503':
+          description: Connection failed
+
+  # ============================================================
+  # v2.1.0 — Workflow Validation + Versions (Track 2)
+  # ============================================================
+  /api/v3/workflows/{wid}/validate:
+    post:
+      tags: [workflow]
+      summary: Validate workflow definition
+      operationId: validateWorkflow
+      parameters:
+        - name: wid
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Validation result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid: { type: boolean }
+                  errors:
+                    type: array
+                    items: { type: string }
+                  workflow_id: { type: string }
+                  version: { type: integer }
+
+  /api/v3/workflows/{wid}/versions:
+    get:
+      tags: [workflow]
+      summary: List workflow versions
+      operationId: listWorkflowVersions
+      parameters:
+        - name: wid
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Version list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  workflow_id: { type: string }
+                  versions:
+                    type: array
+                    items: { $ref: '#/components/schemas/WorkflowVersion' }
+                  count: { type: integer }
+
+  /api/v3/workflows/{wid}/versions/{version}:
+    get:
+      tags: [workflow]
+      summary: Get specific workflow version
+      operationId: getWorkflowVersion
+      parameters:
+        - name: wid
+          in: path
+          required: true
+          schema: { type: string }
+        - name: version
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Version detail
+        '404':
+          description: Version not found
+
+  /api/v3/workflows/{wid}/versions/{version}/rollback:
+    post:
+      tags: [workflow]
+      summary: Rollback to a previous version
+      operationId: rollbackWorkflow
+      parameters:
+        - name: wid
+          in: path
+          required: true
+          schema: { type: string }
+        - name: version
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Rollback successful
+
+  # ============================================================
+  # v2.1.0 — Workflow Run Recovery (Track 2)
+  # ============================================================
+  /api/v3/workflow-runs/{rid}/nodes/{nid}/retry:
+    post:
+      tags: [workflow]
+      summary: Retry a failed workflow node
+      operationId: retryWorkflowNode
+      parameters:
+        - name: rid
+          in: path
+          required: true
+          schema: { type: string }
+        - name: nid
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Retry recorded
+
+  /api/v3/workflow-runs/{rid}/nodes/{nid}/skip:
+    post:
+      tags: [workflow]
+      summary: Skip a failed workflow node
+      operationId: skipWorkflowNode
+      parameters:
+        - name: rid
+          in: path
+          required: true
+          schema: { type: string }
+        - name: nid
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Skip recorded
+
+  /api/v3/workflow-runs/{rid}/deadletter:
+    get:
+      tags: [workflow]
+      summary: List dead-letter checkpoints
+      operationId: listDeadletter
+      parameters:
+        - name: rid
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Dead-letter list
+
+  # ============================================================
+  # v2.1.0 — Learning Governance (Track 3)
+  # ============================================================
+  /api/v3/learning/candidates:
+    get:
+      tags: [learning]
+      summary: List learning candidates
+      operationId: listLearningCandidates
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50 }
+        - name: status
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Candidate list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  candidates:
+                    type: array
+                    items: { $ref: '#/components/schemas/LearningCandidate' }
+
+  /api/v3/learning/candidates/pending:
+    get:
+      tags: [learning]
+      summary: List pending learning candidates
+      operationId: listPendingCandidates
+      responses:
+        '200':
+          description: Pending candidates
+
+  /api/v3/learning/candidates/{id}:
+    get:
+      tags: [learning]
+      summary: Get a learning candidate
+      operationId: getLearningCandidate
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Candidate detail
+        '404':
+          description: Not found
+
+  /api/v3/learning/candidates/{id}/approve:
+    post:
+      tags: [learning]
+      summary: Approve a learning candidate
+      operationId: approveCandidate
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                decided_by: { type: string }
+                reason: { type: string }
+      responses:
+        '200':
+          description: Approved
+
+  /api/v3/learning/candidates/{id}/reject:
+    post:
+      tags: [learning]
+      summary: Reject a learning candidate
+      operationId: rejectCandidate
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                decided_by: { type: string }
+                reason: { type: string }
+      responses:
+        '200':
+          description: Rejected
+
+  /api/v3/learning/candidates/{id}/revoke:
+    post:
+      tags: [learning]
+      summary: Revoke a previously approved candidate
+      operationId: revokeCandidate
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                decided_by: { type: string }
+                reason: { type: string }
+      responses:
+        '200':
+          description: Revoked
+
+  /api/v3/learning/blocked:
+    get:
+      tags: [learning]
+      summary: Check if content is blocked
+      operationId: checkBlocked
+      parameters:
+        - name: content
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Block status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  blocked: { type: boolean }
+
+  # ============================================================
+  # v2.1.0 — Triggers (#15, #16)
+  # ============================================================
+  /api/v3/triggers:
+    get:
+      tags: [trigger]
+      summary: List trigger rules
+      operationId: listTriggers
+      responses:
+        '200':
+          description: Trigger list
+    post:
+      tags: [trigger]
+      summary: Create a trigger rule
+      operationId: createTrigger
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id: { type: string }
+                workflow_id: { type: string }
+                trigger_type: { type: object }
+                enabled: { type: boolean }
+      responses:
+        '200':
+          description: Created
+
+  /api/v3/triggers/{id}:
+    delete:
+      tags: [trigger]
+      summary: Delete a trigger rule
+      operationId: deleteTrigger
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Deleted
+
+  # ============================================================
+  # v2.1.0 — Audit Logs (#18)
+  # ============================================================
+  /api/v3/audit-logs:
+    get:
+      tags: [audit]
+      summary: List audit log entries
+      operationId: listAuditLogs
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100 }
+        - name: path
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Audit log list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  audit_logs:
+                    type: array
+                    items: { $ref: '#/components/schemas/AuditLog' }
+                  count: { type: integer }
+
+# ============================================================
+# Components — Schemas for v2.1.0
+# ============================================================
+components:
+  schemas:
+    Execution:
+      type: object
+      properties:
+        id: { type: string }
+        parent_execution_id: { type: string, nullable: true }
+        source: { type: string }
+        status: { type: string, enum: [pending, running, paused, success, failed, cancelled] }
+        actor: { type: string, nullable: true }
+        actor_type: { type: string, nullable: true }
+        trigger_type: { type: string, nullable: true }
+        started_at: { type: integer }
+        completed_at: { type: integer, nullable: true }
+        error: { type: string, nullable: true }
+        event_count: { type: integer }
+        updated_at: { type: integer }
+
+    ExecutionEvent:
+      type: object
+      properties:
+        id: { type: string }
+        execution_id: { type: string }
+        parent_execution_id: { type: string, nullable: true }
+        source: { type: string }
+        event_type: { type: string }
+        payload: { type: object }
+        actor: { type: string, nullable: true }
+        actor_type: { type: string, nullable: true }
+        created_at: { type: integer }
+
+    ToolInvocation:
+      type: object
+      properties:
+        id: { type: string }
+        execution_id: { type: string }
+        tool_name: { type: string }
+        input: { type: object, nullable: true }
+        output: { type: object, nullable: true }
+        error: { type: string, nullable: true }
+        permission_level: { type: string }
+        status: { type: string }
+        duration_ms: { type: integer, nullable: true }
+        invoked_by: { type: string, nullable: true }
+        created_at: { type: integer }
+
+    WorkflowVersion:
+      type: object
+      properties:
+        id: { type: integer }
+        workflow_id: { type: string }
+        version: { type: integer }
+        yaml_content: { type: string }
+        saved_by: { type: string, nullable: true }
+        change_summary: { type: string, nullable: true }
+        created_at: { type: integer }
+
+    LearningCandidate:
+      type: object
+      properties:
+        id: { type: string }
+        target_type: { type: string, enum: [memory, kb_doc, prompt] }
+        target_key: { type: string, nullable: true }
+        content: { type: string }
+        score: { type: number }
+        evidence: { type: string, nullable: true }
+        source_execution_id: { type: string, nullable: true }
+        status: { type: string, enum: [pending, approved, rejected, auto_approved, revoked, persisted] }
+        decided_by: { type: string, nullable: true }
+        rejection_reason: { type: string, nullable: true }
+        approval_threshold: { type: number }
+        created_at: { type: integer }
+        updated_at: { type: integer }
+
+    AuditLog:
+      type: object
+      properties:
+        id: { type: integer }
+        method: { type: string }
+        path: { type: string }
+        query: { type: string, nullable: true }
+        status: { type: integer }
+        duration_ms: { type: integer }
+        user_agent: { type: string, nullable: true }
+        client_ip: { type: string, nullable: true }
+        actor: { type: string, nullable: true }
+        created_at: { type: integer }
