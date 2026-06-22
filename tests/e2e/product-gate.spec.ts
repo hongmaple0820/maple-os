@@ -288,28 +288,28 @@ test.describe("Product Gate", () => {
 
   // ============================================================
   // Chat streaming (T4-2) — active with MockLlmAdapter!
-  // Uses page.evaluate(fetch) to read SSE response because Playwright's
-  // request fixture doesn't handle text/event-stream well.
+  // Uses page.evaluate(fetch) with same-origin /api/maple/ proxy
+  // to avoid CORS issues (Next.js rewrites /api/maple/* → :7788).
   // ============================================================
   test.describe("Chat streaming", () => {
-    test.fixme("chat send produces SSE response with execution_id", async ({ page }) => {
-      const baseUrl = "http://127.0.0.1:7788";
+    test("chat send produces SSE response with execution_id", async ({ page }) => {
+      // Navigate to the app first so fetch is same-origin
+      await page.goto("/");
+      await page.getByRole("button", { name: "Local Mode" }).click();
+      await expect(page.getByText("Connected")).toBeVisible();
 
-      // Use page.evaluate(fetch) to POST and read the SSE body —
-      // Playwright's request fixture buffers SSE incorrectly.
-      const result = await page.evaluate(async (url) => {
-        const resp = await fetch(`${url}/api/chat/stream`, {
+      // Use same-origin fetch via Next.js rewrite proxy (/api/maple/* → :7788)
+      const result = await page.evaluate(async () => {
+        const resp = await fetch("/api/maple/api/chat/stream", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ message: "Hello", model: "auto" }),
         });
         const text = await resp.text();
         return { ok: resp.ok, status: resp.status, body: text };
-      }, baseUrl);
+      });
 
       expect(result.ok).toBe(true);
-
-      // Verify SSE events are present in the response body
       expect(result.body).toContain("event:execution");
       expect(result.body).toContain("event:done");
 
@@ -318,11 +318,11 @@ test.describe("Product Gate", () => {
       expect(execMatch).toBeTruthy();
       const executionId = execMatch![1];
 
-      // Verify execution events via standard JSON API
-      const eventsResp = await page.evaluate(async ({ url, id }) => {
-        const resp = await fetch(`${url}/api/v3/executions/${id}/events`);
+      // Verify execution events via same-origin proxy
+      const eventsResp = await page.evaluate(async (id) => {
+        const resp = await fetch(`/api/maple/api/v3/executions/${id}/events`);
         return resp.json();
-      }, { url: baseUrl, id: executionId });
+      }, executionId);
 
       expect(eventsResp.events.length).toBeGreaterThanOrEqual(2);
       expect(eventsResp.events[0].event_type).toBe("started");
@@ -333,15 +333,18 @@ test.describe("Product Gate", () => {
 
   // ============================================================
   // Tool approval (T4-4) — approval lifecycle via API.
+  // Uses same-origin /api/maple/ proxy to avoid CORS.
   // ============================================================
   test.describe("Tool approval", () => {
-    test.fixme("approval API creates and resolves approval with execution events", async ({ page }) => {
-      const baseUrl = "http://127.0.0.1:7788";
+    test("approval API creates and resolves approval with execution events", async ({ page }) => {
+      await page.goto("/");
+      await page.getByRole("button", { name: "Local Mode" }).click();
+      await expect(page.getByText("Connected")).toBeVisible();
 
-      // Helper: fetch JSON via page.evaluate (avoids SSE issues)
+      // Helper: same-origin fetch via /api/maple/ proxy
       const api = async (path: string, opts?: RequestInit) => {
         return page.evaluate(async ({ p, o }) => {
-          const resp = await fetch(`http://127.0.0.1:7788${p}`, o);
+          const resp = await fetch(`/api/maple${p}`, o);
           const json = await resp.json();
           return { ok: resp.ok, status: resp.status, body: json };
         }, { p: path, o: opts });
