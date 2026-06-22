@@ -287,106 +287,109 @@ test.describe("Product Gate", () => {
   });
 
   // ============================================================
-  // Chat streaming (T4-2) — now active with MockLlmAdapter!
-  // The E2E backend registers a MockLlmAdapter when MAPLEOS_MOCK_LLM=true
-  // (set in scripts/qa/start-e2e-backend.mjs). This returns a fixed
-  // response without needing a real LLM provider.
+  // Chat streaming (T4-2) — active with MockLlmAdapter!
+  // Uses page.evaluate(fetch) to read SSE response because Playwright's
+  // request fixture doesn't handle text/event-stream well.
   // ============================================================
   test.describe("Chat streaming", () => {
-    test.fixme("chat send produces SSE delta events + execution_id", async ({ page, request }) => {
+    test("chat send produces SSE response with execution_id", async ({ page }) => {
       const baseUrl = "http://127.0.0.1:7788";
 
-      // Send a chat message via HTTP API and verify SSE response
-      const chatResp = await request.post(`${baseUrl}/api/chat/stream`, {
-        headers: { "Content-Type": "application/json" },
-        data: { message: "Hello", model: "auto" },
-        timeout: 15000,
-      });
-      expect(chatResp.ok()).toBe(true);
+      // Use page.evaluate(fetch) to POST and read the SSE body —
+      // Playwright's request fixture buffers SSE incorrectly.
+      const result = await page.evaluate(async (url) => {
+        const resp = await fetch(`${url}/api/chat/stream`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: "Hello", model: "auto" }),
+        });
+        const text = await resp.text();
+        return { ok: resp.ok, status: resp.status, body: text };
+      }, baseUrl);
 
-      // Read the SSE stream body
-      const body = await chatResp.text();
-      // MockLlmAdapter returns "Hello from MapleOS!" — verify we got
-      // execution + token + done events
-      expect(body).toContain("event:execution");
-      expect(body).toContain("event:done");
+      expect(result.ok).toBe(true);
 
-      // Extract execution_id from the SSE stream
-      const execMatch = body.match(/"execution_id":"(exec_[a-f0-9]+)"/);
+      // Verify SSE events are present in the response body
+      expect(result.body).toContain("event:execution");
+      expect(result.body).toContain("event:done");
+
+      // Extract execution_id
+      const execMatch = result.body.match(/"execution_id":"(exec_[a-f0-9]+)"/);
       expect(execMatch).toBeTruthy();
       const executionId = execMatch![1];
 
-      // Verify execution events are queryable via the unified fact chain
-      const eventsResp = await request.get(`${baseUrl}/api/v3/executions/${executionId}/events`);
-      expect(eventsResp.ok()).toBe(true);
-      const eventsBody = await eventsResp.json();
-      expect(eventsBody.events.length).toBeGreaterThanOrEqual(2);
-      expect(eventsBody.events[0].event_type).toBe("started");
-      // The last event should be 'done' (mock LLM completes successfully)
-      const lastEvent = eventsBody.events[eventsBody.events.length - 1];
+      // Verify execution events via standard JSON API
+      const eventsResp = await page.evaluate(async ({ url, id }) => {
+        const resp = await fetch(`${url}/api/v3/executions/${id}/events`);
+        return resp.json();
+      }, { url: baseUrl, id: executionId });
+
+      expect(eventsResp.events.length).toBeGreaterThanOrEqual(2);
+      expect(eventsResp.events[0].event_type).toBe("started");
+      const lastEvent = eventsResp.events[eventsResp.events.length - 1];
       expect(["done", "error"]).toContain(lastEvent.event_type);
     });
   });
 
   // ============================================================
-  // Tool approval (T4-4) — test the approval API flow directly.
-  // Uses MockLlmAdapter which simulates tool calls for "search" queries.
+  // Tool approval (T4-4) — approval lifecycle via API.
   // ============================================================
   test.describe("Tool approval", () => {
-    test.fixme("approval API creates and resolves approval with execution events", async ({ request }) => {
+    test("approval API creates and resolves approval with execution events", async ({ page }) => {
       const baseUrl = "http://127.0.0.1:7788";
 
-      // 1. Create an approval request with an execution_id
-      // First, create a workflow + run to get a real execution_id
-      const wfResp = await request.post(`${baseUrl}/api/v3/workflows`, {
-        data: { id: `wf-approval-test-${Date.now()}`, name: "Approval Test", yaml_content: "nodes: []" },
-      });
-      expect(wfResp.ok()).toBe(true);
-      const wfBody = await wfResp.json();
-      const wfId = wfBody.workflow.id;
+      // Helper: fetch JSON via page.evaluate (avoids SSE issues)
+      const api = async (path: string, opts?: RequestInit) => {
+        return page.evaluate(async ({ p, o }) => {
+          const resp = await fetch(`http://127.0.0.1:7788${p}`, o);
+          const json = await resp.json();
+          return { ok: resp.ok, status: resp.status, body: json };
+        }, { p: path, o: opts });
+      };
 
-      const runResp = await request.post(`${baseUrl}/api/v3/workflow-runs`, {
-        data: { workflow_id: wfId, workflow_version: 1, input: "{}" },
+      const jsonHeaders = { "Content-Type": "application/json" };
+
+      // 1. Create workflow
+      const wfId = `wf-approval-${Date.now()}`;
+      const wfResult = await api("/api/v3/workflows", {
+        method: "POST", headers: jsonHeaders,
+        body: JSON.stringify({ id: wfId, name: "Approval Test", yaml_content: "nodes: []" }),
       });
-      expect(runResp.ok()).toBe(true);
-      const runBody = await runResp.json();
-      const executionId = runBody.execution_id;
+      expect(wfResult.ok).toBe(true);
+
+      // 2. Create workflow run → get execution_id
+      const runResult = await api("/api/v3/workflow-runs", {
+        method: "POST", headers: jsonHeaders,
+        body: JSON.stringify({ workflow_id: wfId, workflow_version: 1, input: "{}" }),
+      });
+      expect(runResult.ok).toBe(true);
+      const executionId = runResult.body.execution_id;
       expect(executionId).toBeTruthy();
 
-      // 2. Create an approval request
-      const approvalResp = await request.post(`${baseUrl}/api/v3/approvals`, {
-        data: {
-          group_id: "default",
-          title: "Test approval for E2E",
-          request_type: "deploy",
-          requester_id: "e2e-user",
-          urgency: "normal",
-          quorum_type: "any",
-          approver_spec: "e2e-user",
-          execution_id: executionId,
-        },
+      // 3. Create approval with execution_id
+      const approvalResult = await api("/api/v3/approvals", {
+        method: "POST", headers: jsonHeaders,
+        body: JSON.stringify({
+          group_id: "default", title: "E2E Approval Test", request_type: "deploy",
+          requester_id: "e2e-user", urgency: "normal", quorum_type: "any",
+          approver_spec: "e2e-user", execution_id: executionId,
+        }),
       });
-      const approvalBody = await approvalResp.json();
-      const approvalId = approvalBody.approval?.id;
+      const approvalId = approvalResult.body.approval?.id;
       expect(approvalId).toBeTruthy();
 
-      // 3. List pending approvals — should contain our approval
-      const pendingResp = await request.get(`${baseUrl}/api/v3/approvals/pending?user_id=e2e-user`);
-      expect(pendingResp.ok()).toBe(true);
-
-      // 4. Approve it
-      const voteResp = await request.post(`${baseUrl}/api/v3/approvals/${approvalId}/vote`, {
-        data: { voter_id: "e2e-user", decision: "approve" },
+      // 4. Vote approve
+      const voteResult = await api(`/api/v3/approvals/${approvalId}/vote`, {
+        method: "POST", headers: jsonHeaders,
+        body: JSON.stringify({ voter_id: "e2e-user", decision: "approve" }),
       });
-      expect(voteResp.ok()).toBe(true);
-      const voteBody = await voteResp.json();
-      expect(voteBody.outcome.quorum_met).toBe(true);
+      expect(voteResult.ok).toBe(true);
+      expect(voteResult.body.outcome?.quorum_met).toBe(true);
 
       // 5. Verify execution events contain approval events
-      const eventsResp = await request.get(`${baseUrl}/api/v3/executions/${executionId}/events`);
-      expect(eventsResp.ok()).toBe(true);
-      const eventsBody = await eventsResp.json();
-      const eventTypes = eventsBody.events.map((e: any) => e.event_type);
+      const eventsResult = await api(`/api/v3/executions/${executionId}/events`);
+      expect(eventsResult.ok).toBe(true);
+      const eventTypes = eventsResult.body.events.map((e: any) => e.event_type);
       expect(eventTypes).toContain("started");
       expect(eventTypes).toContain("approval_requested");
       expect(eventTypes).toContain("approval_decided");

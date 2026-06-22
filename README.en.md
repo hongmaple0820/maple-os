@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.1.0-orange?style=flat-square" alt="version" />
+  <img src="https://img.shields.io/badge/version-2.1.0-orange?style=flat-square" alt="version" />
   <img src="https://img.shields.io/badge/rust-1.95-blue?style=flat-square" alt="rust" />
   <img src="https://img.shields.io/badge/node-26-blue?style=flat-square" alt="node" />
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="license" />
@@ -96,6 +96,39 @@ mapleos/
  ├── infra/              # Docker deployment configs
  └── .monkeycode/        # Project docs / blueprint / memory
 ```
+
+---
+
+## v2.1.0 — Product Closure
+
+### Unified Execution Fact Chain (#92)
+All Chat/Workflow/Agent/Approval events write to a single `execution_events` table. The `<ExecutionTimeline />` component renders the unified trace across all UI panels.
+
+### Workflow Canvas Real Editor (#90)
+Node CRUD + edge linking + 8-invariant validation + version management (list/get/rollback) + failed node retry/skip/deadletter + approval UI + trace view.
+
+### LLM Config Fix (#86)
+ModelDescriptor replaces bare String. Ollama auto-discovery via `/v1/models`. Test connection endpoint. API key masking.
+
+### Learning Governance (#91)
+Candidate pipeline + quality gate (score≥0.7 + evidence required) + blocklist (SHA-256 content hash) + revoke + context preview provenance badge.
+
+### Event/Message Triggers (#15, #16)
+TriggerManager: EventTrigger (EventBus event matching) + MessageTrigger (keyword/sender/group filter).
+
+### Tool Hardening + Browser Automation (#10)
+http_request SSRF guard + file_ops write approval gate + code_execute permission levels + browser skill (6 actions, puppeteer + HTTP fallback).
+
+### Other Features
+- Audit logs (#18) — DB persistence + API query
+- Agent load balancing (#19) — by active task count
+- Skill Schema validation (#11) — JSON Schema input/output
+- Rerank (#14) — LLM-based reranker
+- Automerge CRDT (#70) — replaces custom merge
+- maple CLI (#25) — login/status/chat/workflow/trace/agents/models
+- Frontend modularization (#93) — DashboardView + StatePanel
+- Workflow/Skill templates (#23)
+- Desktop auto-update (#65)
 
 ---
 
