@@ -3189,6 +3189,89 @@ async fn v3_rollback_workflow_handler(
     }
 }
 
+// ── Trigger Handlers (#15, #16) ──
+
+#[derive(Deserialize)]
+struct CreateTriggerRequest {
+    id: String,
+    workflow_id: String,
+    trigger_type: serde_json::Value,
+    enabled: Option<bool>,
+}
+
+async fn v3_list_triggers_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> axum::Json<serde_json::Value> {
+    let rules = state.trigger_manager.list_rules().await;
+    axum::Json(serde_json::json!({ "triggers": rules, "count": rules.len() }))
+}
+
+async fn v3_create_trigger_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    Json(req): Json<CreateTriggerRequest>,
+) -> axum::Json<serde_json::Value> {
+    let now = chrono::Utc::now().timestamp();
+    let trigger_type: maple_engine::TriggerType = match serde_json::from_value(req.trigger_type) {
+        Ok(t) => t,
+        Err(e) => return axum::Json(serde_json::json!({ "error": e.to_string() })),
+    };
+    let rule = maple_engine::TriggerRule {
+        id: req.id,
+        workflow_id: req.workflow_id,
+        trigger_type,
+        enabled: req.enabled.unwrap_or(true),
+        created_at: now,
+    };
+    match state.trigger_manager.add_rule(rule).await {
+        Ok(()) => axum::Json(serde_json::json!({ "created": true })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+async fn v3_delete_trigger_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> axum::Json<serde_json::Value> {
+    match state.trigger_manager.remove_rule(&id).await {
+        Ok(()) => axum::Json(serde_json::json!({ "deleted": true })),
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
+// ── Audit Log Handlers (#18) ──
+
+async fn v3_list_audit_logs_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Query(q): axum::extract::Query<serde_json::Value>,
+) -> axum::Json<serde_json::Value> {
+    let limit = q["limit"].as_u64().unwrap_or(100).clamp(1, 1000) as i64;
+    let path_filter = q["path"].as_str().map(|s| s.to_string());
+
+    let rows: Result<Vec<(i64, String, String, Option<String>, i64, i64, Option<String>, Option<String>, Option<String>, i64)>, _> = if let Some(path) = path_filter {
+        sqlx::query_as(
+            "SELECT id, method, path, query, status, duration_ms, user_agent, client_ip, actor, created_at
+               FROM audit_logs WHERE path = ? ORDER BY created_at DESC LIMIT ?"
+        ).bind(path).bind(limit).fetch_all(&state.db).await
+    } else {
+        sqlx::query_as(
+            "SELECT id, method, path, query, status, duration_ms, user_agent, client_ip, actor, created_at
+               FROM audit_logs ORDER BY created_at DESC LIMIT ?"
+        ).bind(limit).fetch_all(&state.db).await
+    };
+
+    match rows {
+        Ok(rows) => {
+            let logs: Vec<_> = rows.into_iter().map(|r| serde_json::json!({
+                "id": r.0, "method": r.1, "path": r.2, "query": r.3,
+                "status": r.4, "duration_ms": r.5, "user_agent": r.6,
+                "client_ip": r.7, "actor": r.8, "created_at": r.9,
+            })).collect();
+            axum::Json(serde_json::json!({ "audit_logs": logs, "count": logs.len() }))
+        }
+        Err(e) => axum::Json(serde_json::json!({ "error": e.to_string() })),
+    }
+}
+
 // ── Workflow Run Handlers ──
 
 #[derive(Deserialize)]
@@ -5535,10 +5618,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v3/learning/candidates/:id/revoke", post(mapleos_server::learning_handlers::revoke_handler))
         .route("/api/v3/learning/blocked", get(mapleos_server::learning_handlers::is_blocked_handler))
         // Triggers (#15, #16)
-        .route("/api/v3/triggers", get(mapleos_server::trigger_handlers::v3_list_triggers).post(mapleos_server::trigger_handlers::v3_create_trigger))
-        .route("/api/v3/triggers/:id", delete(mapleos_server::trigger_handlers::v3_delete_trigger))
+        .route("/api/v3/triggers", get(v3_list_triggers_handler).post(v3_create_trigger_handler))
+        .route("/api/v3/triggers/:id", delete(v3_delete_trigger_handler))
         // Audit logs (#18)
-        .route("/api/v3/audit-logs", get(mapleos_server::audit_handlers::v3_list_audit_logs))
+        .route("/api/v3/audit-logs", get(v3_list_audit_logs_handler))
         .with_state(state.clone());
 
     let cors = if config.require_auth {

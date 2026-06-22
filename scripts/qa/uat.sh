@@ -11,7 +11,7 @@
 #   - Playwright browsers installed (pnpm exec playwright install chromium)
 #   - No other process on port 7788 or 3000
 
-set -euo pipefail
+set -uo pipefail
 
 SERVER_URL="http://127.0.0.1:7788"
 WEB_URL="http://127.0.0.1:3000"
@@ -35,13 +35,13 @@ echo ""
 
 # ---- 1. Server Health ----
 echo "--- 1. Server Health ---"
-HEALTH=$(curl -s "$SERVER_URL/health" 2>/dev/null || echo "")
-if echo "$HEALTH" | grep -q "ok"; then
+HEALTH=$(curl -sf "$SERVER_URL/health" 2>/dev/null || echo "")
+if [ -n "$HEALTH" ] && echo "$HEALTH" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('status')=='ok' else 1)" 2>/dev/null; then
     assert_pass "Server health check"
     VERSION=$(echo "$HEALTH" | python3 -c "import json,sys; print(json.load(sys.stdin).get('version','?'))" 2>/dev/null || echo "?")
     echo "  Version: $VERSION"
 else
-    assert_fail "Server health check" "no response"
+    assert_fail "Server health check" "no response or unhealthy"
     echo "  Make sure server is running: cargo run -p mapleos-server"
     exit 1
 fi
