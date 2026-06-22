@@ -463,6 +463,8 @@ pub async fn run_migrations(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
     run_v3_migration_019(pool).await?;
     // --- 020: Audit logs (#18) ---
     run_v3_migration_020(pool).await?;
+    // --- 021: Performance composite indexes ---
+    run_v3_migration_021(pool).await?;
 
     tracing::info!("Database migrations completed (including v3)");
     Ok(())
@@ -1598,5 +1600,68 @@ async fn run_v3_migration_020(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
     let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at DESC)").execute(pool).await;
     let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_audit_path ON audit_logs(path, created_at DESC)").execute(pool).await;
     tracing::info!("v3 migration 020 (audit_logs) completed");
+    Ok(())
+}
+
+async fn run_v3_migration_021(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
+    // Performance: add composite indexes for common query patterns
+    // that the existing single-column indexes don't cover well.
+
+    // 1. Chat handler: search episodic memory by keyword + type
+    let _ = sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_memories_type_created
+         ON memories(memory_type, created_at DESC)"
+    ).execute(pool).await?;
+
+    // 2. Execution events: list by execution_id + event_type (used by
+    //    audit log projection that filters by event_type)
+    let _ = sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_exec_events_id_type
+         ON execution_events(execution_id, event_type, created_at)"
+    ).execute(pool).await?;
+
+    // 3. Tool invocations: filter by tool_name + status (used by
+    //    dashboard stats and audit queries)
+    let _ = sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_tool_inv_tool_status
+         ON tool_invocations(tool_name, status, created_at DESC)"
+    ).execute(pool).await?;
+
+    // 4. Learning candidates: pending list ordered by score (used by
+    //    the pending list endpoint)
+    let _ = sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_lc_status_score
+         ON learning_candidates(status, score DESC, created_at DESC)"
+    ).execute(pool).await?;
+
+    // 5. Workflow runs: filter by workflow_id + status (used by
+    //    the workflow run list endpoint)
+    let _ = sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_we_workflow_status
+         ON workflow_executions(workflow_id, status, started_at DESC)"
+    ).execute(pool).await?;
+
+    // 6. Audit logs: filter by path + created_at (used by audit log
+    //    query endpoint with path filter)
+    let _ = sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_audit_path_created
+         ON audit_logs(path, created_at DESC)"
+    ).execute(pool).await?;
+
+    // 7. Workflow triggers: lookup by workflow_id (used by trigger
+    //    manager when checking which workflows to fire)
+    let _ = sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_wt_workflow_enabled
+         ON workflow_triggers(workflow_id, enabled)"
+    ).execute(pool).await?;
+
+    // 8. Workflow versions: lookup by workflow_id + version (used by
+    //    rollback endpoint)
+    let _ = sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_wv_workflow_version
+         ON workflow_versions(workflow_id, version DESC)"
+    ).execute(pool).await?;
+
+    tracing::info!("v3 migration 021 (performance composite indexes) completed");
     Ok(())
 }

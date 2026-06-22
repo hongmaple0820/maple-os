@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.0.0-orange?style=flat-square" alt="version" />
+  <img src="https://img.shields.io/badge/version-2.1.0-orange?style=flat-square" alt="version" />
   <img src="https://img.shields.io/badge/rust-1.95-blue?style=flat-square" alt="rust" />
   <img src="https://img.shields.io/badge/node-26-blue?style=flat-square" alt="node" />
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="license" />
@@ -160,6 +160,39 @@ rules:
 - [竞品分析](./docs/competitive-analysis.md) — 深度竞品对比与最佳实践
 - [统一实施计划](./docs/unified-implementation-plan.md) — 架构升级路线图
 - [v2.0.0 路线图](./docs/v2.0-roadmap.md) — v2.0.0 功能规划与实现
+- [v2.1.0 实施方案](./docs/MapleOS_Implementation_Plan_2026Q3.md) — 产品闭环实施计划
+- [执行事实链规范](./docs/execution-fact-chain-spec.md) — 统一执行事实链契约
+- [贡献指南](./CONTRIBUTING.md) — 社区贡献指南
+- [社区指南](./COMMUNITY.md) — 社区参与方式
+
+## v2.1.0 新特性 — 产品闭环
+
+### 统一执行事实链 (#92)
+Chat / Workflow / Agent / Approval 所有执行事件写入同一 `execution_events` 表，`<ExecutionTimeline />` 组件统一渲染。
+
+### Workflow Canvas 真编辑器 (#90)
+节点 CRUD + 连线 + 8 项校验 + 版本管理 (list/get/rollback) + 失败节点 retry/skip/deadletter + 审批 UI + trace 视图。
+
+### LLM 配置修复 (#86)
+ModelDescriptor 替换 bare String，Ollama 自动发现 `/v1/models`，测试连接 endpoint，API key 脱敏显示。
+
+### Learning 治理 (#91)
+候选管线 + 质量门禁 (score≥0.7 + evidence) + blocklist 防重提 + revoke 回滚 + context preview 来源标注。
+
+### 事件/消息触发 (#15, #16)
+TriggerManager: EventTrigger (EventBus 事件匹配) + MessageTrigger (关键词/发送者/群组过滤)。
+
+### 工具硬化 + 浏览器自动化 (#10)
+http_request SSRF guard + file_ops write 审批门禁 + code_execute 权限级别 + browser 6 种 action (puppeteer + HTTP fallback)。
+
+### 其他
+- 审计日志 (#18) — DB 持久化 + API 查询
+- Agent 负载均衡 (#19) — 按活跃任务数选择
+- Skill Schema 校验 (#11) — JSON Schema 输入/输出验证
+- Rerank 重排 (#14) — LLM-based reranker
+- Automerge CRDT (#70) — 替换自定义 merge
+- maple CLI (#25) — login/status/chat/workflow/trace/agents/models
+- 前端模块化 (#93) — DashboardView 独立 + StatePanel 共享组件
 
 ## v2.0.0 新特性详解
 
