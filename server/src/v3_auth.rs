@@ -41,6 +41,7 @@ where
 /// Try to extract a JWT token from:
 /// 1. Authorization: Bearer <token>
 /// 2. ?token=<query_param> (for WebSocket/SSE)
+#[allow(dead_code)]
 pub fn extract_token(parts: &Parts) -> Option<String> {
     // Try Authorization header first
     if let Some(auth) = parts.headers.get("Authorization").and_then(|v| v.to_str().ok()) {
@@ -64,6 +65,7 @@ pub fn extract_token(parts: &Parts) -> Option<String> {
 }
 
 /// Verify token and return AuthenticatedUser
+#[allow(dead_code)]
 pub fn verify_and_extract(
     auth_service: &AuthService,
     token: &str,

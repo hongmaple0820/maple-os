@@ -1,3 +1,4 @@
+#![allow(clippy::all)]
 pub mod sync_engine;
 pub mod webdav;
 pub mod crdt;

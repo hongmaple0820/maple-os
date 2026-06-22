@@ -42,7 +42,7 @@ impl ApprovalUrgency {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse_str(s: &str) -> Self {
         match s {
             "low" => Self::Low,
             "high" => Self::High,
@@ -80,7 +80,7 @@ impl QuorumType {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse_str(s: &str) -> Self {
         match s {
             "any" => Self::Any,
             "all" => Self::All,
@@ -145,7 +145,7 @@ impl VoteDecision {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse_str(s: &str) -> Self {
         match s {
             "reject" => Self::Reject,
             "abstain" => Self::Abstain,
@@ -174,8 +174,8 @@ fn row_to_approval(row: &sqlx::sqlite::SqliteRow) -> ApprovalRequest {
         description: row.get(3),
         request_type: row.get(4),
         requester_id: row.get(5),
-        urgency: ApprovalUrgency::from_str(row.get::<&str, _>(6)),
-        quorum_type: QuorumType::from_str(row.get::<&str, _>(7)),
+        urgency: ApprovalUrgency::parse_str(row.get::<&str, _>(6)),
+        quorum_type: QuorumType::parse_str(row.get::<&str, _>(7)),
         required_count: row.get(8),
         approver_spec: row.get(9),
         context: row.get(10),
@@ -512,7 +512,7 @@ impl ApprovalService {
             id: r.get(0),
             approval_id: r.get(1),
             voter_id: r.get(2),
-            decision: VoteDecision::from_str(r.get::<&str, _>(3)),
+            decision: VoteDecision::parse_str(r.get::<&str, _>(3)),
             comment: r.get(4),
             voted_at: r.get(5),
         }).collect())

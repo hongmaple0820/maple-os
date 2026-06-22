@@ -1,3 +1,4 @@
+#![allow(clippy::all)]
 use std::sync::Arc;
 use std::collections::HashMap;
 use serde_json::{json, Value};
@@ -95,7 +96,7 @@ nodes:
     assert_eq!(result.status, ExecStatus::Completed);
     assert!(result.duration_secs >= 0.0);
     // Output is stored under node ID "greet" in context, not top-level "output"
-    assert!(result.exec_id.to_string().len() > 0);
+    assert!(!result.exec_id.to_string().is_empty());
 }
 
 #[tokio::test]

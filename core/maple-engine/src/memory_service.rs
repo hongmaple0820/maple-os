@@ -40,7 +40,7 @@ impl MemoryLayer {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse_str(s: &str) -> Self {
         match s {
             "episodic" => Self::Episodic,
             "semantic" => Self::Semantic,
@@ -70,7 +70,7 @@ fn row_to_memory(row: &sqlx::sqlite::SqliteRow) -> AgentMemory {
     AgentMemory {
         id: row.get(0),
         agent_id: row.get(1),
-        memory_type: MemoryLayer::from_str(row.get::<&str, _>(2)),
+        memory_type: MemoryLayer::parse_str(row.get::<&str, _>(2)),
         content: row.get(3),
         summary: row.get(4),
         source_type: row.get(5),

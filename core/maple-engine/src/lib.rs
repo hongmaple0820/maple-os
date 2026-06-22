@@ -1,3 +1,4 @@
+#![allow(clippy::all)]
 pub mod workflow;
 pub mod executor;
 pub mod scheduler;

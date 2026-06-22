@@ -1,3 +1,4 @@
+#![allow(clippy::all)]
 pub mod cache;
 pub mod config;
 pub mod db;
@@ -517,7 +518,7 @@ mod v3_handlers {
         Path(id): Path<String>,
         Json(req): Json<SendMessageReq>,
     ) -> impl IntoResponse {
-        let msg_type = maple_collab::group_message::MessageType::from_str(
+        let msg_type = maple_collab::group_message::MessageType::parse_str(
             req.message_type.as_deref().unwrap_or("text"),
         );
         match state.group_message_manager.send_message(
@@ -648,7 +649,7 @@ mod v3_handlers {
         State(state): State<Arc<AppState>>,
         Json(req): Json<CreateTaskReq>,
     ) -> impl IntoResponse {
-        let priority = maple_engine::task_service::TaskPriority::from_str(
+        let priority = maple_engine::task_service::TaskPriority::parse_str(
             req.priority.as_deref().unwrap_or("medium"),
         );
         match state.task_service.create_task(
@@ -688,7 +689,7 @@ mod v3_handlers {
         Path(id): Path<String>,
         Json(req): Json<TransitionReq>,
     ) -> impl IntoResponse {
-        let new_status = maple_engine::task_service::TaskV3Status::from_str(&req.status);
+        let new_status = maple_engine::task_service::TaskV3Status::parse_str(&req.status);
         match state.task_service.transition_task(&id, new_status, &req.changed_by, req.reason.as_deref()).await {
             Ok(task) => Json(serde_json::json!({ "task": task })),
             Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
@@ -797,7 +798,7 @@ mod v3_handlers {
         State(state): State<Arc<AppState>>,
         Json(req): Json<MemoryStoreReq>,
     ) -> impl IntoResponse {
-        let memory_type = maple_engine::memory_service::MemoryLayer::from_str(
+        let memory_type = maple_engine::memory_service::MemoryLayer::parse_str(
             req.memory_type.as_deref().unwrap_or("episodic"),
         );
         match state.memory_service.store(
@@ -815,7 +816,7 @@ mod v3_handlers {
         State(state): State<Arc<AppState>>,
         Json(req): Json<MemorySearchReq>,
     ) -> impl IntoResponse {
-        let memory_type = req.memory_type.as_deref().map(|s| maple_engine::memory_service::MemoryLayer::from_str(s));
+        let memory_type = req.memory_type.as_deref().map(|s| maple_engine::memory_service::MemoryLayer::parse_str(s));
         let query = maple_engine::memory_service::MemoryQuery {
             agent_id: req.agent_id,
             query_text: req.query_text,

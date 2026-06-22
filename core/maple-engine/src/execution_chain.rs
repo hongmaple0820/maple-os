@@ -180,6 +180,7 @@ impl ExecutionRecorder {
     /// `docs/execution-fact-chain-spec.md` §3). The recorder does not validate
     /// the payload shape at runtime in production builds — callers are
     /// responsible. In debug builds a string-length sanity check is applied.
+    #[allow(clippy::too_many_arguments)]
     pub async fn append(
         &self,
         execution_id: &str,
@@ -478,6 +479,8 @@ impl ExecutionRecorder {
     ///
     /// `permission_level` must be one of: read_only, workspace_write,
     /// prompt, allow, danger.
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub async fn record_tool_invocation(
         &self,
         execution_id: &str,

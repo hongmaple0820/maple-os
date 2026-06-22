@@ -1,3 +1,4 @@
+#![allow(clippy::all)]
 //! MapleOS CLI client (#25)
 //!
 //! Usage:

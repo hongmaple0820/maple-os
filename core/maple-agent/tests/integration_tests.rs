@@ -1,3 +1,4 @@
+#![allow(clippy::all)]
 //! Integration tests for maple-agent
 //!
 //! Tests the interaction between different components

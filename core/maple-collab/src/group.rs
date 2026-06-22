@@ -38,7 +38,7 @@ impl GroupType {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse_str(s: &str) -> Self {
         match s {
             "project" => Self::Project,
             "channel" => Self::Channel,
@@ -65,7 +65,7 @@ impl DmType {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse_str(s: &str) -> Option<Self> {
         match s {
             "human_human" => Some(Self::HumanHuman),
             "human_agent" => Some(Self::HumanAgent),
@@ -192,11 +192,11 @@ impl GroupManager {
                 name: r.1,
                 description: r.2,
                 avatar_url: r.3,
-                group_type: GroupType::from_str(&r.4),
+                group_type: GroupType::parse_str(&r.4),
                 owner_id: r.5,
                 settings: GroupSettings::from_json(&r.6),
                 dm_pair_key: r.7,
-                dm_type: r.8.and_then(|s| DmType::from_str(&s)),
+                dm_type: r.8.and_then(|s| DmType::parse_str(&s)),
                 member_count: r.9,
                 message_count: r.10,
                 created_at: r.11,

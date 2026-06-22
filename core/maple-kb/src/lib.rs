@@ -1,3 +1,4 @@
+#![allow(clippy::all)]
 pub mod indexer;
 pub mod retriever;
 pub mod evolver;

@@ -202,7 +202,7 @@ impl HybridRetriever {
         ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
 
         // Take more than top_k for reranking (reranker needs candidates)
-        let rerank_pool_size = if let Some(_) = &self.reranker {
+        let rerank_pool_size = if self.reranker.is_some() {
             top_k * 3 // over-fetch 3x for reranker to choose from
         } else {
             top_k

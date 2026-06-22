@@ -152,7 +152,7 @@ impl TriggerManager {
                 }
                 // Check filter: all keys must match
                 let filter_ok = filter.iter().all(|(key, expected)| {
-                    payload.get(key).map_or(false, |actual| actual == expected)
+                    payload.get(key).is_some_and(|actual| actual == expected)
                 });
                 if filter_ok {
                     matches.push(rule.workflow_id.clone());

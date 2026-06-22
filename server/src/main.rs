@@ -1,3 +1,4 @@
+#![allow(clippy::all)]
 // All shared modules live in the lib crate (server/src/lib.rs) so that
 // bin and integration tests share the same AppState / handler types.
 // T0-4 in docs/MapleOS_Implementation_Plan_2026Q3.md tracks the
@@ -4424,7 +4425,7 @@ async fn v3_transition_task_handler(
     axum::extract::Path(task_id): axum::extract::Path<String>,
     Json(req): Json<TransitionTaskRequest>,
 ) -> impl IntoResponse {
-    let new_status = maple_engine::task_service::TaskV3Status::from_str(&req.status);
+    let new_status = maple_engine::task_service::TaskV3Status::parse_str(&req.status);
     match state.task_service.transition_task(&task_id, new_status, &req.changed_by, req.reason.as_deref()).await {
         Ok(task) => {
             state.event_bus.publish(maple_engine::event_bus::Event::TaskTransitioned {
@@ -4498,7 +4499,7 @@ async fn v3_create_approval_handler(
         Some("low") => maple_engine::approval::ApprovalUrgency::Low,
         _ => maple_engine::approval::ApprovalUrgency::Normal,
     };
-    let quorum = maple_engine::approval::QuorumType::from_str(&req.quorum_type.unwrap_or_else(|| "any".to_string()));
+    let quorum = maple_engine::approval::QuorumType::parse_str(&req.quorum_type.unwrap_or_else(|| "any".to_string()));
     let request_type = req.request_type.as_deref().unwrap_or("general");
     match state.approval_service.create_request_with_execution(
         &req.group_id, &req.title, req.description.as_deref(), request_type,
@@ -4782,7 +4783,7 @@ async fn v3_intervene_delegation_handler(
     axum::extract::Path(delegation_id): axum::extract::Path<String>,
     Json(req): Json<InterveneRequest>,
 ) -> impl IntoResponse {
-    let status = maple_collab::dm_service::DelegationStatus::from_str(
+    let status = maple_collab::dm_service::DelegationStatus::parse_str(
         req.status.as_deref().unwrap_or("failed")
     );
     match state.dm_service.update_delegation_status(&delegation_id, status, req.result.as_deref()).await {

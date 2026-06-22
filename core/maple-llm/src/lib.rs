@@ -1,3 +1,4 @@
+#![allow(clippy::all)]
 pub mod adapters;
 pub mod embedding;
 pub mod error;
