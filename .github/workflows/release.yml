@@ -16,112 +16,11 @@ env:
 
 jobs:
   # ============================================================
-  # Job 1: Build Web Static Export
-  # ============================================================
-  build-web:
-    name: Build Web Static Export
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-
-      - run: |
-          corepack enable
-          corepack prepare pnpm@latest --activate
-
-      - run: pnpm install --no-frozen-lockfile
-
-      - run: pnpm --filter=@mapleos/ui --filter=@mapleos/sdk build
-
-      - run: NEXT_STATIC_EXPORT=1 pnpm --filter=mapleos-web build
-
-      - name: Upload web artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: mapleos-web-${{ github.ref_name || inputs.version }}
-          path: apps/web/out/
-          retention-days: 90
-
-  # ============================================================
-  # Job 2: Build Server Binaries (Linux x86_64)
-  # ============================================================
-  build-server-linux:
-    name: Build Server (Linux x86_64)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.toml') }}
-
-      - run: cargo build --release -p mapleos-server
-
-      - name: Package server + migrations
-        run: |
-          mkdir -p mapleos-server-linux
-          cp target/release/mapleos-server mapleos-server-linux/
-          cp -r migrations mapleos-server-linux/
-          cp -r config mapleos-server-linux/
-          tar czf mapleos-server-linux-x86_64.tar.gz mapleos-server-linux/
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: mapleos-server-linux-x86_64
-          path: mapleos-server-linux-x86_64.tar.gz
-          retention-days: 90
-
-  # ============================================================
-  # Job 3: Build CLI Binary (Linux x86_64)
-  # ============================================================
-  build-cli-linux:
-    name: Build CLI (Linux x86_64)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-cli-${{ hashFiles('**/Cargo.toml') }}
-
-      - run: cargo build --release -p maple-cli
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: maple-cli-linux-x86_64
-          path: target/release/maple
-          retention-days: 90
-
-  # ============================================================
-  # Job 4: Build Desktop (Tauri) — Windows + macOS + Linux
+  # Job 1: Build Desktop Installers (Tauri)
+  # Produces: .dmg (macOS), .exe/.msi (Windows), .deb/.AppImage (Linux)
   # ============================================================
   build-desktop:
-    name: Build Desktop (${{ matrix.os }})
+    name: Desktop Installer (${{ matrix.label }})
     strategy:
       fail-fast: false
       matrix:
@@ -166,7 +65,7 @@ jobs:
 
       - run: pnpm --filter=@mapleos/ui --filter=@mapleos/sdk build
 
-      - name: Build Tauri app
+      - name: Build Tauri installer
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -174,12 +73,168 @@ jobs:
           projectPath: apps/desktop
           tagName: ${{ github.ref_name || inputs.version }}
           releaseName: "MapleOS ${{ github.ref_name || inputs.version }}"
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
           args: --target ${{ matrix.target }}
 
   # ============================================================
-  # Job 5: Docker All-in-One Image (GHCR)
+  # Job 2: Build Server .deb Package (Linux x86_64)
+  # Produces: mapleos-server_<version>_amd64.deb
+  # Install: sudo dpkg -i mapleos-server_*.deb && systemctl start mapleos
+  # ============================================================
+  build-server-deb:
+    name: Server .deb (Linux x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev dpkg-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.toml') }}
+
+      - run: cargo build --release -p mapleos-server
+
+      - name: Build .deb package
+        run: |
+          VERSION="${{ github.ref_name || inputs.version }}"
+          VERSION_NUM="${VERSION#v}"
+          mkdir -p pkg/DEBIAN pkg/usr/local/bin pkg/usr/share/mapleos/migrations pkg/usr/share/mapleos/config pkg/etc/systemd/system
+
+          # Copy binary
+          cp target/release/mapleos-server pkg/usr/local/bin/
+
+          # Copy migrations + config
+          cp -r migrations/* pkg/usr/share/mapleos/migrations/
+          cp -r config/* pkg/usr/share/mapleos/config/
+
+          # control file
+          cat > pkg/DEBIAN/control << EOF
+          Package: mapleos-server
+          Version: ${VERSION_NUM}
+          Architecture: amd64
+          Maintainer: MapleOS Team <team@mapleos.dev>
+          Description: MapleOS Server - AI Native Multi-Agent OS
+           MapleOS is an AI Native multi-agent collaborative workstation
+           operating system. This package contains the backend server.
+          Depends: libsqlite3-0, ca-certificates
+          Section: net
+          Priority: optional
+          EOF
+
+          # systemd service
+          cat > pkg/etc/systemd/system/mapleos.service << EOF
+          [Unit]
+          Description=MapleOS Server
+          After=network.target
+
+          [Service]
+          Type=simple
+          ExecStart=/usr/local/bin/mapleos-server
+          Environment=DATABASE_URL=sqlite:/var/lib/mapleos/mapleos.db
+          Environment=RUST_LOG=info
+          Environment=MAPLEOS_WEB_DIR=/usr/share/mapleos/web
+          WorkingDirectory=/usr/share/mapleos
+          Restart=on-failure
+          RestartSec=5
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+
+          # postinst — create data dir + enable service
+          cat > pkg/DEBIAN/postinst << 'EOF'
+          #!/bin/bash
+          mkdir -p /var/lib/mapleos
+          systemctl daemon-reload
+          systemctl enable mapleos
+          echo "MapleOS Server installed. Start with: sudo systemctl start mapleos"
+          EOF
+          chmod +x pkg/DEBIAN/postinst
+
+          # prerm — stop service
+          cat > pkg/DEBIAN/prerm << 'EOF'
+          #!/bin/bash
+          systemctl stop mapleos 2>/dev/null || true
+          EOF
+          chmod +x pkg/DEBIAN/prerm
+
+          # Build .deb
+          dpkg-deb --build pkg mapleos-server_${VERSION_NUM}_amd64.deb
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mapleos-server-amd64-deb
+          path: mapleos-server_*_amd64.deb
+          retention-days: 90
+
+  # ============================================================
+  # Job 3: Build CLI .deb Package
+  # Produces: maple-cli_<version>_amd64.deb
+  # ============================================================
+  build-cli-deb:
+    name: CLI .deb (Linux x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev dpkg-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-cli-${{ hashFiles('**/Cargo.toml') }}
+
+      - run: cargo build --release -p maple-cli
+
+      - name: Build .deb package
+        run: |
+          VERSION="${{ github.ref_name || inputs.version }}"
+          VERSION_NUM="${VERSION#v}"
+          mkdir -p pkg/DEBIAN pkg/usr/local/bin
+
+          cp target/release/maple pkg/usr/local/bin/maple
+
+          cat > pkg/DEBIAN/control << EOF
+          Package: maple-cli
+          Version: ${VERSION_NUM}
+          Architecture: amd64
+          Maintainer: MapleOS Team <team@mapleos.dev>
+          Description: MapleOS CLI Client
+           Command-line client for MapleOS. Supports login, chat,
+           workflow management, execution trace viewing, and more.
+          Depends: ca-certificates
+          Section: utils
+          Priority: optional
+          EOF
+
+          dpkg-deb --build pkg maple-cli_${VERSION_NUM}_amd64.deb
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: maple-cli-amd64-deb
+          path: maple-cli_*_amd64.deb
+          retention-days: 90
+
+  # ============================================================
+  # Job 4: Docker All-in-One Image (GHCR)
+  # Produces: ghcr.io/hongmaple0820/maple-os:latest (all-in-one)
   # ============================================================
   build-docker-allinone:
     name: Docker All-in-One
@@ -209,7 +264,7 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern=allinone-latest
+            type=semver,pattern=latest
             type=sha,prefix=sha-
 
       - uses: docker/build-push-action@v6
@@ -223,12 +278,12 @@ jobs:
           cache-to: type=gha,mode=max
 
   # ============================================================
-  # Job 6: Create GitHub Release with all artifacts
+  # Job 5: Create GitHub Release with all installers
   # ============================================================
   create-release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: [build-web, build-server-linux, build-cli-linux]
+    needs: [build-server-deb, build-cli-deb]
     permissions:
       contents: write
     steps:
@@ -236,26 +291,13 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: mapleos-web-${{ github.ref_name || inputs.version }}
-          path: artifacts/web
+          name: mapleos-server-amd64-deb
+          path: artifacts
 
       - uses: actions/download-artifact@v4
         with:
-          name: mapleos-server-linux-x86_64
-          path: artifacts/server
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: maple-cli-linux-x86_64
-          path: artifacts/cli
-
-      - name: Create release archive
-        run: |
-          cd artifacts
-          tar czf mapleos-web-static.tar.gz -C web .
-          mv server/mapleos-server-linux-x86_64.tar.gz .
-          mv cli/maple .
-          chmod +x maple
+          name: maple-cli-amd64-deb
+          path: artifacts
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -265,29 +307,46 @@ jobs:
           body: |
             ## MapleOS ${{ github.ref_name || inputs.version }}
 
-            ### Downloads
-            - **Web Static**: mapleos-web-static.tar.gz (deploy to any web server)
-            - **Server (Linux x86_64)**: mapleos-server-linux-x86_64.tar.gz (includes migrations + config)
-            - **CLI (Linux x86_64)**: maple (standalone binary)
-            - **Desktop**: Download from the Assets section below (Tauri builds for Windows/macOS/Linux)
-            - **Docker All-in-One**: `docker pull ghcr.io/hongmaple0820/maple-os:allinone-latest`
+            ### 📦 Install
 
-            ### Quick Start (Docker)
-            ```bash
-            docker run -d -p 7788:7788 ghcr.io/hongmaple0820/maple-os:allinone-latest
-            ```
-            Open http://localhost:7788 in your browser.
+            #### Desktop (Windows / macOS / Linux)
+            Download the installer for your platform from the Assets below:
+            - **Windows**: `.msi` or `.exe` installer
+            - **macOS (Apple Silicon)**: `.dmg`
+            - **macOS (Intel)**: `.dmg`
+            - **Linux**: `.deb` or `.AppImage`
 
-            ### Quick Start (Binary)
+            #### Server (Linux)
             ```bash
-            tar xzf mapleos-server-linux-x86_64.tar.gz
-            cd mapleos-server-linux
-            ./mapleos-server
+            # Download and install
+            sudo dpkg -i mapleos-server_*_amd64.deb
+            # Start the service
+            sudo systemctl start mapleos
+            # Open http://localhost:7788
             ```
-            Open http://localhost:7788 in your browser.
+
+            #### CLI (Linux)
+            ```bash
+            sudo dpkg -i maple-cli_*_amd64.deb
+            maple status
+            ```
+
+            #### Docker (All-in-One)
+            ```bash
+            docker run -d -p 7788:7788 ghcr.io/hongmaple0820/maple-os:latest
+            # Open http://localhost:7788
+            ```
+
+            #### Docker Compose
+            ```bash
+            # All-in-one (web + server in one container)
+            docker compose --profile allinone up -d
+
+            # Separated (server + qdrant)
+            docker compose --profile separated up -d
+            ```
           files: |
-            artifacts/mapleos-web-static.tar.gz
-            artifacts/mapleos-server-linux-x86_64.tar.gz
-            artifacts/maple
+            artifacts/mapleos-server_*_amd64.deb
+            artifacts/maple-cli_*_amd64.deb
           draft: false
           prerelease: false
