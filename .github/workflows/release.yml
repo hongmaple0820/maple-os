@@ -4,338 +4,21 @@ on:
   push:
     tags:
       - "v*"
-
-permissions:
-  contents: write
-  packages: write
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version (e.g. v2.1.0)"
+        required: true
+        default: "v2.1.0"
 
 env:
   CARGO_TERM_COLOR: always
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  build-server-binaries:
-    name: Build Server ${{ matrix.target }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            artifact: mapleos-server-x86_64-linux
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            artifact: mapleos-server-aarch64-macos
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            artifact: mapleos-server-x86_64-windows
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Install system dependencies (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
-
-      - name: Install system dependencies (MacOS)
-        if: runner.os == 'macOS'
-        run: brew install sqlite3
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-          targets: ${{ matrix.target }}
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-${{ matrix.target }}-cargo-
-
-      - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }} -p mapleos-server
-
-      - name: Strip binary (Linux/Mac)
-        if: runner.os != 'Windows'
-        run: strip target/${{ matrix.target }}/release/mapleos-server
-
-      - name: Prepare artifact (Unix)
-        if: runner.os != 'Windows'
-        run: |
-          cd target/${{ matrix.target }}/release
-          tar czf ${{ matrix.artifact }}.tar.gz mapleos-server
-
-      - name: Prepare artifact (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          cd target/${{ matrix.target }}/release
-          compress-archive -Path mapleos-server.exe -DestinationPath ${{ matrix.artifact }}.zip -Force
-        shell: pwsh
-
-      - name: Upload artifact (Unix)
-        if: runner.os != 'Windows'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact }}
-          path: target/${{ matrix.target }}/release/${{ matrix.artifact }}.tar.gz
-
-      - name: Upload artifact (Windows)
-        if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact }}
-          path: target/${{ matrix.target }}/release/${{ matrix.artifact }}.zip
-
-  build-desktop-linux:
-    name: Build Desktop Linux
-    runs-on: ubuntu-latest
-    needs: [build-server-binaries]
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            pkg-config libsqlite3-dev \
-            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-
-      - name: Enable corepack & install pnpm
-        run: |
-          corepack enable
-          corepack prepare pnpm@latest --activate
-
-      - name: Install frontend dependencies
-        run: pnpm install --no-frozen-lockfile
-
-      - name: Build shared packages
-        run: pnpm --filter=@mapleos/ui --filter=@mapleos/sdk build
-
-      - name: Download server binary for sidecar
-        uses: actions/download-artifact@v4
-        with:
-          name: mapleos-server-x86_64-linux
-          path: server-binary
-
-      - name: Prepare sidecar binary
-        run: |
-          ls -la server-binary/
-          mkdir -p apps/desktop/src-tauri/binaries
-          tar xzf server-binary/mapleos-server-x86_64-linux.tar.gz -C apps/desktop/src-tauri/binaries
-          mv apps/desktop/src-tauri/binaries/mapleos-server apps/desktop/src-tauri/binaries/mapleos-server-x86_64-unknown-linux-gnu
-          chmod +x apps/desktop/src-tauri/binaries/mapleos-server-x86_64-unknown-linux-gnu
-          ls -la apps/desktop/src-tauri/binaries/
-
-      - name: Install tauri-cli
-        run: cargo install tauri-cli --version "^2"
-
-      - name: Build desktop app
-        run: cd apps/desktop && pnpm tauri build
-
-      - name: Upload desktop artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: mapleos-desktop-linux
-          path: |
-            apps/desktop/src-tauri/target/release/bundle/deb/*.deb
-            apps/desktop/src-tauri/target/release/bundle/rpm/*.rpm
-
-  build-desktop-macos:
-    name: Build Desktop macOS
-    runs-on: macos-latest
-    needs: [build-server-binaries]
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Install system dependencies
-        run: brew install sqlite3
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-          targets: aarch64-apple-darwin
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-
-      - name: Enable corepack & install pnpm
-        run: |
-          corepack enable
-          corepack prepare pnpm@latest --activate
-
-      - name: Install frontend dependencies
-        run: pnpm install --no-frozen-lockfile
-
-      - name: Build shared packages
-        run: pnpm --filter=@mapleos/ui --filter=@mapleos/sdk build
-
-      - name: Download server binary for sidecar
-        uses: actions/download-artifact@v4
-        with:
-          name: mapleos-server-aarch64-macos
-          path: server-binary
-
-      - name: Prepare sidecar binary
-        run: |
-          ls -la server-binary/
-          mkdir -p apps/desktop/src-tauri/binaries
-          tar xzf server-binary/mapleos-server-aarch64-macos.tar.gz -C apps/desktop/src-tauri/binaries
-          mv apps/desktop/src-tauri/binaries/mapleos-server apps/desktop/src-tauri/binaries/mapleos-server-aarch64-apple-darwin
-          chmod +x apps/desktop/src-tauri/binaries/mapleos-server-aarch64-apple-darwin
-          ls -la apps/desktop/src-tauri/binaries/
-
-      - name: Install tauri-cli
-        run: cargo install tauri-cli --version "^2"
-
-      - name: Build desktop app
-        run: cd apps/desktop && pnpm tauri build --target aarch64-apple-darwin
-
-      - name: Upload desktop artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: mapleos-desktop-macos-arm
-          path: apps/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
-
-  build-desktop-windows:
-    name: Build Desktop Windows
-    runs-on: windows-latest
-    needs: [build-server-binaries]
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-          targets: x86_64-pc-windows-msvc
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-
-      - name: Enable corepack & install pnpm
-        run: |
-          corepack enable
-          corepack prepare pnpm@latest --activate
-
-      - name: Install frontend dependencies
-        run: pnpm install --no-frozen-lockfile
-
-      - name: Build shared packages
-        run: pnpm --filter=@mapleos/ui --filter=@mapleos/sdk build
-
-      - name: Download server binary for sidecar
-        uses: actions/download-artifact@v4
-        with:
-          name: mapleos-server-x86_64-windows
-          path: server-binary
-
-      - name: Prepare sidecar binary
-        shell: pwsh
-        run: |
-          Get-ChildItem server-binary/
-          New-Item -ItemType Directory -Force -Path apps/desktop/src-tauri/binaries
-          Expand-Archive -Path server-binary/mapleos-server-x86_64-windows.zip -DestinationPath server-binary -Force
-          Move-Item -Path server-binary/mapleos-server.exe -Destination apps/desktop/src-tauri/binaries/mapleos-server-x86_64-pc-windows-msvc.exe -Force
-          Get-ChildItem apps/desktop/src-tauri/binaries/
-
-      - name: Install tauri-cli
-        run: cargo install tauri-cli --version "^2"
-
-      - name: Build desktop app
-        run: cd apps/desktop && pnpm tauri build --target x86_64-pc-windows-msvc
-
-      - name: Upload desktop artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: mapleos-desktop-windows
-          path: |
-            apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
-
-  build-mobile-android:
-    name: Build Mobile Android APK
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-
-      - name: Enable corepack & install pnpm
-        run: |
-          corepack enable
-          corepack prepare pnpm@latest --activate
-
-      - name: Install frontend dependencies
-        run: pnpm install --no-frozen-lockfile
-
-      - name: Build shared packages
-        run: pnpm --filter=@mapleos/ui --filter=@mapleos/sdk build
-
-      - name: Setup EAS CLI
-        run: npm install -g eas-cli@latest
-
-      - name: Initialize EAS Project
-        working-directory: apps/mobile
-        run: eas init --non-interactive --force
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-
-      - name: Build Android APK (preview)
-        working-directory: apps/mobile
-        run: |
-          if [ -z "$EXPO_TOKEN" ]; then
-            echo "::warning::EXPO_TOKEN not set, skipping mobile build"
-            echo "skip=true" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-          eas build --platform android --profile preview --local --output build/
-        id: mobile-build
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-
-      - name: Upload mobile artifact
-        if: steps.mobile-build.outputs.skip != 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: mapleos-mobile-android
-          path: apps/mobile/build/*.apk
-
-  build-web-static:
+  # ============================================================
+  # Job 1: Build Web Static Export
+  # ============================================================
+  build-web:
     name: Build Web Static Export
     runs-on: ubuntu-latest
     steps:
@@ -343,127 +26,268 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 24
 
-      - name: Enable corepack & install pnpm
-        run: |
+      - run: |
           corepack enable
           corepack prepare pnpm@latest --activate
 
-      - name: Install frontend dependencies
-        run: pnpm install --no-frozen-lockfile
+      - run: pnpm install --no-frozen-lockfile
 
-      - name: Build shared packages
-        run: pnpm --filter=@mapleos/ui --filter=@mapleos/sdk build
+      - run: pnpm --filter=@mapleos/ui --filter=@mapleos/sdk build
 
-      - name: Build web frontend (static export)
-        run: pnpm --filter=mapleos-web build:static
-
-      - name: Package web static files
-        run: |
-          cd apps/web
-          tar czf mapleos-web-static.tar.gz out/
+      - run: NEXT_STATIC_EXPORT=1 pnpm --filter=mapleos-web build
 
       - name: Upload web artifact
         uses: actions/upload-artifact@v4
         with:
-          name: mapleos-web-static
-          path: apps/web/mapleos-web-static.tar.gz
+          name: mapleos-web-${{ github.ref_name || inputs.version }}
+          path: apps/web/out/
+          retention-days: 90
 
-  build-docker:
-    name: Docker Image
+  # ============================================================
+  # Job 2: Build Server Binaries (Linux x86_64)
+  # ============================================================
+  build-server-linux:
+    name: Build Server (Linux x86_64)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Docker meta
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository }}/mapleos-server
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha
+      - run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
 
-      - name: Login to GHCR
-        uses: docker/login-action@v3
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.toml') }}
+
+      - run: cargo build --release -p mapleos-server
+
+      - name: Package server + migrations
+        run: |
+          mkdir -p mapleos-server-linux
+          cp target/release/mapleos-server mapleos-server-linux/
+          cp -r migrations mapleos-server-linux/
+          cp -r config mapleos-server-linux/
+          tar czf mapleos-server-linux-x86_64.tar.gz mapleos-server-linux/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mapleos-server-linux-x86_64
+          path: mapleos-server-linux-x86_64.tar.gz
+          retention-days: 90
+
+  # ============================================================
+  # Job 3: Build CLI Binary (Linux x86_64)
+  # ============================================================
+  build-cli-linux:
+    name: Build CLI (Linux x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - run: sudo apt-get update && sudo apt-get install -y pkg-config libsqlite3-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-cli-${{ hashFiles('**/Cargo.toml') }}
+
+      - run: cargo build --release -p maple-cli
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: maple-cli-linux-x86_64
+          path: target/release/maple
+          retention-days: 90
+
+  # ============================================================
+  # Job 4: Build Desktop (Tauri) — Windows + macOS + Linux
+  # ============================================================
+  build-desktop:
+    name: Build Desktop (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            label: linux
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: windows
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            label: macos-arm
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            label: macos-intel
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Linux deps
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev pkg-config libsqlite3-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - run: |
+          corepack enable
+          corepack prepare pnpm@latest --activate
+
+      - run: pnpm install --no-frozen-lockfile
+
+      - run: pnpm --filter=@mapleos/ui --filter=@mapleos/sdk build
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: apps/desktop
+          tagName: ${{ github.ref_name || inputs.version }}
+          releaseName: "MapleOS ${{ github.ref_name || inputs.version }}"
+          releaseDraft: true
+          prerelease: false
+          args: --target ${{ matrix.target }}
+
+  # ============================================================
+  # Job 5: Docker All-in-One Image (GHCR)
+  # ============================================================
+  build-docker-allinone:
+    name: Docker All-in-One
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push
-        uses: docker/build-push-action@v6
+      - name: Extract version
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern=allinone-latest
+            type=sha,prefix=sha-
+
+      - uses: docker/build-push-action@v6
         with:
           context: .
-          file: infra/docker/Dockerfile
+          file: infra/docker/Dockerfile.allinone
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
+  # ============================================================
+  # Job 6: Create GitHub Release with all artifacts
+  # ============================================================
   create-release:
     name: Create GitHub Release
-    needs: [build-server-binaries, build-desktop-linux, build-desktop-macos, build-desktop-windows, build-mobile-android, build-web-static, build-docker]
-    if: always() && needs.build-server-binaries.result == 'success' && needs.build-web-static.result == 'success' && needs.build-docker.result == 'success'
     runs-on: ubuntu-latest
+    needs: [build-web, build-server-linux, build-cli-linux]
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download server artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
-          path: artifacts
-          pattern: mapleos-server-*
+          name: mapleos-web-${{ github.ref_name || inputs.version }}
+          path: artifacts/web
 
-      - name: Download web artifact
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
-          path: artifacts
-          name: mapleos-web-static
+          name: mapleos-server-linux-x86_64
+          path: artifacts/server
 
-      - name: Download desktop artifacts (best-effort)
-        continue-on-error: true
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
-          path: artifacts
-          pattern: mapleos-desktop-*
+          name: maple-cli-linux-x86_64
+          path: artifacts/cli
 
-      - name: Download mobile artifacts (best-effort)
-        continue-on-error: true
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          pattern: mapleos-mobile-*
-
-      - name: List artifacts
-        run: find artifacts -type f | sort || true
-
-      - name: Prepare release files
+      - name: Create release archive
         run: |
-          mkdir -p release-files
-          # Server binaries
-          find artifacts/mapleos-server-* -type f \( -name "*.tar.gz" -o -name "*.zip" \) -exec cp {} release-files/ \;
-          # Desktop artifacts (directly extracted by download-artifact)
-          find artifacts/mapleos-desktop-* -type f \( -name "*.deb" -o -name "*.rpm" -o -name "*.dmg" -o -name "*.msi" \) -exec cp {} release-files/ \; || true
-          # Mobile
-          find artifacts/mapleos-mobile-* -type f -name "*.apk" -exec cp {} release-files/ \; || true
-          # Web static (may be at artifacts root or in subdirectory)
-          find artifacts -maxdepth 1 -name "mapleos-web-static*" -type f -exec cp {} release-files/ \; || true
-          find artifacts/mapleos-web-static -type f -exec cp {} release-files/ \; || true
-          echo "=== Release files ==="
-          ls -la release-files/
+          cd artifacts
+          tar czf mapleos-web-static.tar.gz -C web .
+          mv server/mapleos-server-linux-x86_64.tar.gz .
+          mv cli/maple .
+          chmod +x maple
 
-      - name: Create release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
-          fail_on_unmatched_files: false
-          files: release-files/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: ${{ github.ref_name || inputs.version }}
+          name: "MapleOS ${{ github.ref_name || inputs.version }}"
+          body: |
+            ## MapleOS ${{ github.ref_name || inputs.version }}
+
+            ### Downloads
+            - **Web Static**: mapleos-web-static.tar.gz (deploy to any web server)
+            - **Server (Linux x86_64)**: mapleos-server-linux-x86_64.tar.gz (includes migrations + config)
+            - **CLI (Linux x86_64)**: maple (standalone binary)
+            - **Desktop**: Download from the Assets section below (Tauri builds for Windows/macOS/Linux)
+            - **Docker All-in-One**: `docker pull ghcr.io/hongmaple0820/maple-os:allinone-latest`
+
+            ### Quick Start (Docker)
+            ```bash
+            docker run -d -p 7788:7788 ghcr.io/hongmaple0820/maple-os:allinone-latest
+            ```
+            Open http://localhost:7788 in your browser.
+
+            ### Quick Start (Binary)
+            ```bash
+            tar xzf mapleos-server-linux-x86_64.tar.gz
+            cd mapleos-server-linux
+            ./mapleos-server
+            ```
+            Open http://localhost:7788 in your browser.
+          files: |
+            artifacts/mapleos-web-static.tar.gz
+            artifacts/mapleos-server-linux-x86_64.tar.gz
+            artifacts/maple
+          draft: false
+          prerelease: false

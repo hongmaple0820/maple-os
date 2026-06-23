@@ -1,6 +1,10 @@
 # MapleOS
 
 <p align="center">
+  <img src="image/mapleos-logo.png" width="120" height="120" alt="MapleOS Logo" />
+</p>
+
+<p align="center">
   <strong>AI Native Multi-Agent Collaborative Workstation Operating System</strong>
 </p>
 

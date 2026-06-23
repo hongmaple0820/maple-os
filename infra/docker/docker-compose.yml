@@ -1,4 +1,27 @@
 services:
+  # ============================================================
+  # Option 1: All-in-One (recommended for quick start)
+  # Single container with web + server, no separate web server needed.
+  # Usage: docker compose up allinone
+  # ============================================================
+  allinone:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.allinone
+    ports:
+      - "7788:7788"
+    volumes:
+      - mapleos-data:/data
+    environment:
+      - RUST_LOG=info
+      - DATABASE_URL=sqlite:/data/mapleos.db
+    profiles: ["allinone"]
+
+  # ============================================================
+  # Option 2: Separated (server + web + qdrant)
+  # For production with separate web hosting (CDN/Nginx)
+  # Usage: docker compose up -d
+  # ============================================================
   mapleos-server:
     build:
       context: ../..
@@ -12,6 +35,7 @@ services:
       - DATABASE_URL=sqlite:/data/mapleos.db
     depends_on:
       - qdrant
+    profiles: ["separated"]
 
   qdrant:
     image: qdrant/qdrant:latest
@@ -19,6 +43,7 @@ services:
       - qdrant-data:/qdrant/storage
     ports:
       - "6333:6333"
+    profiles: ["separated"]
 
 volumes:
   mapleos-data:
