@@ -53,8 +53,11 @@ enum Commands {
         /// Execution ID
         id: String,
     },
-    /// List agents
-    Agents,
+    /// Agent commands
+    Agents {
+        #[command(subcommand)]
+        action: Option<AgentCommands>,
+    },
     /// List models
     Models,
 }
@@ -95,6 +98,36 @@ enum WorkflowCommands {
     },
 }
 
+#[derive(Subcommand)]
+enum AgentCommands {
+    /// List registered agents
+    List,
+    /// Register a new agent
+    Register {
+        /// Agent name
+        #[arg(long)]
+        name: String,
+        /// Optional agent description
+        #[arg(long)]
+        description: Option<String>,
+        /// Optional model name, e.g. gpt-4
+        #[arg(long)]
+        model: Option<String>,
+        /// Transport type for the agent
+        #[arg(long, default_value = "websocket")]
+        transport_type: String,
+        /// Comma-separated capability names
+        #[arg(long, value_delimiter = ',')]
+        capability: Vec<String>,
+        /// Comma-separated tag names
+        #[arg(long, value_delimiter = ',')]
+        tag: Vec<String>,
+        /// Maximum concurrent tasks
+        #[arg(long, default_value_t = 3)]
+        max_concurrent_tasks: u32,
+    },
+}
+
 #[derive(Serialize)]
 #[allow(dead_code)]
 struct LoginReq {
@@ -115,7 +148,9 @@ fn token_path() -> PathBuf {
 }
 
 fn load_token() -> Option<String> {
-    std::fs::read_to_string(token_path()).ok().filter(|s| !s.trim().is_empty())
+    std::fs::read_to_string(token_path())
+        .ok()
+        .filter(|s| !s.trim().is_empty())
 }
 
 fn save_token(token: &str) -> anyhow::Result<()> {
@@ -135,20 +170,35 @@ async fn api_get(url: &str, token: &Option<String>) -> anyhow::Result<serde_json
     }
     let resp = req.send().await?;
     if !resp.status().is_success() {
-        anyhow::bail!("HTTP {}: {}", resp.status(), resp.text().await.unwrap_or_default());
+        anyhow::bail!(
+            "HTTP {}: {}",
+            resp.status(),
+            resp.text().await.unwrap_or_default()
+        );
     }
     Ok(resp.json().await?)
 }
 
-async fn api_post(url: &str, token: &Option<String>, body: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
+async fn api_post(
+    url: &str,
+    token: &Option<String>,
+    body: &serde_json::Value,
+) -> anyhow::Result<serde_json::Value> {
     let client = reqwest::Client::new();
-    let mut req = client.post(url).header("Content-Type", "application/json").json(body);
+    let mut req = client
+        .post(url)
+        .header("Content-Type", "application/json")
+        .json(body);
     if let Some(t) = token {
         req = req.header("Authorization", format!("Bearer {}", t));
     }
     let resp = req.send().await?;
     if !resp.status().is_success() {
-        anyhow::bail!("HTTP {}: {}", resp.status(), resp.text().await.unwrap_or_default());
+        anyhow::bail!(
+            "HTTP {}: {}",
+            resp.status(),
+            resp.text().await.unwrap_or_default()
+        );
     }
     Ok(resp.json().await?)
 }
@@ -175,14 +225,27 @@ async fn main() -> anyhow::Result<()> {
             let url = format!("{}/health", cli.url);
             let resp = api_get(&url, &token).await?;
             println!("Server: {}", cli.url);
-            println!("Status: {}", resp.get("status").and_then(|v| v.as_str()).unwrap_or("unknown"));
-            println!("Version: {}", resp.get("version").and_then(|v| v.as_str()).unwrap_or("?"));
+            println!(
+                "Status: {}",
+                resp.get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+            );
+            println!(
+                "Version: {}",
+                resp.get("version").and_then(|v| v.as_str()).unwrap_or("?")
+            );
         }
 
         Commands::Chat { action } => match action {
-            ChatCommands::Send { message, agent, model } => {
+            ChatCommands::Send {
+                message,
+                agent,
+                model,
+            } => {
                 let url = format!("{}/api/chat", cli.url);
-                let body = serde_json::json!({"message": message, "agent_id": agent, "model": model});
+                let body =
+                    serde_json::json!({"message": message, "agent_id": agent, "model": model});
                 let resp = api_post(&url, &token, &body).await?;
                 if let Some(content) = resp.get("content").and_then(|v| v.as_str()) {
                     println!("{}", content);
@@ -214,11 +277,19 @@ async fn main() -> anyhow::Result<()> {
             }
             WorkflowCommands::Run { id, input } => {
                 let url = format!("{}/api/v3/workflow-runs", cli.url);
-                let input_val: serde_json::Value = serde_json::from_str(&input).unwrap_or(serde_json::json!({}));
+                let input_val: serde_json::Value =
+                    serde_json::from_str(&input).unwrap_or(serde_json::json!({}));
                 let body = serde_json::json!({"workflow_id": id, "workflow_version": 1, "input": input_val.to_string()});
                 let resp = api_post(&url, &token, &body).await?;
-                let run_id = resp.get("run").and_then(|r| r.get("id")).and_then(|v| v.as_str()).unwrap_or("?");
-                let exec_id = resp.get("execution_id").and_then(|v| v.as_str()).unwrap_or("none");
+                let run_id = resp
+                    .get("run")
+                    .and_then(|r| r.get("id"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
+                let exec_id = resp
+                    .get("execution_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("none");
                 println!("✓ Run started: {} (execution: {})", run_id, exec_id);
                 if exec_id != "none" {
                     println!("  Trace: maple trace {}", exec_id);
@@ -235,7 +306,10 @@ async fn main() -> anyhow::Result<()> {
                     for run in runs {
                         let id = run.get("id").and_then(|v| v.as_str()).unwrap_or("?");
                         let status = run.get("status").and_then(|v| v.as_str()).unwrap_or("?");
-                        let wf = run.get("workflow_id").and_then(|v| v.as_str()).unwrap_or("?");
+                        let wf = run
+                            .get("workflow_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("?");
                         println!("  {} [{}] — {}", id, status, wf);
                     }
                 } else {
@@ -256,28 +330,66 @@ async fn main() -> anyhow::Result<()> {
                         .map(|d| d.format("%H:%M:%S").to_string())
                         .unwrap_or_else(|| "??:??:??".to_string());
                     let source = evt.get("source").and_then(|v| v.as_str()).unwrap_or("?");
-                    let event_type = evt.get("event_type").and_then(|v| v.as_str()).unwrap_or("?");
-                    println!("  {} [{}] {} — {}", time, source, event_type, summarize_payload(evt));
+                    let event_type = evt
+                        .get("event_type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
+                    println!(
+                        "  {} [{}] {} — {}",
+                        time,
+                        source,
+                        event_type,
+                        summarize_payload(evt)
+                    );
                 }
             } else {
                 println!("No events found for execution {}", id);
             }
         }
 
-        Commands::Agents => {
-            let url = format!("{}/api/agents", cli.url);
-            let resp = api_get(&url, &token).await?;
-            if let Some(agents) = resp.get("agents").and_then(|v| v.as_array()) {
-                for agent in agents {
-                    let id = agent.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-                    let name = agent.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                    let status = agent.get("status").and_then(|v| v.as_str()).unwrap_or("?");
-                    println!("  {} [{}] — {}", id, status, name);
+        Commands::Agents { action } => match action.unwrap_or(AgentCommands::List) {
+            AgentCommands::List => list_agents(&cli.url, &token).await?,
+            AgentCommands::Register {
+                name,
+                description,
+                model,
+                transport_type,
+                capability,
+                tag,
+                max_concurrent_tasks,
+            } => {
+                let mut body = serde_json::json!({
+                    "name": name,
+                    "transport_type": transport_type,
+                    "max_concurrent_tasks": max_concurrent_tasks,
+                });
+                if let Some(description) = description.filter(|s| !s.trim().is_empty()) {
+                    body["description"] = serde_json::Value::String(description);
                 }
-            } else {
-                println!("{}", serde_json::to_string_pretty(&resp)?);
+                if let Some(model) = model.filter(|s| !s.trim().is_empty()) {
+                    body["model"] = serde_json::Value::String(model);
+                }
+                if !capability.is_empty() {
+                    body["capabilities"] = serde_json::Value::Array(
+                        capability
+                            .into_iter()
+                            .map(serde_json::Value::String)
+                            .collect(),
+                    );
+                }
+                if !tag.is_empty() {
+                    body["tags"] = serde_json::Value::Array(
+                        tag.into_iter().map(serde_json::Value::String).collect(),
+                    );
+                }
+
+                let url = format!("{}/api/agents", cli.url);
+                let resp = api_post(&url, &token, &body).await?;
+                let id = resp.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                let name = resp.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                println!("✓ Agent registered: {} — {}", id, name);
             }
-        }
+        },
 
         Commands::Models => {
             let url = format!("{}/api/models", cli.url);
@@ -299,16 +411,61 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn list_agents(url: &str, token: &Option<String>) -> anyhow::Result<()> {
+    let url = format!("{}/api/agents", url);
+    let resp = api_get(&url, token).await?;
+    if let Some(agents) = resp.get("agents").and_then(|v| v.as_array()) {
+        for agent in agents {
+            let id = agent.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+            let name = agent.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+            let status = agent.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+            println!("  {} [{}] — {}", id, status, name);
+        }
+    } else {
+        println!("{}", serde_json::to_string_pretty(&resp)?);
+    }
+    Ok(())
+}
+
 fn summarize_payload(evt: &serde_json::Value) -> String {
     let p = evt.get("payload").unwrap_or(&serde_json::Value::Null);
     let event_type = evt.get("event_type").and_then(|v| v.as_str()).unwrap_or("");
     match event_type {
-        "started" => format!("entry={}", p.get("entry").and_then(|v| v.as_str()).unwrap_or("?")),
-        "delta" => p.get("token").and_then(|v| v.as_str()).map(|t| format!("token=\"{}\"", t.chars().take(30).collect::<String>())).unwrap_or_default(),
-        "tool_call" => format!("{}({})", p.get("tool_name").and_then(|v| v.as_str()).unwrap_or("?"), p.get("input").map(|v| v.to_string()).unwrap_or_default().chars().take(40).collect::<String>()),
-        "tool_result" => format!("inv={}", p.get("invocation_id").and_then(|v| v.as_str()).unwrap_or("?")),
-        "done" => p.get("output_summary").and_then(|v| v.as_str()).map(|s| s.chars().take(50).collect::<String>()).unwrap_or_default(),
-        "error" => p.get("message").and_then(|v| v.as_str()).unwrap_or("?").to_string(),
+        "started" => format!(
+            "entry={}",
+            p.get("entry").and_then(|v| v.as_str()).unwrap_or("?")
+        ),
+        "delta" => p
+            .get("token")
+            .and_then(|v| v.as_str())
+            .map(|t| format!("token=\"{}\"", t.chars().take(30).collect::<String>()))
+            .unwrap_or_default(),
+        "tool_call" => format!(
+            "{}({})",
+            p.get("tool_name").and_then(|v| v.as_str()).unwrap_or("?"),
+            p.get("input")
+                .map(|v| v.to_string())
+                .unwrap_or_default()
+                .chars()
+                .take(40)
+                .collect::<String>()
+        ),
+        "tool_result" => format!(
+            "inv={}",
+            p.get("invocation_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?")
+        ),
+        "done" => p
+            .get("output_summary")
+            .and_then(|v| v.as_str())
+            .map(|s| s.chars().take(50).collect::<String>())
+            .unwrap_or_default(),
+        "error" => p
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?")
+            .to_string(),
         _ => p.to_string().chars().take(60).collect::<String>(),
     }
 }
