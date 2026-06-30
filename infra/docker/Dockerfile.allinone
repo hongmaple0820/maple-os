@@ -2,18 +2,51 @@
 # Single container with both Rust backend + Next.js static export
 
 FROM rust:slim AS chef
-RUN apt-get update && apt-get install -y pkg-config libsqlite3-dev git && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y pkg-config libsqlite3-dev && rm -rf /var/lib/apt/lists/*
 RUN cargo install cargo-chef --locked
 WORKDIR /app
 
 FROM chef AS planner
-COPY . .
+COPY Cargo.toml ./
+COPY .gitmodules ./
+# Copy only workspace member Cargo.toml files (not scale-engine submodule)
+COPY core/maple-engine/Cargo.toml core/maple-engine/Cargo.toml
+COPY core/maple-llm/Cargo.toml core/maple-llm/Cargo.toml
+COPY core/maple-agent/Cargo.toml core/maple-agent/Cargo.toml
+COPY core/maple-kb/Cargo.toml core/maple-kb/Cargo.toml
+COPY core/maple-sync/Cargo.toml core/maple-sync/Cargo.toml
+COPY core/maple-gateway/Cargo.toml core/maple-gateway/Cargo.toml
+COPY core/maple-collab/Cargo.toml core/maple-collab/Cargo.toml
+COPY core/maple-rpc/Cargo.toml core/maple-rpc/Cargo.toml
+COPY core/maple-macro/Cargo.toml core/maple-macro/Cargo.toml
+COPY apps/cli/Cargo.toml apps/cli/Cargo.toml
+COPY server/Cargo.toml server/Cargo.toml
+# Create stub source files so cargo metadata can parse manifests
+RUN mkdir -p core/maple-engine/src core/maple-llm/src core/maple-agent/src \
+    core/maple-kb/src core/maple-sync/src core/maple-gateway/src \
+    core/maple-collab/src core/maple-rpc/src core/maple-macro/src \
+    apps/cli/src server/src && \
+    echo 'pub fn _stub() {}' > core/maple-engine/src/lib.rs && \
+    echo 'pub fn _stub() {}' > core/maple-llm/src/lib.rs && \
+    echo 'pub fn _stub() {}' > core/maple-agent/src/lib.rs && \
+    echo 'pub fn _stub() {}' > core/maple-kb/src/lib.rs && \
+    echo 'pub fn _stub() {}' > core/maple-sync/src/lib.rs && \
+    echo 'pub fn _stub() {}' > core/maple-gateway/src/lib.rs && \
+    echo 'pub fn _stub() {}' > core/maple-collab/src/lib.rs && \
+    echo 'pub fn _stub() {}' > core/maple-rpc/src/lib.rs && \
+    echo 'pub fn _stub() {}' > core/maple-macro/src/lib.rs && \
+    echo 'fn main() {}' > apps/cli/src/main.rs && \
+    echo 'fn main() {}' > server/src/main.rs && \
+    echo 'pub fn _stub() {}' > server/src/lib.rs
+# Remove .gitmodules so cargo doesn't try to resolve scale-engine submodule
+RUN rm -f .gitmodules
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 COPY . .
+RUN rm -f .gitmodules
 RUN cargo build --release -p mapleos-server
 
 # Build frontend static export
@@ -28,19 +61,14 @@ COPY packages/config/package.json packages/config/
 RUN pnpm install --no-frozen-lockfile
 COPY . .
 RUN pnpm --filter=@mapleos/ui --filter=@mapleos/sdk build
-RUN pnpm --filter=mapleos-web exec cross-env NEXT_STATIC_EXPORT=1 next build
+RUN npx cross-env NEXT_STATIC_EXPORT=1 pnpm --filter=mapleos-web build
 
 # Final image — all-in-one
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y ca-certificates libsqlite3-0 && rm -rf /var/lib/apt/lists/*
 
-# Copy server binary
 COPY --from=builder /app/target/release/mapleos-server /usr/local/bin/mapleos-server
-
-# Copy static web export
 COPY --from=frontend /app/apps/web/out /app/web
-
-# Copy migrations + config
 COPY migrations/ /app/migrations/
 COPY config/ /app/config/
 
