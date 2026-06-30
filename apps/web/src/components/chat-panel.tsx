@@ -131,6 +131,7 @@ export function ChatPanel() {
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [isThinking, setIsThinking] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const [agents, setAgents] = useState<AgentOption[]>([]);
   const [selectedAgent, setSelectedAgent] = useState<string>("");
   const [currentSession, setCurrentSession] = useState<string>("");
@@ -162,6 +163,7 @@ export function ChatPanel() {
     loadAgents();
     loadModels();
     loadSessions();
+    setIsLoading(false);
   }, []);
 
   const loadSessions = async () => {
@@ -386,7 +388,31 @@ export function ChatPanel() {
       </div>
 
       <div className="flex-1 overflow-y-auto p-4">
-        {messages.length === 0 && (
+        {/* Loading skeleton (#98) */}
+        {isLoading && (
+          <div className="space-y-4 mt-4">
+            <div className="flex justify-end">
+              <div className="w-2/3 space-y-2">
+                <div className="h-4 bg-muted rounded animate-pulse w-3/4" />
+                <div className="h-4 bg-muted rounded animate-pulse w-1/2" />
+              </div>
+            </div>
+            <div className="flex justify-start">
+              <div className="w-3/4 space-y-2">
+                <div className="h-4 bg-muted rounded animate-pulse w-full" />
+                <div className="h-4 bg-muted rounded animate-pulse w-5/6" />
+                <div className="h-4 bg-muted rounded animate-pulse w-2/3" />
+              </div>
+            </div>
+            <div className="flex justify-start">
+              <div className="w-1/2 space-y-2">
+                <div className="h-4 bg-muted rounded animate-pulse w-full" />
+                <div className="h-4 bg-muted rounded animate-pulse w-4/5" />
+              </div>
+            </div>
+          </div>
+        )}
+        {!isLoading && messages.length === 0 && (
           <div className="space-y-6 mt-8">
             <div className="text-center text-muted-foreground text-sm">{t("chat.emptyState")}</div>
             <div className="grid grid-cols-2 gap-2 max-w-xl mx-auto">
