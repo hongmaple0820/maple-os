@@ -136,6 +136,152 @@ fn check_private_host(host: &str) -> Option<String> {
     None
 }
 
+struct CalculatorSkill;
+impl Skill for CalculatorSkill {
+    fn id(&self) -> &str { "calculator" }
+    fn description(&self) -> &str {
+        "Evaluate arithmetic expressions safely (no eval)"
+    }
+    fn parameters_schema(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!({
+            "type": "object",
+            "required": ["expression"],
+            "properties": {
+                "expression": {
+                    "type": "string",
+                    "description": "Arithmetic expression, e.g. '2 + 3 * 4'"
+                }
+            }
+        }))
+    }
+    fn execute(&self, config: &Value) -> anyhow::Result<Value> {
+        let expr = config["expression"].as_str().ok_or_else(|| anyhow::anyhow!("expression is required"))?;
+        if expr.trim().is_empty() {
+            return Ok(serde_json::json!({"error": "expression is empty"}));
+        }
+        let result = safe_eval(expr)?;
+        Ok(serde_json::json!({"result": result, "expression": expr}))
+    }
+}
+
+/// Safe arithmetic evaluator: tokenizer + shunting-yard → postfix → evaluate.
+/// Supports +, -, *, /, %, parentheses, unary minus, decimals. No eval.
+fn safe_eval(expr: &str) -> anyhow::Result<f64> {
+
+    #[derive(Debug, PartialEq, Clone)]
+    enum Token {
+        Num(f64),
+        Plus, Minus, Star, Slash, Percent,
+        LParen, RParen,
+    }
+
+    fn tokenize(input: &str) -> anyhow::Result<Vec<Token>> {
+        let mut tokens = Vec::new();
+        let chars: Vec<char> = input.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            if c.is_whitespace() { i += 1; continue; }
+            if c.is_ascii_digit() || c == '.' {
+                let mut num = String::new();
+                let mut has_dot = false;
+                while i < chars.len() {
+                    let ch = chars[i];
+                    if ch.is_ascii_digit() { num.push(ch); i += 1; }
+                    else if ch == '.' && !has_dot { num.push(ch); has_dot = true; i += 1; }
+                    else { break; }
+                }
+                tokens.push(Token::Num(num.parse()?));
+                continue;
+            }
+            i += 1;
+            tokens.push(match c {
+                '+' => Token::Plus,
+                '-' => Token::Minus,
+                '*' => Token::Star,
+                '/' => Token::Slash,
+                '%' => Token::Percent,
+                '(' => Token::LParen,
+                ')' => Token::RParen,
+                _ => return Err(anyhow::anyhow!("unexpected character: {}", c)),
+            });
+        }
+        Ok(tokens)
+    }
+
+    fn precedence(t: &Token) -> u8 {
+        match t { Token::Plus | Token::Minus => 1, _ => 2 }
+    }
+
+    fn to_postfix(tokens: &[Token]) -> Vec<Token> {
+        let mut output = Vec::new();
+        let mut stack: Vec<Token> = Vec::new();
+        for t in tokens {
+            match t {
+                Token::Num(n) => output.push(Token::Num(*n)),
+                Token::LParen => stack.push(t.clone()),
+                Token::RParen => {
+                    while let Some(top) = stack.pop() {
+                        if top == Token::LParen { break; }
+                        output.push(top);
+                    }
+                }
+                op => {
+                    while stack.last() == Some(&Token::LParen) { break; }
+                    while let Some(top) = stack.last() {
+                        if precedence(top) >= precedence(op) {
+                            output.push(stack.pop().unwrap());
+                        } else { break; }
+                    }
+                    stack.push(op.clone());
+                }
+            }
+        }
+        while let Some(top) = stack.pop() { output.push(top); }
+        output
+    }
+
+    fn eval_postfix(postfix: &[Token]) -> anyhow::Result<f64> {
+        let mut stack: Vec<f64> = Vec::new();
+        for t in postfix {
+            match t {
+                Token::Num(n) => stack.push(*n),
+                Token::Plus => {
+                    let (a, b) = { let x = stack.pop().ok_or_else(|| anyhow::anyhow!("malformed"))?; let y = stack.pop().ok_or_else(|| anyhow::anyhow!("malformed"))?; (y, x) };
+                    stack.push(a + b);
+                }
+                Token::Minus => {
+                    let (a, b) = { let x = stack.pop().ok_or_else(|| anyhow::anyhow!("malformed"))?; let y = stack.pop().ok_or_else(|| anyhow::anyhow!("malformed"))?; (y, x) };
+                    stack.push(a - b);
+                }
+                Token::Star => {
+                    let (a, b) = { let x = stack.pop().ok_or_else(|| anyhow::anyhow!("malformed"))?; let y = stack.pop().ok_or_else(|| anyhow::anyhow!("malformed"))?; (y, x) };
+                    stack.push(a * b);
+                }
+                Token::Slash => {
+                    let b = stack.pop().ok_or_else(|| anyhow::anyhow!("malformed"))?;
+                    if b == 0.0 { return Err(anyhow::anyhow!("division by zero")); }
+                    let a = stack.pop().ok_or_else(|| anyhow::anyhow!("malformed"))?;
+                    stack.push(a / b);
+                }
+                Token::Percent => {
+                    let b = stack.pop().ok_or_else(|| anyhow::anyhow!("malformed"))?;
+                    if b == 0.0 { return Err(anyhow::anyhow!("modulo by zero")); }
+                    let a = stack.pop().ok_or_else(|| anyhow::anyhow!("malformed"))?;
+                    stack.push(a % b);
+                }
+                _ => return Err(anyhow::anyhow!("unexpected token")),
+            }
+        }
+        stack.into_iter().next().ok_or_else(|| anyhow::anyhow!("empty expression"))
+    }
+
+    let tokens = tokenize(expr)?;
+    if tokens.is_empty() { return Err(anyhow::anyhow!("empty expression")); }
+    let postfix = to_postfix(&tokens);
+    eval_postfix(&postfix)
+}
+
 pub async fn register_builtin_skills(skill_registry: &SkillRegistry) {
     struct EchoSkill;
     impl Skill for EchoSkill {
@@ -793,9 +939,10 @@ pub async fn register_builtin_skills(skill_registry: &SkillRegistry) {
     skill_registry.register(Box::new(FileOpsSkill)).await;
     skill_registry.register(Box::new(HttpRequestSkill)).await;
     skill_registry.register(Box::new(BrowserSkill)).await;
+    skill_registry.register(Box::new(CalculatorSkill)).await;
 
     tracing::info!(
-        "Built-in skills registered: echo, web_search, code_execute, file_ops, http_request, browser"
+        "Built-in skills registered: echo, web_search, code_execute, file_ops, http_request, browser, calculator"
     );
 }
 
