@@ -53,10 +53,36 @@ enum Commands {
         /// Execution ID
         id: String,
     },
-    /// List agents
-    Agents,
+    /// Agent commands (list/register)
+    Agents {
+        #[command(subcommand)]
+        action: Option<AgentCommands>,
+    },
     /// List models
     Models,
+}
+
+#[derive(Subcommand)]
+enum AgentCommands {
+    /// List registered agents
+    List,
+    /// Register a new agent
+    Register {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long, default_value = "websocket")]
+        transport_type: String,
+        #[arg(long, value_delimiter = ',')]
+        capability: Vec<String>,
+        #[arg(long, value_delimiter = ',')]
+        tag: Vec<String>,
+        #[arg(long, default_value_t = 3)]
+        max_concurrent_tasks: u32,
+    },
 }
 
 #[derive(Subcommand)]
@@ -264,20 +290,31 @@ async fn main() -> anyhow::Result<()> {
             }
         }
 
-        Commands::Agents => {
-            let url = format!("{}/api/agents", cli.url);
-            let resp = api_get(&url, &token).await?;
-            if let Some(agents) = resp.get("agents").and_then(|v| v.as_array()) {
-                for agent in agents {
-                    let id = agent.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-                    let name = agent.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                    let status = agent.get("status").and_then(|v| v.as_str()).unwrap_or("?");
-                    println!("  {} [{}] — {}", id, status, name);
-                }
-            } else {
-                println!("{}", serde_json::to_string_pretty(&resp)?);
+        Commands::Agents { action } => match action.unwrap_or(AgentCommands::List) {
+            AgentCommands::List => {
+                let url = format!("{}/api/agents", cli.url);
+                let resp = api_get(&url, &token).await?;
+                if let Some(agents) = resp.get("agents").and_then(|v| v.as_array()) {
+                    for agent in agents {
+                        let id = agent.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                        let name = agent.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                        let status = agent.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                        println!("  {} [{}] - {}", id, status, name);
+                    }
+                } else { println!("{}", serde_json::to_string_pretty(&resp)?); }
             }
-        }
+            AgentCommands::Register { name, description, model, transport_type, capability, tag, max_concurrent_tasks } => {
+                let mut body = serde_json::json!({"name": name, "transport_type": transport_type, "max_concurrent_tasks": max_concurrent_tasks});
+                if let Some(d) = description.filter(|s| !s.trim().is_empty()) { body["description"] = serde_json::Value::String(d); }
+                if let Some(m) = model.filter(|s| !s.trim().is_empty()) { body["model"] = serde_json::Value::String(m); }
+                if !capability.is_empty() { body["capabilities"] = serde_json::Value::Array(capability.into_iter().map(serde_json::Value::String).collect()); }
+                if !tag.is_empty() { body["tags"] = serde_json::Value::Array(tag.into_iter().map(serde_json::Value::String).collect()); }
+                let url = format!("{}/api/agents", cli.url);
+                let resp = api_post(&url, &token, &body).await?;
+                let id = resp.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                println!("\u{2713} Agent registered: {} - {}", id, name);
+            }
+        },
 
         Commands::Models => {
             let url = format!("{}/api/models", cli.url);
