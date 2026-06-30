@@ -6,10 +6,12 @@ RUN apt-get update && apt-get install -y pkg-config libsqlite3-dev && rm -rf /va
 RUN cargo install cargo-chef --locked
 WORKDIR /app
 
+# ── Planner: prepare cargo-chef recipe ──
+# We must NOT include .gitmodules (scale-engine submodule is empty in Docker)
+# and we must create stub src files so cargo metadata can parse all manifests
 FROM chef AS planner
 COPY Cargo.toml ./
-COPY .gitmodules ./
-# Copy only workspace member Cargo.toml files (not scale-engine submodule)
+# Copy all workspace member Cargo.toml files
 COPY core/maple-engine/Cargo.toml core/maple-engine/Cargo.toml
 COPY core/maple-llm/Cargo.toml core/maple-llm/Cargo.toml
 COPY core/maple-agent/Cargo.toml core/maple-agent/Cargo.toml
@@ -21,32 +23,33 @@ COPY core/maple-rpc/Cargo.toml core/maple-rpc/Cargo.toml
 COPY core/maple-macro/Cargo.toml core/maple-macro/Cargo.toml
 COPY apps/cli/Cargo.toml apps/cli/Cargo.toml
 COPY server/Cargo.toml server/Cargo.toml
-# Create stub source files so cargo metadata can parse manifests
-RUN mkdir -p core/maple-engine/src core/maple-llm/src core/maple-agent/src \
-    core/maple-kb/src core/maple-sync/src core/maple-gateway/src \
-    core/maple-collab/src core/maple-rpc/src core/maple-macro/src \
-    apps/cli/src server/src && \
-    echo 'pub fn _stub() {}' > core/maple-engine/src/lib.rs && \
-    echo 'pub fn _stub() {}' > core/maple-llm/src/lib.rs && \
-    echo 'pub fn _stub() {}' > core/maple-agent/src/lib.rs && \
-    echo 'pub fn _stub() {}' > core/maple-kb/src/lib.rs && \
-    echo 'pub fn _stub() {}' > core/maple-sync/src/lib.rs && \
-    echo 'pub fn _stub() {}' > core/maple-gateway/src/lib.rs && \
-    echo 'pub fn _stub() {}' > core/maple-collab/src/lib.rs && \
-    echo 'pub fn _stub() {}' > core/maple-rpc/src/lib.rs && \
-    echo 'pub fn _stub() {}' > core/maple-macro/src/lib.rs && \
-    echo 'fn main() {}' > apps/cli/src/main.rs && \
-    echo 'fn main() {}' > server/src/main.rs && \
+# Create stub source files for ALL workspace members
+# (cargo metadata requires src/lib.rs or src/main.rs to parse a manifest)
+RUN mkdir -p core/maple-engine/src && echo 'pub fn _stub() {}' > core/maple-engine/src/lib.rs && \
+    mkdir -p core/maple-llm/src && echo 'pub fn _stub() {}' > core/maple-llm/src/lib.rs && \
+    mkdir -p core/maple-agent/src && echo 'pub fn _stub() {}' > core/maple-agent/src/lib.rs && \
+    mkdir -p core/maple-kb/src && echo 'pub fn _stub() {}' > core/maple-kb/src/lib.rs && \
+    mkdir -p core/maple-sync/src && echo 'pub fn _stub() {}' > core/maple-sync/src/lib.rs && \
+    mkdir -p core/maple-gateway/src && echo 'pub fn _stub() {}' > core/maple-gateway/src/lib.rs && \
+    mkdir -p core/maple-collab/src && echo 'pub fn _stub() {}' > core/maple-collab/src/lib.rs && \
+    mkdir -p core/maple-rpc/src && echo 'pub fn _stub() {}' > core/maple-rpc/src/lib.rs && \
+    mkdir -p core/maple-macro/src && echo 'pub fn _stub() {}' > core/maple-macro/src/lib.rs && \
+    mkdir -p apps/cli/src && echo 'fn main() {}' > apps/cli/src/main.rs && \
+    mkdir -p server/src && echo 'fn main() {}' > server/src/main.rs && \
     echo 'pub fn _stub() {}' > server/src/lib.rs
-# Remove .gitmodules so cargo doesn't try to resolve scale-engine submodule
-RUN rm -f .gitmodules
+# No .gitmodules = no scale-engine submodule resolution attempt
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
-COPY . .
-RUN rm -f .gitmodules
+# Copy actual source (without .gitmodules)
+COPY Cargo.toml ./
+COPY core/ core/
+COPY apps/cli/ apps/cli/
+COPY server/ server/
+# Remove submodule directory if it exists (empty in Docker context)
+RUN rm -rf core/scale-engine
 RUN cargo build --release -p mapleos-server
 
 # Build frontend static export
@@ -63,7 +66,7 @@ COPY . .
 RUN pnpm --filter=@mapleos/ui --filter=@mapleos/sdk build
 RUN npx cross-env NEXT_STATIC_EXPORT=1 pnpm --filter=mapleos-web build
 
-# Final image — all-in-one
+# Final image
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y ca-certificates libsqlite3-0 && rm -rf /var/lib/apt/lists/*
 
