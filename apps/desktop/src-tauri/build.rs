@@ -34,7 +34,7 @@ fn ensure_sidecar_binary(
         .join(profile)
         .join(&binary_name);
     let sidecar_dir = manifest_dir.join("binaries");
-    let sidecar_binary = sidecar_dir.join(format!("mapleos-server-{target_triple}.exe"));
+    let sidecar_binary = sidecar_dir.join(exe_name(&format!("mapleos-server-{target_triple}")));
 
     if !server_binary.exists() {
         let status = Command::new("cargo")
