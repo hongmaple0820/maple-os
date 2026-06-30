@@ -105,6 +105,7 @@ pub fn build_llm_router(config: &ServerConfig) -> Arc<LlmRouter> {
                 error: None,
             });
         router.register_adapter(Box::new(mock));
+        router.set_fallback_chain(vec!["mock/e2e-model".to_string()]);
         return Arc::new(router);
     }
 

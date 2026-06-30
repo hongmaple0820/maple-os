@@ -1,4 +1,3 @@
-#![allow(clippy::all)]
 pub mod cache;
 pub mod config;
 pub mod db;
@@ -236,7 +235,6 @@ pub fn build_v3_test_router(state: Arc<AppState>) -> Router {
 /// §6 for the API contract. Routes are mounted in `build_v3_test_router`
 /// (lib) and in `main.rs::build_app` (bin) via
 /// `mapleos_server::execution_handlers::*`.
-
 mod v3_handlers {
     #![allow(unused_variables)]
     use axum::extract::{Path, Query, State};
@@ -816,7 +814,7 @@ mod v3_handlers {
         State(state): State<Arc<AppState>>,
         Json(req): Json<MemorySearchReq>,
     ) -> impl IntoResponse {
-        let memory_type = req.memory_type.as_deref().map(|s| maple_engine::memory_service::MemoryLayer::parse_str(s));
+        let memory_type = req.memory_type.as_deref().map(maple_engine::memory_service::MemoryLayer::parse_str);
         let query = maple_engine::memory_service::MemoryQuery {
             agent_id: req.agent_id,
             query_text: req.query_text,
@@ -1496,7 +1494,8 @@ pub mod audit_handlers {
         Query(q): Query<AuditQuery>,
     ) -> Json<serde_json::Value> {
         let limit = q.limit.unwrap_or(100).clamp(1, 1000);
-        let rows: Result<Vec<(i64, String, String, Option<String>, i64, i64, Option<String>, Option<String>, Option<String>, i64)>, _> = if let Some(path) = q.path {
+        type AuditRow = (i64, String, String, Option<String>, i64, i64, Option<String>, Option<String>, Option<String>, i64);
+        let rows: Result<Vec<AuditRow>, _> = if let Some(path) = q.path {
             sqlx::query_as(
                 "SELECT id, method, path, query, status, duration_ms, user_agent, client_ip, actor, created_at
                    FROM audit_logs WHERE path = ? ORDER BY created_at DESC LIMIT ?"

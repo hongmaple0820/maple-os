@@ -10,6 +10,7 @@
 //! Lives in the lib crate so that:
 //! - the bin crate can mount it via `mapleos_server::execution_handlers::*`
 //! - the lib crate's integration tests can exercise it via `build_v3_test_router`
+//!
 //! Both share the same `AppState` (from `crate::state`).
 
 use axum::extract::{Path, State};
@@ -185,7 +186,7 @@ pub async fn sse_events_handler(
             let exec = match recorder.get_execution(&exec_id).await {
                 Ok(Some(e)) => e,
                 Ok(None) => {
-                    let _ = yield Ok(SseEvent::default()
+                    yield Ok(SseEvent::default()
                         .event("error")
                         .data(serde_json::json!({
                             "error": "execution_not_found",
@@ -194,7 +195,7 @@ pub async fn sse_events_handler(
                     return;
                 }
                 Err(e) => {
-                    let _ = yield Ok(SseEvent::default()
+                    yield Ok(SseEvent::default()
                         .event("error")
                         .data(serde_json::json!({
                             "error": "internal_error",
@@ -207,7 +208,7 @@ pub async fn sse_events_handler(
             let events = match recorder.list_events(&exec_id).await {
                 Ok(ev) => ev,
                 Err(e) => {
-                    let _ = yield Ok(SseEvent::default()
+                    yield Ok(SseEvent::default()
                         .event("error")
                         .data(serde_json::json!({
                             "error": "internal_error",
@@ -232,13 +233,13 @@ pub async fn sse_events_handler(
                 let sse_evt = SseEvent::default()
                     .event(&evt.event_type)
                     .data(payload.to_string());
-                let _ = yield Ok(sse_evt);
+                yield Ok(sse_evt);
             }
             last_seen_count = events.len() as i64;
 
             match exec.status.as_str() {
                 "success" | "failed" | "cancelled" => {
-                    let _ = yield Ok(SseEvent::default()
+                    yield Ok(SseEvent::default()
                         .event("stream_end")
                         .data(serde_json::json!({
                             "execution_id": exec.id,

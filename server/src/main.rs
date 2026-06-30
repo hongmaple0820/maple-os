@@ -1,4 +1,3 @@
-#![allow(clippy::all)]
 // All shared modules live in the lib crate (server/src/lib.rs) so that
 // bin and integration tests share the same AppState / handler types.
 // T0-4 in docs/MapleOS_Implementation_Plan_2026Q3.md tracks the
@@ -1969,7 +1968,7 @@ async fn device_login_handler(
     } else {
         // Create a new device user with a random password hash (not used for login)
         let user_id = uuid::Uuid::new_v4().to_string();
-        let password_hash = bcrypt::hash(&uuid::Uuid::new_v4().to_string(), bcrypt::DEFAULT_COST)
+        let password_hash = bcrypt::hash(uuid::Uuid::new_v4().to_string(), bcrypt::DEFAULT_COST)
             .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
 
         sqlx::query(
@@ -2765,7 +2764,8 @@ async fn update_comment_handler(
 async fn list_activity_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
 ) -> axum::Json<serde_json::Value> {
-    let rows: Vec<(i64, String, String, Option<String>, Option<String>, i64)> =
+    type ActivityRow = (i64, String, String, Option<String>, Option<String>, i64);
+    let rows: Vec<ActivityRow> =
         sqlx::query_as("SELECT id, actor_name, action, target, details, created_at FROM activity_log ORDER BY created_at DESC LIMIT 50")
             .fetch_all(&state.db).await.unwrap_or_default();
     let activities: Vec<serde_json::Value> = rows.into_iter()
@@ -2921,7 +2921,8 @@ async fn v3_list_message_attachments_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
     axum::extract::Path(group_id): axum::extract::Path<String>,
 ) -> axum::Json<serde_json::Value> {
-    let rows: Vec<(String, String, String, Option<String>, String, i64, i64)> = sqlx::query_as(
+    type AttachmentRow = (String, String, String, Option<String>, String, i64, i64);
+    let rows: Vec<AttachmentRow> = sqlx::query_as(
         "SELECT id, filename, content_type, message_id, uploader_id, size, created_at FROM message_attachments WHERE group_id = ? ORDER BY created_at DESC LIMIT 50"
     ).bind(&group_id).fetch_all(&state.db).await.unwrap_or_default();
 
@@ -3247,7 +3248,8 @@ async fn v3_list_audit_logs_handler(
     let limit = q["limit"].as_u64().unwrap_or(100).clamp(1, 1000) as i64;
     let path_filter = q["path"].as_str().map(|s| s.to_string());
 
-    let rows: Result<Vec<(i64, String, String, Option<String>, i64, i64, Option<String>, Option<String>, Option<String>, i64)>, _> = if let Some(path) = path_filter {
+    type AuditLogRow = (i64, String, String, Option<String>, i64, i64, Option<String>, Option<String>, Option<String>, i64);
+    let rows: Result<Vec<AuditLogRow>, _> = if let Some(path) = path_filter {
         sqlx::query_as(
             "SELECT id, method, path, query, status, duration_ms, user_agent, client_ip, actor, created_at
                FROM audit_logs WHERE path = ? ORDER BY created_at DESC LIMIT ?"
@@ -4259,7 +4261,7 @@ async fn v3_send_message_handler(
             state.event_bus.publish(maple_engine::event_bus::Event::GroupMessageSent {
                 group_id: group_id.clone(),
                 message_id: msg.id.clone(),
-                sender_id: sender_id,
+                sender_id,
                 content: req.content,
             }).await;
             axum::Json(serde_json::json!({ "message": msg }))
@@ -4929,10 +4931,10 @@ async fn v3_update_rule_handler(
         if let Some(name) = req.get("name").and_then(|v| v.as_str()) {
             rule.name = name.to_string();
         }
-        if let Some(rt) = req.get("rule_type") {
-            if let Ok(parsed) = serde_json::from_value::<maple_collab::group_rules::GroupRuleType>(rt.clone()) {
-                rule.rule_type = parsed;
-            }
+        if let Some(rt) = req.get("rule_type")
+            && let Ok(parsed) = serde_json::from_value::<maple_collab::group_rules::GroupRuleType>(rt.clone())
+        {
+            rule.rule_type = parsed;
         }
         rules_engine.update_rule(&rule_id, rule);
         axum::Json(serde_json::json!({ "status": "updated" }))

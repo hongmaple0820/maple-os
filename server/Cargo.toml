@@ -34,6 +34,8 @@ async-stream = "0.3"
 tokio-stream = "0.1"
 prometheus = { workspace = true }
 dashmap = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
 
 [dev-dependencies]
 tower = { workspace = true, features = ["util"] }

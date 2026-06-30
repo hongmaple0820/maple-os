@@ -15,7 +15,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/version-2.1.0-orange?style=flat-square" alt="version" />
   <img src="https://img.shields.io/badge/rust-1.95-blue?style=flat-square" alt="rust" />
-  <img src="https://img.shields.io/badge/node-26-blue?style=flat-square" alt="node" />
+  <img src="https://img.shields.io/badge/node-24-blue?style=flat-square" alt="node" />
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="license" />
   <a href="https://scale-os.hongmaple.top/"><img src="https://img.shields.io/badge/官网-scale--os.hongmaple.top-blue?style=flat-square" alt="官网" /></a>
 </p>
@@ -113,7 +113,7 @@ mapleos/
 ### 前置要求
 
 - Rust 1.95+ (edition 2024)
-- Node.js 26+ & pnpm 11+
+- Node.js 24+ & pnpm 11+
 - Ollama (可选，用于本地 LLM)
 
 ### 构建 & 运行
@@ -138,7 +138,7 @@ pnpm desktop:build
 ### Docker 一键部署
 
 ```bash
-docker compose -f infra/docker/docker-compose.yml up
+docker compose -f infra/docker/docker-compose.yml --profile allinone up -d
 ```
 
 ### LLM 路由配置

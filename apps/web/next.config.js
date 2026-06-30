@@ -3,9 +3,6 @@ const path = require("path");
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   transpilePackages: ["@mapleos/ui", "@mapleos/sdk"],
-  typescript: {
-    ignoreBuildErrors: true,
-  },
   output: process.env.NEXT_STATIC_EXPORT ? "export" : undefined,
   async rewrites() {
     if (process.env.NEXT_STATIC_EXPORT) return [];

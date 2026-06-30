@@ -556,14 +556,14 @@ pub async fn register_builtin_skills(skill_registry: &SkillRegistry) {
             let block_private = std::env::var("HTTP_BLOCK_PRIVATE")
                 .map(|v| v != "false" && v != "0")
                 .unwrap_or(true);
-            if block_private {
-                if let Some(block_reason) = check_private_host(host) {
-                    return Ok(serde_json::json!({
-                        "url": url,
-                        "error": format!("blocked: {block_reason}"),
-                        "hint": "set HTTP_BLOCK_PRIVATE=false to allow (SSRF risk)",
-                    }));
-                }
+            if block_private
+                && let Some(block_reason) = check_private_host(host)
+            {
+                return Ok(serde_json::json!({
+                    "url": url,
+                    "error": format!("blocked: {block_reason}"),
+                    "hint": "set HTTP_BLOCK_PRIVATE=false to allow (SSRF risk)",
+                }));
             }
 
             let rt = tokio::runtime::Handle::current();

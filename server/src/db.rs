@@ -465,6 +465,12 @@ pub async fn run_migrations(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
     run_v3_migration_020(pool).await?;
     // --- 021: Performance composite indexes ---
     run_v3_migration_021(pool).await?;
+    run_v3_migration_026(pool).await?;
+    run_v3_migration_027(pool).await?;
+    run_v3_migration_028(pool).await?;
+    run_v3_migration_029(pool).await?;
+    run_v3_migration_030(pool).await?;
+    run_v3_migration_031(pool).await?;
 
     tracing::info!("Database migrations completed (including v3)");
     Ok(())
@@ -1664,4 +1670,73 @@ async fn run_v3_migration_021(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
 
     tracing::info!("v3 migration 021 (performance composite indexes) completed");
     Ok(())
+}
+
+
+async fn run_v3_migration_026(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
+    sqlx::query("CREATE TABLE IF NOT EXISTS agent_core_memory (agent_id TEXT NOT NULL, block_type TEXT NOT NULL CHECK(block_type IN ('persona', 'goals', 'pinned_facts', 'custom')), block_key TEXT NOT NULL, block_value TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (agent_id, block_type, block_key))").execute(pool).await?;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_cm_agent ON agent_core_memory(agent_id)").execute(pool).await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_cm_agent_type ON agent_core_memory(agent_id, block_type)").execute(pool).await;
+    let _ = sqlx::query("ALTER TABLE agent_memories ADD COLUMN importance_score REAL DEFAULT 0.5").execute(pool).await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_am_importance ON agent_memories(importance_score DESC)").execute(pool).await;
+    tracing::info!("v3 migration 026 (MemGPT core memory) completed"); Ok(())
+}
+
+async fn run_v3_migration_027(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
+    sqlx::query("CREATE TABLE IF NOT EXISTS kb_documents_acl (document_id TEXT NOT NULL, principal_type TEXT NOT NULL CHECK(principal_type IN ('user', 'group', 'role')), principal_id TEXT NOT NULL, permission TEXT NOT NULL CHECK(permission IN ('read', 'write', 'admin')), created_at INTEGER NOT NULL, PRIMARY KEY (document_id, principal_type, principal_id))").execute(pool).await?;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_kb_acl_doc ON kb_documents_acl(document_id)").execute(pool).await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_kb_acl_principal ON kb_documents_acl(principal_type, principal_id)").execute(pool).await;
+    sqlx::query("CREATE TABLE IF NOT EXISTS kb_documents_verification (document_id TEXT PRIMARY KEY, verified_by TEXT NOT NULL, verified_at INTEGER NOT NULL, expires_at INTEGER, verification_notes TEXT)").execute(pool).await?;
+    let _ = sqlx::query("ALTER TABLE kb_chunks ADD COLUMN acl_hash TEXT").execute(pool).await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_kb_chunks_acl ON kb_chunks(acl_hash)").execute(pool).await;
+    tracing::info!("v3 migration 027 (KB ACL) completed"); Ok(())
+}
+
+async fn run_v3_migration_028(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
+    sqlx::query("CREATE TABLE IF NOT EXISTS rbac_roles (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, description TEXT, is_system INTEGER NOT NULL DEFAULT 0)").execute(pool).await?;
+    sqlx::query("CREATE TABLE IF NOT EXISTS rbac_permissions (id TEXT PRIMARY KEY, resource TEXT NOT NULL, action TEXT NOT NULL, resource_id TEXT, CONSTRAINT uniq_permission UNIQUE (resource, action, resource_id))").execute(pool).await?;
+    sqlx::query("CREATE TABLE IF NOT EXISTS rbac_role_permissions (role_id TEXT NOT NULL, permission_id TEXT NOT NULL, PRIMARY KEY (role_id, permission_id))").execute(pool).await?;
+    sqlx::query("CREATE TABLE IF NOT EXISTS rbac_user_roles (user_id TEXT NOT NULL, role_id TEXT NOT NULL, workspace_id TEXT, assigned_at INTEGER NOT NULL, PRIMARY KEY (user_id, role_id, workspace_id))").execute(pool).await?;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_rbac_ur_user ON rbac_user_roles(user_id)").execute(pool).await;
+    for (id, name, desc) in [("role-admin","admin","Full access"),("role-editor","editor","Create/edit"),("role-operator","operator","Execute"),("role-viewer","viewer","Read-only"),("role-auditor","auditor","Read+audit")] {
+        let _ = sqlx::query("INSERT OR IGNORE INTO rbac_roles (id, name, description, is_system) VALUES (?, ?, ?, 1)").bind(id).bind(name).bind(desc).execute(pool).await;
+    }
+    for (id, resource, action) in [("perm-workflow-create","workflow","create"),("perm-workflow-read","workflow","read"),("perm-workflow-execute","workflow","execute"),("perm-workflow-delete","workflow","delete"),("perm-agent-create","agent","create"),("perm-agent-read","agent","read"),("perm-agent-execute","agent","execute"),("perm-kb-read","kb","read"),("perm-kb-write","kb","write"),("perm-tool-execute","tool","execute"),("perm-tool-approve","tool","approve"),("perm-compliance-export","compliance","export"),("perm-audit-read","audit","read"),("perm-user-manage","user","manage")] {
+        let _ = sqlx::query("INSERT OR IGNORE INTO rbac_permissions (id, resource, action) VALUES (?, ?, ?)").bind(id).bind(resource).bind(action).execute(pool).await;
+    }
+    let _ = sqlx::query("INSERT OR IGNORE INTO rbac_role_permissions (role_id, permission_id) SELECT 'role-admin', id FROM rbac_permissions").execute(pool).await;
+    for perm in ["perm-workflow-create","perm-workflow-read","perm-workflow-execute","perm-agent-create","perm-agent-read","perm-agent-execute","perm-kb-read","perm-kb-write","perm-tool-execute"] {
+        let _ = sqlx::query("INSERT OR IGNORE INTO rbac_role_permissions (role_id, permission_id) VALUES ('role-editor', ?)").bind(perm).execute(pool).await;
+    }
+    for perm in ["perm-workflow-read","perm-workflow-execute","perm-agent-read","perm-agent-execute","perm-kb-read","perm-tool-execute"] {
+        let _ = sqlx::query("INSERT OR IGNORE INTO rbac_role_permissions (role_id, permission_id) VALUES ('role-operator', ?)").bind(perm).execute(pool).await;
+    }
+    for perm in ["perm-workflow-read","perm-agent-read","perm-kb-read"] {
+        let _ = sqlx::query("INSERT OR IGNORE INTO rbac_role_permissions (role_id, permission_id) VALUES ('role-viewer', ?)").bind(perm).execute(pool).await;
+    }
+    for perm in ["perm-workflow-read","perm-agent-read","perm-kb-read","perm-audit-read","perm-compliance-export"] {
+        let _ = sqlx::query("INSERT OR IGNORE INTO rbac_role_permissions (role_id, permission_id) VALUES ('role-auditor', ?)").bind(perm).execute(pool).await;
+    }
+    tracing::info!("v3 migration 028 (RBAC) completed"); Ok(())
+}
+
+async fn run_v3_migration_029(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
+    sqlx::query("CREATE TABLE IF NOT EXISTS execution_interrupts (id TEXT PRIMARY KEY, execution_id TEXT NOT NULL, node_id TEXT, interrupt_type TEXT NOT NULL CHECK(interrupt_type IN ('approval', 'edit_state', 'choose_option', 'custom')), interrupt_payload TEXT NOT NULL, state_snapshot TEXT, created_at INTEGER NOT NULL, resolved_at INTEGER, resolution_type TEXT CHECK(resolution_type IN ('resume', 'resume_with_patch', 'cancel', 'branch')), resolution_payload TEXT)").execute(pool).await?;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_interrupt_exec ON execution_interrupts(execution_id)").execute(pool).await;
+    sqlx::query("CREATE TABLE IF NOT EXISTS execution_checkpoints (id TEXT PRIMARY KEY, execution_id TEXT NOT NULL, node_id TEXT NOT NULL, checkpoint_data TEXT NOT NULL, created_at INTEGER NOT NULL, parent_checkpoint_id TEXT, branch_of TEXT)").execute(pool).await?;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_cp_exec ON execution_checkpoints(execution_id, created_at)").execute(pool).await;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_cp_parent ON execution_checkpoints(parent_checkpoint_id)").execute(pool).await;
+    tracing::info!("v3 migration 029 (HITL) completed"); Ok(())
+}
+
+async fn run_v3_migration_030(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
+    sqlx::query("CREATE TABLE IF NOT EXISTS cloud_sandboxes (id TEXT PRIMARY KEY, image TEXT NOT NULL, cpu_limit REAL NOT NULL DEFAULT 0.5, memory_mb INTEGER NOT NULL DEFAULT 512, network_policy TEXT NOT NULL DEFAULT 'none', fs_policy TEXT NOT NULL DEFAULT 'workspace_write', status TEXT NOT NULL DEFAULT 'pending', created_at INTEGER NOT NULL, hibernated_at INTEGER, destroyed_at INTEGER, env TEXT)").execute(pool).await?;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_sandbox_status ON cloud_sandboxes(status)").execute(pool).await;
+    tracing::info!("v3 migration 030 (cloud sandboxes) completed"); Ok(())
+}
+
+async fn run_v3_migration_031(pool: &sqlx::SqlitePool) -> anyhow::Result<()> {
+    sqlx::query("CREATE TABLE IF NOT EXISTS channel_integrations (id TEXT PRIMARY KEY, channel_type TEXT NOT NULL, name TEXT NOT NULL, config TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'disconnected', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)").execute(pool).await?;
+    let _ = sqlx::query("CREATE INDEX IF NOT EXISTS idx_channel_type ON channel_integrations(channel_type)").execute(pool).await;
+    tracing::info!("v3 migration 031 (channel integrations) completed"); Ok(())
 }

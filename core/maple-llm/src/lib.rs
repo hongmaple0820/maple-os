@@ -9,6 +9,7 @@ pub mod request;
 pub mod response;
 pub mod router;
 pub mod stream;
+pub mod stream_part;
 pub mod token_counter;
 pub mod usage;
 

@@ -26,6 +26,7 @@ pub struct SandboxResult {
 /// - temp_dir prevents filesystem access outside sandbox
 /// - timeout prevents infinite loops
 /// - output truncation prevents memory exhaustion
+///
 /// WASM (via wasmtime) would add: no syscall access, CPU/memory caps,
 /// and no fork/exec — but at the cost of a ~50MB dependency and longer
 /// compile times. When the product needs multi-tenant untrusted code
@@ -40,20 +41,12 @@ pub struct CodeSandbox {
 }
 
 /// Permission levels for code execution (#58)
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, Default)]
 pub enum SandboxPermission {
-    /// Read-only: no filesystem writes, no network
     ReadOnly,
-    /// Workspace write: can write to sandbox temp dir only
+    #[default]
     WorkspaceWrite,
-    /// Danger: full access (requires approval)
     Danger,
-}
-
-impl Default for SandboxPermission {
-    fn default() -> Self {
-        Self::WorkspaceWrite
-    }
 }
 
 impl CodeSandbox {

@@ -44,20 +44,19 @@ where
 #[allow(dead_code)]
 pub fn extract_token(parts: &Parts) -> Option<String> {
     // Try Authorization header first
-    if let Some(auth) = parts.headers.get("Authorization").and_then(|v| v.to_str().ok()) {
-        if let Some(token) = auth.strip_prefix("Bearer ") {
-            if !token.is_empty() {
-                return Some(token.to_string());
-            }
-        }
+    if let Some(auth) = parts.headers.get("Authorization").and_then(|v| v.to_str().ok())
+        && let Some(token) = auth.strip_prefix("Bearer ")
+        && !token.is_empty()
+    {
+        return Some(token.to_string());
     }
     // Try query param
     if let Some(query) = parts.uri.query() {
         for pair in query.split('&') {
-            if let Some(val) = pair.strip_prefix("token=") {
-                if !val.is_empty() {
-                    return Some(val.to_string());
-                }
+            if let Some(val) = pair.strip_prefix("token=")
+                && !val.is_empty()
+            {
+                return Some(val.to_string());
             }
         }
     }

@@ -1,4 +1,4 @@
-#![allow(clippy::all)]
+#![allow(clippy::derivable_impls, clippy::enum_variant_names)]
 //! MapleOS CLI client (#25)
 //!
 //! Usage:

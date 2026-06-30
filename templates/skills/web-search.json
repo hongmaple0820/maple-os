@@ -1,15 +1,54 @@
 {
   "id": "web-search",
   "name": "Web Search",
-  "description": "Search the web for real-time information",
+  "description": "Search the web",
   "version": "1.0.0",
   "author": "MapleOS",
   "parameters_schema": {
     "type": "object",
-    "required": ["query"],
+    "required": [
+      "query"
+    ],
     "properties": {
-      "query": {"type": "string", "description": "Search query"},
-      "num_results": {"type": "number", "description": "Max results (default 5)"}
+      "query": {
+        "type": "string"
+      },
+      "num_results": {
+        "type": "number",
+        "default": 5
+      }
+    }
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "results"
+    ],
+    "properties": {
+      "results": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": [
+            "title",
+            "url"
+          ],
+          "properties": {
+            "title": {
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            },
+            "snippet": {
+              "type": "string"
+            },
+            "score": {
+              "type": "number"
+            }
+          }
+        }
+      }
     }
   }
 }

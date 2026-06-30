@@ -14,6 +14,8 @@ pub mod agent_hooks;
 pub mod workflow_service;
 pub mod execution_chain;
 pub mod trigger;
+pub mod reflection;
+pub mod tot_executor;
 
 pub use workflow::{Workflow, WorkflowNode, NodeType, TriggerConfig, WorkflowExecution, ExecStatus};
 pub use executor::WorkflowExecutor;

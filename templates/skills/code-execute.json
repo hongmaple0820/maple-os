@@ -1,16 +1,55 @@
 {
   "id": "code-execute",
   "name": "Code Execute",
-  "description": "Execute code in a sandboxed environment",
+  "description": "Execute code",
   "version": "1.0.0",
   "author": "MapleOS",
   "parameters_schema": {
     "type": "object",
-    "required": ["language", "code"],
+    "required": [
+      "language",
+      "code"
+    ],
     "properties": {
-      "language": {"type": "string", "description": "javascript or python"},
-      "code": {"type": "string", "description": "Code to execute"},
-      "timeout": {"type": "number", "description": "Timeout in seconds (max 30)"}
+      "language": {
+        "type": "string",
+        "enum": [
+          "javascript",
+          "python"
+        ]
+      },
+      "code": {
+        "type": "string"
+      },
+      "timeout": {
+        "type": "number",
+        "default": 10,
+        "maximum": 30
+      }
+    }
+  },
+  "output_schema": {
+    "type": "object",
+    "required": [
+      "exit_code"
+    ],
+    "properties": {
+      "stdout": {
+        "type": "string"
+      },
+      "stderr": {
+        "type": "string"
+      },
+      "exit_code": {
+        "type": "number"
+      },
+      "duration_ms": {
+        "type": "number"
+      },
+      "truncated": {
+        "type": "boolean",
+        "default": false
+      }
     }
   }
 }

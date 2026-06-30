@@ -3,6 +3,7 @@ pub mod indexer;
 pub mod retriever;
 pub mod evolver;
 pub mod memory;
+pub mod memory_scoring;
 pub mod prompt_version;
 pub mod bm25;
 pub mod vector_store;

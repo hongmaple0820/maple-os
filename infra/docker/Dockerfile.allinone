@@ -29,9 +29,9 @@ COPY . .
 RUN cargo build --release -p mapleos-server
 
 # Build frontend static export
-FROM node:20-slim AS frontend
+FROM node:24-slim AS frontend
 WORKDIR /app
-RUN npm install -g pnpm
+RUN npm install -g pnpm@11.3.0
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json ./
 COPY apps/web/package.json apps/web/
 COPY packages/ui/package.json packages/ui/
