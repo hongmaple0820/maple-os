@@ -1,9 +1,8 @@
 # MapleOS All-in-One Dockerfile
 # Single container with both Rust backend + Next.js static export
-# No separate web server needed — Rust serves the static files directly.
 
 FROM rust:slim AS chef
-RUN apt-get update && apt-get install -y pkg-config libsqlite3-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y pkg-config libsqlite3-dev git && rm -rf /var/lib/apt/lists/*
 RUN cargo install cargo-chef --locked
 WORKDIR /app
 
@@ -29,7 +28,7 @@ COPY packages/config/package.json packages/config/
 RUN pnpm install --no-frozen-lockfile
 COPY . .
 RUN pnpm --filter=@mapleos/ui --filter=@mapleos/sdk build
-RUN NEXT_STATIC_EXPORT=1 pnpm --filter=mapleos-web build
+RUN pnpm --filter=mapleos-web exec cross-env NEXT_STATIC_EXPORT=1 next build
 
 # Final image — all-in-one
 FROM debian:bookworm-slim
