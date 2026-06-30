@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "tauri dev",
     "build": "tauri build",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "build:static": "cross-env NEXT_STATIC_EXPORT=1 pnpm --filter=mapleos-web build"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
@@ -15,6 +16,7 @@
     "@tauri-apps/plugin-shell": "^2.0.0"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.0.0"
+    "@tauri-apps/cli": "^2.0.0",
+    "cross-env": "^7.0.3"
   }
 }

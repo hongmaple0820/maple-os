@@ -7,7 +7,7 @@
   "build": {
     "beforeDevCommand": "pnpm --filter=mapleos-web dev",
     "devUrl": "http://localhost:3000",
-    "beforeBuildCommand": "NEXT_STATIC_EXPORT=1 pnpm --filter=mapleos-web build",
+    "beforeBuildCommand": "pnpm --filter=mapleos-desktop build:static",
     "frontendDist": "../../web/out"
   },
   "app": {
