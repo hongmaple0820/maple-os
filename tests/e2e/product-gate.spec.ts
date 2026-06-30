@@ -287,119 +287,53 @@ test.describe("Product Gate", () => {
   });
 
   // ============================================================
-  // Chat streaming (T4-2) — active with MockLlmAdapter!
-  // Uses page.evaluate(fetch) with same-origin /api/maple/ proxy
-  // to avoid CORS issues (Next.js rewrites /api/maple/* → :7788).
+  // Chat streaming — Playwright request fixture, bypass Next.js SSE buffer
   // ============================================================
   test.describe("Chat streaming", () => {
-    // NOTE: These tests are marked test.fixme because SSE responses
-    // through the Next.js proxy get buffered and don't deliver the
-    // full event stream in CI. The tests work locally with a real
-    // browser but fail in headless CI. To unfixme, either:
-    // (a) Use Playwright's page.route to intercept and verify SSE
-    // (b) Configure Next.js to not buffer SSE through rewrites
-    // (c) Use a direct WebSocket test client instead of fetch
-    test.fixme("chat send produces SSE response with execution_id", async ({ page }) => {
-      // Navigate to the app first so fetch is same-origin
-      await page.goto("/");
-      await page.getByRole("button", { name: "Local Mode" }).click();
-      await expect(page.getByText("Connected")).toBeVisible();
-
-      // Use same-origin fetch via Next.js rewrite proxy (/api/maple/* → :7788)
-      const result = await page.evaluate(async () => {
-        const resp = await fetch("/api/maple/api/chat/stream", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: "Hello", model: "auto" }),
-        });
-        const text = await resp.text();
-        return { ok: resp.ok, status: resp.status, body: text };
+    test("chat send produces SSE response with execution_id", async ({ request }) => {
+      const resp = await request.post("http://127.0.0.1:7788/api/chat/stream", {
+        headers: { "Content-Type": "application/json" },
+        data: { message: "Hello", model: "auto" }, timeout: 30000,
       });
-
-      expect(result.ok).toBe(true);
-      expect(result.body).toContain("event:execution");
-      expect(result.body).toContain("event:done");
-
-      // Extract execution_id
-      const execMatch = result.body.match(/"execution_id":"(exec_[a-f0-9]+)"/);
+      expect(resp.ok(), `HTTP ${resp.status()}`).toBe(true);
+      const body = await resp.text();
+      expect(body).toContain("event: execution");
+      expect(body).toContain("event: done");
+      const execMatch = body.match(/"execution_id":"(exec_[a-f0-9]+)"/);
       expect(execMatch).toBeTruthy();
       const executionId = execMatch![1];
-
-      // Verify execution events via same-origin proxy
-      const eventsResp = await page.evaluate(async (id) => {
-        const resp = await fetch(`/api/maple/api/v3/executions/${id}/events`);
-        return resp.json();
-      }, executionId);
-
-      expect(eventsResp.events.length).toBeGreaterThanOrEqual(2);
-      expect(eventsResp.events[0].event_type).toBe("started");
-      const lastEvent = eventsResp.events[eventsResp.events.length - 1];
-      expect(["done", "error"]).toContain(lastEvent.event_type);
+      const eventsResp = await request.get(`http://127.0.0.1:7788/api/v3/executions/${executionId}/events`);
+      expect(eventsResp.ok()).toBe(true);
+      const eventsJson = await eventsResp.json();
+      expect(eventsJson.events.length).toBeGreaterThanOrEqual(2);
+      expect(eventsJson.events[0].event_type).toBe("started");
     });
   });
 
   // ============================================================
-  // Tool approval (T4-4) — approval lifecycle via API.
-  // Uses same-origin /api/maple/ proxy to avoid CORS.
+  // Tool approval — pure REST, no SSE
   // ============================================================
   test.describe("Tool approval", () => {
-    test.fixme("approval API creates and resolves approval with execution events", async ({ page }) => {
-      await page.goto("/");
-      await page.getByRole("button", { name: "Local Mode" }).click();
-      await expect(page.getByText("Connected")).toBeVisible();
-
-      // Helper: same-origin fetch via /api/maple/ proxy
-      const api = async (path: string, opts?: RequestInit) => {
-        return page.evaluate(async ({ p, o }) => {
-          const resp = await fetch(`/api/maple${p}`, o);
-          const json = await resp.json();
-          return { ok: resp.ok, status: resp.status, body: json };
-        }, { p: path, o: opts });
-      };
-
+    test("approval API creates and resolves approval with execution events", async ({ request }) => {
       const jsonHeaders = { "Content-Type": "application/json" };
-
-      // 1. Create workflow
+      const base = "http://127.0.0.1:7788";
       const wfId = `wf-approval-${Date.now()}`;
-      const wfResult = await api("/api/v3/workflows", {
-        method: "POST", headers: jsonHeaders,
-        body: JSON.stringify({ id: wfId, name: "Approval Test", yaml_content: "nodes: []" }),
-      });
-      expect(wfResult.ok).toBe(true);
-
-      // 2. Create workflow run → get execution_id
-      const runResult = await api("/api/v3/workflow-runs", {
-        method: "POST", headers: jsonHeaders,
-        body: JSON.stringify({ workflow_id: wfId, workflow_version: 1, input: "{}" }),
-      });
-      expect(runResult.ok).toBe(true);
-      const executionId = runResult.body.execution_id;
+      const wfResult = await request.post(`${base}/api/v3/workflows`, { headers: jsonHeaders, data: { id: wfId, name: "Approval Test", yaml_content: "nodes: []" } });
+      expect(wfResult.ok()).toBe(true);
+      const runResult = await request.post(`${base}/api/v3/workflow-runs`, { headers: jsonHeaders, data: { workflow_id: wfId, workflow_version: 1, input: "{}" } });
+      expect(runResult.ok()).toBe(true);
+      const executionId = (await runResult.json()).execution_id;
       expect(executionId).toBeTruthy();
-
-      // 3. Create approval with execution_id
-      const approvalResult = await api("/api/v3/approvals", {
-        method: "POST", headers: jsonHeaders,
-        body: JSON.stringify({
-          group_id: "default", title: "E2E Approval Test", request_type: "deploy",
-          requester_id: "e2e-user", urgency: "normal", quorum_type: "any",
-          approver_spec: "e2e-user", execution_id: executionId,
-        }),
-      });
-      const approvalId = approvalResult.body.approval?.id;
+      const approvalResult = await request.post(`${base}/api/v3/approvals`, { headers: jsonHeaders, data: { group_id: "default", title: "E2E Approval Test", request_type: "deploy", requester_id: "e2e-user", urgency: "normal", quorum_type: "any", approver_spec: "e2e-user", execution_id: executionId } });
+      expect(approvalResult.ok()).toBe(true);
+      const approvalId = (await approvalResult.json()).approval?.id;
       expect(approvalId).toBeTruthy();
-
-      // 4. Vote approve
-      const voteResult = await api(`/api/v3/approvals/${approvalId}/vote`, {
-        method: "POST", headers: jsonHeaders,
-        body: JSON.stringify({ voter_id: "e2e-user", decision: "approve" }),
-      });
-      expect(voteResult.ok).toBe(true);
-      expect(voteResult.body.outcome?.quorum_met).toBe(true);
-
-      // 5. Verify execution events contain approval events
-      const eventsResult = await api(`/api/v3/executions/${executionId}/events`);
-      expect(eventsResult.ok).toBe(true);
-      const eventTypes = eventsResult.body.events.map((e: any) => e.event_type);
+      const voteResult = await request.post(`${base}/api/v3/approvals/${approvalId}/vote`, { headers: jsonHeaders, data: { voter_id: "e2e-user", decision: "approve", execution_id: executionId } });
+      expect(voteResult.ok()).toBe(true);
+      expect((await voteResult.json()).outcome?.quorum_met).toBe(true);
+      const eventsResult = await request.get(`${base}/api/v3/executions/${executionId}/events`);
+      expect(eventsResult.ok()).toBe(true);
+      const eventTypes = (await eventsResult.json()).events.map((e: any) => e.event_type);
       expect(eventTypes).toContain("started");
       expect(eventTypes).toContain("approval_requested");
       expect(eventTypes).toContain("approval_decided");
