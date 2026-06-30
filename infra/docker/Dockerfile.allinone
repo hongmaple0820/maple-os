@@ -8,18 +8,7 @@ RUN cargo install cargo-chef --locked
 WORKDIR /app
 
 FROM chef AS planner
-COPY Cargo.toml ./
-COPY core/maple-engine/Cargo.toml core/maple-engine/Cargo.toml
-COPY core/maple-llm/Cargo.toml core/maple-llm/Cargo.toml
-COPY core/maple-agent/Cargo.toml core/maple-agent/Cargo.toml
-COPY core/maple-kb/Cargo.toml core/maple-kb/Cargo.toml
-COPY core/maple-sync/Cargo.toml core/maple-sync/Cargo.toml
-COPY core/maple-gateway/Cargo.toml core/maple-gateway/Cargo.toml
-COPY core/maple-collab/Cargo.toml core/maple-collab/Cargo.toml
-COPY core/maple-rpc/Cargo.toml core/maple-rpc/Cargo.toml
-COPY core/maple-macro/Cargo.toml core/maple-macro/Cargo.toml
-COPY apps/cli/Cargo.toml apps/cli/Cargo.toml
-COPY server/Cargo.toml server/Cargo.toml
+COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
