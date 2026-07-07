@@ -1,7 +1,4 @@
-# MapleOS Dockerfile with cargo-chef for dependency caching
-# Uses 3-stage build: planner → cacher → builder → runtime
-# This dramatically reduces rebuild time when only source code changes
-# (dependencies are cached and only rebuilt when Cargo.toml changes)
+# MapleOS Server Dockerfile with cargo-chef for dependency caching
 
 FROM rust:slim AS chef
 RUN apt-get update && apt-get install -y pkg-config libsqlite3-dev && rm -rf /var/lib/apt/lists/*
@@ -21,17 +18,27 @@ COPY core/maple-rpc/Cargo.toml core/maple-rpc/Cargo.toml
 COPY core/maple-macro/Cargo.toml core/maple-macro/Cargo.toml
 COPY apps/cli/Cargo.toml apps/cli/Cargo.toml
 COPY server/Cargo.toml server/Cargo.toml
+RUN mkdir -p core/maple-engine/src && echo 'pub fn _stub() {}' > core/maple-engine/src/lib.rs && \
+    mkdir -p core/maple-llm/src && echo 'pub fn _stub() {}' > core/maple-llm/src/lib.rs && \
+    mkdir -p core/maple-agent/src && echo 'pub fn _stub() {}' > core/maple-agent/src/lib.rs && \
+    mkdir -p core/maple-kb/src && echo 'pub fn _stub() {}' > core/maple-kb/src/lib.rs && \
+    mkdir -p core/maple-sync/src && echo 'pub fn _stub() {}' > core/maple-sync/src/lib.rs && \
+    mkdir -p core/maple-gateway/src && echo 'pub fn _stub() {}' > core/maple-gateway/src/lib.rs && \
+    mkdir -p core/maple-collab/src && echo 'pub fn _stub() {}' > core/maple-collab/src/lib.rs && \
+    mkdir -p core/maple-rpc/src && echo 'pub fn _stub() {}' > core/maple-rpc/src/lib.rs && \
+    mkdir -p core/maple-macro/src && echo 'pub fn _stub() {}' > core/maple-macro/src/lib.rs && \
+    mkdir -p apps/cli/src && echo 'fn main() {}' > apps/cli/src/main.rs && \
+    mkdir -p server/src && echo 'fn main() {}' > server/src/main.rs && \
+    echo 'pub fn _stub() {}' > server/src/lib.rs
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
-# Build dependencies (cached layer — only rebuilds when Cargo.toml changes)
 RUN cargo chef cook --release --recipe-path recipe.json
-# Now copy source and build the actual binary
 COPY . .
+RUN rm -rf core/scale-engine
 RUN cargo build --release -p mapleos-server
 
-# Runtime image — minimal
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y ca-certificates libsqlite3-0 && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/mapleos-server /usr/local/bin/mapleos-server
